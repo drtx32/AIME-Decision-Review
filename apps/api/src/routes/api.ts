@@ -7,7 +7,6 @@
  */
 
 import { Hono } from "hono";
-import { cors } from "hono/cors";
 import { randomUUID } from "node:crypto";
 import { DecisionInputSchema } from "../types/index.ts";
 import type { AppConfig } from "../config.ts";
@@ -45,19 +44,6 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   // gate. Runs after attachUser so it doesn't interfere with /health or
   // /api/auth/login response paths.
   app.use("/api/*", rejectClientUserIdHeader());
-
-  // Keep the API deployable separately from the static frontend. In local and
-  // mock mode no origin is required; production should set one exact origin.
-  if (deps.config.webOrigin) {
-    app.use(
-      "*",
-      cors({
-        origin: deps.config.webOrigin,
-        allowHeaders: ["Content-Type"],
-        allowMethods: ["GET", "POST", "OPTIONS"],
-      })
-    );
-  }
 
   app.get("/health", (c) => {
     return c.json({

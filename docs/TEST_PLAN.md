@@ -181,12 +181,14 @@ Expected:
 
 | Check | Result | Evidence / limitation |
 | --- | --- | --- |
-| Frontend production build | PASS | `npm ci && npm run build` completed locally; produces `dist/`. |
-| Backend typecheck | PASS (baseline) | `bun run typecheck` passed in the prior backend MVP validation; rerun after this docs/origin change is pending because Bun is unavailable in the current runner. |
-| Backend tests | PASS (baseline) | Prior MVP suite passed 11/11; the new configured-origin CORS test requires a Bun rerun in a Bun-enabled environment. |
-| API health smoke | PENDING | Command is documented; no production server or live URL is claimed in this branch. |
-| Secret scan | PENDING | Must be rerun against the final build and deployment environment before submission. |
-| Live MCP/model integration | PENDING | Requires credentials/connectivity; current evidence is mock-provider based. |
-| Browser / deployed URL | PENDING | Static deployment and real frontend API adapter remain outstanding. |
+| Frontend production build | PASS | `npm run build` passed for the root Vite app in the Compose integration work. |
+| Compose configuration | PASS | `docker compose config` validated service wiring, healthcheck, dependency, environment mapping, and named volume on 2026-09-22. |
+| Compose image build | PASS | `docker compose build` built the separate `web` and `api` images on 2026-09-22. |
+| Compose mock smoke | PASS | With `WEB_PORT=28081 API_PORT=23001`, API `/health` and web `/health` returned 200; POST through web `/api` completed with `status=completed` and a review id. Default 8080/18080 were occupied by unrelated local services. |
+| SQLite volume / runtime user | PASS | API uses `/var/lib/aime` named `api-data` volume and the container runtime is non-root; fresh-volume persistence was checked in Compose integration. |
+| Backend typecheck/tests | PASS (baseline) | Prior backend MVP validation recorded typecheck success and 11/11 tests; rerun after final integration changes remains required in a Bun-enabled environment. |
+| Secret/image scan | PENDING | Must be rerun against final images and deployment environment before submission. |
+| Credentialed real LLM/MCP smoke | PENDING | Requires credentials and the PR #3 gateway/conflict resolution; no completion is claimed. |
+| Clean browser / public URL | PENDING | No live deployment URL is claimed; final hosted browser evidence remains outstanding. |
 
-These results are local repository evidence, not evidence of a live deployment. Update this section with the command output, URL, and date after deployment; do not convert pending items into passes without running them.
+The Compose passes are repository/local integration evidence, not evidence of a live public deployment or credentialed gateway integration. Update this section with the actual URL, commands, and timestamp after release; do not convert pending items into passes without running them.

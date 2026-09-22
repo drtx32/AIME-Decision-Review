@@ -5,7 +5,6 @@
 
 export interface AppConfig {
   port: number;
-  webOrigin: string | null;
   sqlitePath: string;
   logLevel: "debug" | "info" | "warn" | "error";
   /** Production-ish flag toggles Secure cookies and stricter auth headers. */
@@ -105,7 +104,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 
   return {
     port: Number(env.PORT ?? 3000),
-    webOrigin: env.WEB_ORIGIN?.trim() || null,
     sqlitePath: env.SQLITE_PATH ?? "./data/decision-review.db",
     logLevel: (env.LOG_LEVEL as AppConfig["logLevel"]) ?? "info",
     isProduction,

@@ -27,20 +27,6 @@ describe("Review API contract", () => {
     expect(body.configuredServers).toContain("stock");
   });
 
-  test("configured WEB_ORIGIN is returned as a CORS allow-origin header", async () => {
-    const origin = "https://review.example.test";
-    const corsCtx = makeTestServer({ webOrigin: origin });
-    try {
-      const res = await corsCtx.app.request("/health", {
-        headers: { Origin: origin },
-      });
-      expect(res.status).toBe(200);
-      expect(res.headers.get("access-control-allow-origin")).toBe(origin);
-    } finally {
-      corsCtx.cleanup();
-    }
-  });
-
   test("POST /api/reviews rejects invalid payload", async () => {
     const res = await ctx.app.request("/api/reviews", {
       method: "POST",

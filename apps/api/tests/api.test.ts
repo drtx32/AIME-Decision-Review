@@ -1,0 +1,98 @@
+import { describe, test, expect, beforeEach, afterEach } from "bun:test";
+import { makeTestServer, type TestServer } from "./helpers.ts";
+import type { DecisionReviewResult } from "../src/types/index.ts";
+
+describe("Review API contract", () => {
+  let ctx: TestServer;
+
+  beforeEach(() => {
+    ctx = makeTestServer();
+  });
+  afterEach(() => ctx.cleanup());
+
+  test("GET /health returns 200 with provider info", async () => {
+    const res = await ctx.app.request("/health");
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      status: string;
+      provider: string;
+      configuredServers: string[];
+    };
+    expect(body.status).toBe("ok");
+    expect(body.provider).toBe("mock");
+    expect(Array.isArray(body.configuredServers)).toBe(true);
+    expect(body.configuredServers).toContain("a-share");
+    expect(body.configuredServers).toContain("stock");
+  });
+
+  test("POST /api/reviews rejects invalid payload", async () => {
+    const res = await ctx.app.request("/api/reviews", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ symbol: "" }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("invalid_input");
+  });
+
+  test("POST /api/reviews → GET /result returns structured review (vertical slice)", async () => {
+    const created = await ctx.app.request("/api/reviews", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        symbol: "600519",
+        market: "CN",
+        action: "buy",
+        executedAt: "2024-03-15T00:00:00Z",
+        price: 1620.5,
+        quantity: 100,
+        userReason: "Channel checks confirmed brand pricing power.",
+      }),
+    });
+    expect(created.status).toBe(202);
+    const createdBody = (await created.json()) as { id: string };
+    expect(createdBody.id).toMatch(/^rev_/);
+    const id = createdBody.id;
+
+    let status = "created";
+    for (let i = 0; i < 30 && status !== "completed" && status !== "partial" && status !== "failed"; i++) {
+      const r = await ctx.app.request(`/api/reviews/${id}`);
+      const body = (await r.json()) as { status: string };
+      status = body.status;
+      if (status !== "completed" && status !== "partial" && status !== "failed") {
+        await new Promise((res) => setTimeout(res, 50));
+      }
+    }
+
+    const resultRes = await ctx.app.request(`/api/reviews/${id}/result`);
+    expect(resultRes.status).toBe(200);
+    const resultBody = (await resultRes.json()) as { result: DecisionReviewResult };
+    const result = resultBody.result;
+
+    expect(result.decision.T0).toBe("2024-03-15T00:00:00.000Z");
+
+    const t0 = Date.parse(result.decision.T0);
+    for (const e of result.exAnteEvidence) {
+      expect(Date.parse(e.publishedAt)).toBeLessThanOrEqual(t0);
+    }
+    for (const e of result.exPostEvidence) {
+      expect(Date.parse(e.publishedAt)).toBeGreaterThan(t0);
+    }
+
+    expect(result.decisionQuality).toBeDefined();
+    expect(result.outcome).toBeDefined();
+
+    expect(Array.isArray(result.toolStatuses)).toBe(true);
+    expect(result.toolStatuses.length).toBeGreaterThan(0);
+
+    const eventsRes = await ctx.app.request(`/api/reviews/${id}/events`);
+    const eventsBody = (await eventsRes.json()) as {
+      events: Array<{ kind: string }>;
+    };
+    const kinds = eventsBody.events.map((e) => e.kind);
+    expect(kinds).toContain("review_created");
+    expect(kinds).toContain("evidence_time_aligned");
+    expect(kinds).toContain("final_review_generated");
+  });
+});

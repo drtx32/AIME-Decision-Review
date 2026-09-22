@@ -49,6 +49,8 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     return c.json({
       status: "ok",
       provider: deps.provider.id,
+      providerConfigured: deps.provider.configured,
+      runtime: deps.config.runtime,
       configuredServers: deps.registry.configuredKeys(),
       time: new Date().toISOString(),
     });
@@ -61,6 +63,15 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   app.use("/api/reviews/*", requireAuth(deps.userRepo), gateMustChangePassword());
 
   app.post("/api/reviews", async (c) => {
+    if (deps.config.runtime === "production" && !deps.provider.configured) {
+      return c.json(
+        {
+          error: "provider_unconfigured",
+          message: "当前未配置可用的大模型服务，请联系管理员。",
+        },
+        503
+      );
+    }
     const body = await c.req.json().catch(() => null);
     const parsed = DecisionInputSchema.safeParse(body);
     if (!parsed.success) {

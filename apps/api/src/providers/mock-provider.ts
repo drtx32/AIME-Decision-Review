@@ -13,6 +13,7 @@ import type { LLMCompletion, LLMCompletionRequest, ModelProvider } from "./index
 
 export class MockModelProvider implements ModelProvider {
   readonly id = "mock";
+  readonly configured = false;
   readonly modelName: string;
 
   constructor(modelName: string) {

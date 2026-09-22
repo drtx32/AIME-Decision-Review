@@ -39,6 +39,7 @@ export interface LLMCompletion {
 export interface ModelProvider {
   readonly id: string;
   readonly modelName: string;
+  readonly configured: boolean;
   complete(req: LLMCompletionRequest): Promise<LLMCompletion>;
 }
 

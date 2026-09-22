@@ -1,229 +1,85 @@
-import {useEffect, useState} from 'react';import {ArrowRight,Check,ChevronRight,LogOut,RotateCcw,ShieldCheck,Sparkles,UserCog,Users} from 'lucide-react';
-import {mock,type Input,type Result} from './api';
-import {auth,adminUsers,ApiError,type PublicUser} from './auth-api';
-type Screen='login'|'change-password'|'home'|'running'|'result'|'admin';
-const stages=['行情与市场环境','指数与行业基准','新闻与公告','时间对齐与事实检查','生成结构化复盘'];
-const blank:Input={symbol:'',market:'A股',side:'buy',executedAt:'2024-03-18T10:24',price:'',quantity:'',reason:'',notes:''};
-export default function App(){
-  const[s,setS]=useState<Screen>('login');
-  const[user,setUser]=useState<PublicUser|null>(null);
-  const[bootError,setBootError]=useState<string|null>(null);
-  // Existing review state — preserved from the pre-auth UI.
-  const[v,setV]=useState<Input>(blank);
-  const[r,setR]=useState<Result|null>(null);
-  const[p,setP]=useState(0);
-  useEffect(()=>{void bootstrap();},[]);
-  async function bootstrap(){
-    try{
-      const me=await auth.me();
-      if(!me){setS('login');return;}
-      setUser(me.user);
-      if(me.mustChangePassword){setS('change-password');}else{setS('home');}
-    }catch(e){
-      setBootError(e instanceof Error?e.message:'无法连接到后端');
-      setS('login');
+import { useEffect, useMemo, useState } from 'react';
+import { Check, ChevronRight, CircleAlert, FileText, History, Menu, Plus, Send, Sparkles, X } from 'lucide-react';
+import { reviewApi, type Input, type Result, type ReviewEvent } from './api';
+
+type Phase = 'compose' | 'running' | 'review';
+type Message = { role: 'assistant' | 'user'; text: string; time?: string };
+const blank: Input = { symbol: '', market: 'A股', side: 'buy', executedAt: '2024-03-18T10:24', price: '', quantity: '', reason: '', notes: '' };
+const demoMessages: Message[] = [{ role: 'assistant', text: '你好，我会把这次投资决策还原到 T0。你可以直接描述当时为什么买入或卖出，我会先提取关键信息，再请你确认。' }];
+
+export default function App() {
+  const [phase, setPhase] = useState<Phase>('compose');
+  const [input, setInput] = useState<Input>(blank);
+  const [draft, setDraft] = useState('');
+  const [messages, setMessages] = useState<Message[]>(demoMessages);
+  const [result, setResult] = useState<Result | null>(null);
+  const [events, setEvents] = useState<ReviewEvent[]>([]);
+  const [error, setError] = useState('');
+  const [reviewId, setReviewId] = useState('');
+  const [history, setHistory] = useState<string[]>([]);
+  const [mobilePanel, setMobilePanel] = useState(false);
+  const demoMode = !import.meta.env.VITE_API_BASE_URL;
+
+  const update = (key: keyof Input, value: string) => setInput((current) => ({ ...current, [key]: value }));
+  const extracted = useMemo(() => input.symbol || draft.match(/\b\d{5,6}\b/)?.[0] || '', [draft, input.symbol]);
+
+  useEffect(() => {
+    if (extracted && !input.symbol) update('symbol', extracted);
+  }, [extracted]);
+
+  const send = async (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!draft.trim() && !input.reason.trim()) return;
+    const reason = input.reason || draft.trim();
+    const next = { ...input, symbol: extracted, reason };
+    if (!next.symbol) { setError('请在描述中提供标的代码或名称。'); return; }
+    setInput(next);
+    setMessages((items) => [...items, { role: 'user', text: draft.trim() || reason }]);
+    setDraft(''); setError('');
+  };
+
+  const run = async () => {
+    if (!input.symbol || !input.reason) { setError('请先发送一段决策描述，并确认标的信息。'); return; }
+    setPhase('running'); setError(''); setEvents([]);
+    try {
+      const created = await reviewApi.create(input);
+      setReviewId(created.id);
+      if (created.demo) {
+        setEvents(created.events);
+        const next = await reviewApi.result(created.id);
+        setResult(next); setHistory((items) => [input.symbol, ...items.filter((x) => x !== input.symbol)]); setPhase('review');
+        setMessages((items) => [...items, { role: 'assistant', text: '我已完成这次演示复盘。右侧保留证据与结果，你也可以继续追问。' }]);
+        return;
+      }
+      await reviewApi.waitForResult(created.id, (nextEvents) => setEvents(nextEvents));
+      const next = await reviewApi.result(created.id);
+      setResult(next); setHistory((items) => [input.symbol, ...items.filter((x) => x !== input.symbol)]); setPhase('review');
+      setMessages((items) => [...items, { role: 'assistant', text: '复盘完成。我把事前证据、事后结果和归因拆开了，你可以在右侧查看详情。' }]);
+    } catch (e) {
+      setPhase('compose'); setError(e instanceof Error ? e.message : '复盘暂时无法启动，请稍后重试。');
     }
-  }
-  async function handleLoginSuccess(payload:PublicUser,mustChange:boolean){
-    setUser(payload);
-    setS(mustChange?'change-password':'home');
-  }
-  async function handleLogout(){
-    try{await auth.logout();}catch{}
-    setUser(null);
-    setR(null);
-    setP(0);
-    setS('login');
-  }
-  async function handlePasswordChanged(payload:PublicUser){
-    setUser(payload);
-    setS('home');
-  }
-  if(s==='login')return <div className="app"><Header user={null} onLogout={handleLogout}/><main><LoginScreen bootError={bootError} onSuccess={handleLoginSuccess}/></main></div>;
-  if(s==='change-password'&&user)return <div className="app"><Header user={user} onLogout={handleLogout}/><main><ChangePasswordScreen username={user.username} mustChange onSuccess={handlePasswordChanged}/></main></div>;
-  if(s==='admin'&&user)return <div className="app"><Header user={user} onLogout={handleLogout}/><main><AdminScreen onBack={()=>setS('home')}/></main></div>;
-  if(s==='home'&&user)return <div className="app"><Header user={user} onLogout={handleLogout} onOpenAdmin={()=>setS('admin')}/><main><Home v={v} setV={setV} go={async e=>{
-    e.preventDefault();setS('running');
-    for(let i=1;i<=5;i++){await new Promise(x=>setTimeout(x,280));setP(i)}
-    const x=await mock.createReview(v);setR(await mock.result(x.id));setS('result');
-  }}/></main></div>;
-  if(s==='running'&&user)return <div className="app"><Header user={user} onLogout={handleLogout}/><main><Running p={p}/></main></div>;
-  if(s==='result'&&user&&r)return <div className="app"><Header user={user} onLogout={handleLogout} onOpenAdmin={()=>setS('admin')}/><main><Result r={r} reset={()=>{setS('home');setR(null);setP(0)}}/></main></div>;
-  return null;
+  };
+
+  const followUp = (event: React.FormEvent) => {
+    event.preventDefault();
+    if (!draft.trim()) return;
+    const question = draft.trim(); setDraft('');
+    setMessages((items) => [...items, { role: 'user', text: question }, { role: 'assistant', text: '这个问题已加入当前复盘上下文。请结合右侧的 Ex-Ante 证据和失效条件继续核对；新的模型追问能力将在服务端配置后启用。' }]);
+  };
+
+  const newReview = () => { setPhase('compose'); setInput(blank); setResult(null); setReviewId(''); setEvents([]); setError(''); setMessages(demoMessages); };
+
+  return <div className="app">
+    <header><div className="brand"><b><i>A</i>AIME</b><small>DECISION REVIEW</small></div><div className="header-status"><span className={demoMode ? 'status-dot demo' : 'status-dot'} />{demoMode ? 'DEV / DEMO MODE' : 'SESSION SECURE'}<button className="mobile-menu" onClick={() => setMobilePanel(!mobilePanel)}><Menu size={17}/></button></div></header>
+    <div className="workspace">
+      <aside className={mobilePanel ? 'sidebar open' : 'sidebar'}><div className="sidebar-title"><span><History size={14}/> REVIEW SESSIONS</span><button onClick={newReview}><Plus size={15}/></button></div><button className="new-session" onClick={newReview}><Plus size={14}/> 新建决策复盘</button><div className="session-list">{history.length ? history.map((item) => <button className="session" key={item}><span className="session-mark"/><span><b>{item}</b><small>刚刚 · 投资决策</small></span></button>) : <p className="empty-history">你的复盘会出现在这里</p>}</div><div className="sidebar-bottom"><span>WORKSPACE</span><b>景羿霖的研究空间</b><small>{demoMode ? '本地演示数据，不写入服务端' : '证据仅在服务端处理'}</small></div></aside>
+      <main className="conversation"><div className="conversation-head"><div><span className="eyebrow">INVESTMENT DECISION REVIEW</span><h1>{phase === 'compose' ? '从一次决策开始' : phase === 'running' ? '正在重建证据链' : `${input.symbol} · 决策复盘`}</h1></div><span className="t0-badge">T0 <b>{input.executedAt.replace('T', ' ')}</b></span></div><div className="conversation-body">{messages.map((message, index) => <div className={'message-row '+message.role} key={index}><div className="avatar">{message.role === 'assistant' ? <Sparkles size={14}/> : '景'}</div><div className="message"><span>{message.role === 'assistant' ? 'AIME REVIEW AGENT' : 'YOU'}</span><p>{message.text}</p></div></div>)}{phase === 'running' && <Running events={events}/>} {phase === 'review' && <div className="review-ready"><Check size={15}/> REVIEW READY <small>右侧已更新完整报告</small></div>}</div><form className="composer" onSubmit={phase === 'review' ? followUp : send}><textarea value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={phase === 'review' ? '继续追问这次复盘…' : '例如：我在 2024 年 3 月 18 日以 1680 元买入 600519，因为渠道库存改善…'} /><div className="composer-foot"><span>{phase === 'review' ? 'FOLLOW-UP IN THIS SESSION' : '自然语言输入 · AIME 会提取结构化字段'}</span><button aria-label="发送" disabled={phase === 'running'}><Send size={16}/></button></div></form>{error && <div className="error-banner"><CircleAlert size={15}/>{error}<button onClick={() => setError('')}><X size={14}/></button></div>}{phase === 'compose' && <div className="confirm-card"><div><span className="eyebrow">EXTRACTED DECISION</span><strong>{input.symbol || '等待标的'}</strong></div><div className="chips"><Chip label="市场" value={input.market} options={['A股','港股','美股']} onChange={(value) => update('market', value)}/><Chip label="方向" value={input.side === 'buy' ? '买入' : '卖出'} options={['买入','卖出']} onChange={(value) => update('side', value === '买入' ? 'buy' : 'sell')}/><Chip label="价格" value={input.price || '待确认'} onChange={(value) => update('price', value)}/><Chip label="数量" value={input.quantity || '待确认'} onChange={(value) => update('quantity', value)}/></div><button className="run-button" onClick={run} disabled={!input.symbol || !input.reason}><Sparkles size={15}/>确认字段并开始复盘 <ChevronRight size={15}/></button></div>}</main>
+      <aside className={mobilePanel ? 'evidence-panel open' : 'evidence-panel'}><div className="panel-head"><span><FileText size={14}/> REVIEW REPORT</span><button onClick={() => setMobilePanel(false)}><X size={15}/></button></div>{result ? <Report result={result}/> : <div className="panel-placeholder"><div className="placeholder-icon"><FileText size={22}/></div><h3>证据报告将在这里展开</h3><p>完成一次复盘后，这里会显示 Ex-Ante / Ex-Post 证据、归因和下一次 Checklist。</p><div className="placeholder-line"/><div className="placeholder-line short"/></div>}</aside>
+    </div><footer>Evidence before hindsight. <span>{demoMode ? 'DEV / DEMO MODE · 演示数据' : 'MCP status: server configured'}</span></footer>
+  </div>;
 }
-function Header({user,onLogout,onOpenAdmin}:{user:PublicUser|null;onLogout:()=>void;onOpenAdmin?:()=>void}){
-  return <header><b><i>A</i>AIME <small>DECISION REVIEW</small></b>
-    <div className="headerRight">
-      {user&&user.role==='admin'&&onOpenAdmin&&<button className="ghost" onClick={onOpenAdmin}><UserCog size={14}/>用户管理</button>}
-      {user?<span className="user"><b>● {user.username}</b>　{user.role==='admin'?'管理员':'用户'}</span>:null}
-      {user?<button className="ghost" onClick={onLogout}><LogOut size={14}/>退出</button>:null}
-    </div>
-  </header>;
-}
-function LoginScreen({bootError,onSuccess}:{bootError:string|null;onSuccess:(u:PublicUser,m:boolean)=>void}){
-  const[username,setUsername]=useState('admin');
-  const[password,setPassword]=useState('');
-  const[busy,setBusy]=useState(false);
-  const[err,setErr]=useState<string|null>(bootError);
-  async function submit(e:React.FormEvent){
-    e.preventDefault();setBusy(true);setErr(null);
-    try{
-      const res=await auth.login(username.trim(),password);
-      onSuccess(res.user,res.mustChangePassword);
-    }catch(e){
-      if(e instanceof ApiError){
-        if(e.status===401)setErr('用户名或密码错误');
-        else if(e.status===403)setErr('账号已停用');
-        else setErr(`登录失败（${e.status}）`);
-      }else{setErr('网络异常，请重试');}
-    }finally{setBusy(false);}
-  }
-  return <section className="authShell">
-    <div className="authCard card form">
-      <div className="cardhead"><span>STEP 00<h2>登录</h2></span><span>✦</span></div>
-      <label className="field">用户名<input autoFocus value={username} onChange={e=>setUsername(e.target.value)} placeholder="用户名" required/></label>
-      <label className="field">密码<input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="密码" required/></label>
-      {err&&<div className="authError">{err}</div>}
-      <button className="primary" disabled={busy}>{busy?'登录中…':'登录'}<ArrowRight size={16}/></button>
-      <small className="safe"><ShieldCheck size={13}/>请使用服务器下发的账号；没有公开注册入口。</small>
-    </div>
-  </section>;
-}
-function ChangePasswordScreen({username,mustChange,onSuccess}:{username:string;mustChange:boolean;onSuccess:(u:PublicUser)=>void}){
-  const[current,setCurrent]=useState('');
-  const[next,setNext]=useState('');
-  const[confirm,setConfirm]=useState('');
-  const[busy,setBusy]=useState(false);
-  const[err,setErr]=useState<string|null>(null);
-  async function submit(e:React.FormEvent){
-    e.preventDefault();setErr(null);
-    if(next.length<8){setErr('新密码至少 8 位');return;}
-    if(next!==confirm){setErr('两次输入的新密码不一致');return;}
-    setBusy(true);
-    try{
-      // For the bootstrap admin flow, the operator knows the initial
-      // password from the deployment notes. The frontend never embeds
-      // a default — the user must type it.
-      const res=await auth.changePassword(mustChange?current:current,next);
-      onSuccess(res.user);
-    }catch(e){
-      if(e instanceof ApiError){
-        if(e.status===401)setErr('当前密码错误');
-        else setErr(`修改失败（${e.status}）`);
-      }else{setErr('网络异常，请重试');}
-    }finally{setBusy(false);}
-  }
-  return <section className="authShell">
-    <form className="authCard card form" onSubmit={submit}>
-      <div className="cardhead"><span>STEP 00<h2>{mustChange?'首次登录需修改密码':'修改密码'}</h2></span><span>✦</span></div>
-      <div className="authIntro">账号 <b>{username}</b>{mustChange?' 正在使用初始密码，请输入初始密码并设置一个新密码。':' 请输入当前密码并设置新密码。'}</div>
-      <label className="field">当前密码<input type="password" value={current} onChange={e=>setCurrent(e.target.value)} required autoComplete="current-password"/></label>
-      <label className="field">新密码（至少 8 位）<input type="password" value={next} onChange={e=>setNext(e.target.value)} required minLength={8} autoComplete="new-password"/></label>
-      <label className="field">再次输入新密码<input type="password" value={confirm} onChange={e=>setConfirm(e.target.value)} required minLength={8} autoComplete="new-password"/></label>
-      {err&&<div className="authError">{err}</div>}
-      <button className="primary" disabled={busy}>{busy?'提交中…':'提交'}<ArrowRight size={16}/></button>
-      <small className="safe"><ShieldCheck size={13}/>修改成功后其他已登录设备会被自动登出。</small>
-    </form>
-  </section>;
-}
-function AdminScreen({onBack}:{onBack:()=>void}){
-  const[users,setUsers]=useState<PublicUser[]|null>(null);
-  const[err,setErr]=useState<string|null>(null);
-  const[creating,setCreating]=useState(false);
-  const[newName,setNewName]=useState('');
-  const[createErr,setCreateErr]=useState<string|null>(null);
-  const[temp,setTemp]=useState<{username:string;temporaryPassword:string}|null>(null);
-  const[busyId,setBusyId]=useState<string|null>(null);
-  async function refresh(){
-    setErr(null);
-    try{
-      const list=await adminUsers.list();
-      setUsers(list.users);
-    }catch(e){
-      setErr(e instanceof Error?e.message:'加载用户失败');
-    }
-  }
-  useEffect(()=>{void refresh();},[]);
-  async function handleCreate(e:React.FormEvent){
-    e.preventDefault();setCreateErr(null);setTemp(null);
-    setCreating(true);
-    try{
-      const res=await adminUsers.create(newName.trim());
-      setTemp({username:res.user.username,temporaryPassword:res.temporaryPassword});
-      setNewName('');
-      await refresh();
-    }catch(e){
-      if(e instanceof ApiError){
-        if(e.status===409)setCreateErr('该用户名已存在');
-        else if(e.status===400)setCreateErr('用户名仅支持字母、数字、下划线、点、连字符');
-        else setCreateErr(`创建失败（${e.status}）`);
-      }else{setCreateErr('网络异常，请重试');}
-    }finally{setCreating(false);}
-  }
-  async function handleReset(u:PublicUser){
-    setBusyId(u.id);
-    try{
-      const res=await adminUsers.resetPassword(u.id);
-      setTemp({username:res.user.username,temporaryPassword:res.temporaryPassword});
-      await refresh();
-    }catch(e){
-      setErr(e instanceof Error?e.message:'重置失败');
-    }finally{setBusyId(null);}
-  }
-  async function handleToggle(u:PublicUser){
-    setBusyId(u.id);
-    try{
-      if(u.enabled){await adminUsers.disable(u.id);}else{await adminUsers.enable(u.id);}
-      await refresh();
-    }catch(e){
-      if(e instanceof ApiError){
-        if(e.code==='cannot_disable_self')setErr('不能停用自己的账号');
-        else if(e.code==='cannot_disable_last_admin')setErr('这是最后一个启用的管理员账号');
-        else setErr(`操作失败（${e.status}）`);
-      }else{setErr(e instanceof Error?e.message:'操作失败');}
-    }finally{setBusyId(null);}
-  }
-  return <section className="admin">
-    <div className="resulttop"><div><label className="pill ok"><Users size={13}/> USER MANAGEMENT</label><h1>用户管理</h1><p>只有管理员可访问本页。新建用户的初始密码只展示一次。</p></div><button className="ghost" onClick={onBack}><RotateCcw size={14}/>返回</button></div>
-    {err&&<div className="authError">{err}</div>}
-    <div className="adminGrid">
-      <form className="card form" onSubmit={handleCreate}>
-        <div className="cardhead"><span>STEP 01<h2>新建用户</h2></span><span>✦</span></div>
-        <label className="field">用户名<input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="例如 zhangsan" required/></label>
-        {createErr&&<div className="authError">{createErr}</div>}
-        <button className="primary" disabled={creating||!newName.trim()}>{creating?'创建中…':'创建并生成初始密码'}<ArrowRight size={16}/></button>
-        {temp&&<div className="tempCard">
-          <label>初始密码（仅显示一次，请立即复制给用户）</label>
-          <div className="tempRow">
-            <code>{temp.username}</code><b>{temp.temporaryPassword}</b>
-          </div>
-          <small>用户首次登录会被强制要求修改密码。</small>
-        </div>}
-      </form>
-      <div className="card adminList">
-        <div className="cardhead"><span>STEP 02<h2>已有用户</h2></span><span>{users?`${users.length} 人`:'加载中…'}</span></div>
-        {users===null&&<div className="muted">加载中…</div>}
-        {users&&users.length===0&&<div className="muted">还没有用户。</div>}
-        {users&&users.map(u=>(
-          <div key={u.id} className={'userRow'+(u.enabled?'':' disabled')}>
-            <div><b>{u.username}</b><span>{u.role==='admin'?'管理员':'普通用户'}</span>{!u.enabled&&<em>已停用</em>}</div>
-            <div className="userActions">
-              <button className="ghost" disabled={busyId===u.id} onClick={()=>handleReset(u)}>重置密码</button>
-              <button className="ghost" disabled={busyId===u.id} onClick={()=>handleToggle(u)}>{u.enabled?'停用':'启用'}</button>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  </section>;
-}
-function Home({v,setV,go}:{v:Input;setV:React.Dispatch<React.SetStateAction<Input>>;go:(e:React.FormEvent)=>void}){
-  const u=(k:keyof Input,x:string)=>setV(y=>({...y,[k]:x}));
-  return <section className="home"><div className="intro"><label className="pill"><Sparkles size={13}/> Decision Replay</label><h1>把一次投资，<br/><em>复盘成下一次优势。</em></h1><p>重建决策当下的证据时间线，分开事实与结果，让每一次交易都沉淀为可复用的判断力。</p><div className="principle"><strong>T0</strong><span><b>时间边界优先</b><small>只用决策发生前能获得的信息评估判断质量。</small></span></div></div><form className="card form" onSubmit={go}><div className="cardhead"><span>STEP 01<h2>记录你的决策</h2></span><span>✦</span></div><div className="row"><Field t="标的代码 / 名称"><input required value={v.symbol} onChange={e=>u('symbol',e.target.value)} placeholder="例如 600519 / 贵州茅台"/></Field><Field t="市场"><select value={v.market} onChange={e=>u('market',e.target.value)}><option>A股</option><option>港股</option><option>美股</option></select></Field></div><div className="row"><Field t="交易方向"><div className="seg"><button type="button" className={v.side==='buy'?'on':''} onClick={()=>u('side','buy')}>买入</button><button type="button" className={v.side==='sell'?'on sell':''} onClick={()=>u('side','sell')}>卖出</button></div></Field><Field t="成交时间"><input required type="datetime-local" value={v.executedAt} onChange={e=>u('executedAt',e.target.value)}/></Field></div><div className="row"><Field t="成交价格"><input required type="number" value={v.price} onChange={e=>u('price',e.target.value)} placeholder="0.00"/></Field><Field t="成交数量"><input required type="number" value={v.quantity} onChange={e=>u('quantity',e.target.value)} placeholder="股 / 手"/></Field></div><Field t="当时为什么做这个决定？"><textarea required value={v.reason} onChange={e=>u('reason',e.target.value)} placeholder="写下当时的核心判断、预期或触发因素…"/></Field><Field t="补充笔记（可选）"><textarea className="short" value={v.notes} onChange={e=>u('notes',e.target.value)} placeholder="仓位计划、止盈止损、当时的犹豫…"/></Field><button className="primary">开始复盘 <ArrowRight size={16}/></button><small className="safe"><ShieldCheck size={13}/>你的输入仅用于本次复盘，不会写入公开日志。</small></form></section>;
-}
-function Field({t,children}:{t:string;children:React.ReactNode}){return <label className="field">{t}{children}</label>;}
-function Running({p}:{p:number}){return <section className="card running"><div className="runicon">◌</div><span>REVIEW RUNNING</span><h1>正在重建这笔决策</h1><p>把决策时点的证据，与之后发生的结果严格分开。</p><div className="bar"><i style={{width:p*20+'%'}}/></div>{stages.map((x,i)=><div className={'stage '+(i<p?'done':'')} key={x}><b>{i<p?<Check size={12}/>:i+1}</b>{x}<small>{i<p?'完成':i===p?'分析中…':'等待'}</small></div>)}<div className="safe">◈ 不展示模型思考过程，仅呈现可核验的证据与结论。</div></section>;}
-function Result({r,reset}:{r:Result;reset:()=>void}){return <section className="result"><div className="resulttop"><div><label className="pill ok"><Check size={13}/> REVIEW COMPLETE</label><h1>{r.input.symbol} <span>· {r.input.side==='buy'?'买入':'卖出'}复盘</span></h1><p>{r.input.executedAt.replace('T',' ')} · 成交价 ¥{r.input.price} · {r.input.quantity} 股</p></div><button className="ghost" onClick={reset}><RotateCcw size={14}/> 新建复盘</button></div><div className="card summary"><div className="summaryicon">◈</div><div><label>DECISION SUMMARY</label><p>{r.summary}</p></div><strong>62<small>判断质量</small></strong></div><div className="t0"><b>T0 · 2024.03.18 10:24</b><strong>时间边界</strong><span>左侧只包含当时可知信息；右侧是事后发生的信息，不能用于评价当时的判断。</span></div><div className="evidence"><Evidence title="当时已知 · Ex-Ante" sub="可用于评价决策质量" a={r.ante} tone="ante"/><Evidence title="事后信息 · Ex-Post" sub="用于理解结果，不倒灌判断" a={r.post} tone="post"/></div><div className="lower"><div className="card block"><label>ATTRIBUTION</label><h3>归因可信度</h3><Tag t="SUPPORTED" c="green">“渠道库存改善”是可被 T0 前证据支持的核心判断。</Tag><Tag t="UNCERTAIN" c="yellow">对批价企稳的时间判断缺少明确验证条件。</Tag><Tag t="UNSUPPORTED" c="red">“市场会很快修复”未记录可核验依据。</Tag></div><div className="card block"><label>OUTCOME VS QUALITY</label><h3>结果不等于质量</h3><Metric t="决策质量" x="62 / 100" w="62%"/><Metric t="持有期结果" x="-18.4%" w="28%" bad/><p className="muted">结果较差，但部分事前证据和判断链条仍然成立。</p></div></div><div className="card lessons"><label>NEXT TIME</label><h3>Lessons & Checklist</h3>{['把“企稳”写成可验证条件','在下单前记录反向证据','预先写下失效条件'].map((x,i)=><div className="lesson" key={x}><b>0{i+1}</b><span><strong>{x}</strong><small>{['例如：批价连续两周不再下行，且库存周转回到 X 天以内。','北向资金流出是已知信号，下次应明确它对仓位的影响。','当核心假设被证伪时，触发减仓或重新评估。'][i]}</small></span></div>)}</div><p className="cite">ⓘ 证据引用：公司公告、行情数据、公开新闻（演示数据）　›</p></section>;}
-function Evidence({title,sub,a,tone}:{title:string;sub:string;a:string[];tone:string}){return <div className={'card ev '+tone}><div className="evhead"><span><h3>{title}</h3><small>{sub}</small></span><i>{a.length} 条</i></div>{a.map((x,i)=><div className="evitem" key={x}><b>0{i+1}</b><span>{x}</span><ChevronRight size={14}/></div>)}</div>;}
-function Tag({t,c,children}:{t:string;c:string;children:string}){return <div className="tag"><b className={c}>{t}</b><span>{children}</span></div>}
-function Metric({t,x,w,bad}:{t:string;x:string;w:string;bad?:boolean}){return <div className="metric"><div><span>{t}</span><b className={bad?'bad':''}>{x}</b></div><i className={bad?'bad':''} style={{width:w}}/></div>}
+
+function Chip({ label, value, options, onChange }: { label: string; value: string; options?: string[]; onChange: (value: string) => void }) { return <label className="chip"><small>{label}</small>{options ? <select value={value} onChange={(e) => onChange(e.target.value)}>{options.map((option) => <option key={option}>{option}</option>)}</select> : <input value={value === '待确认' ? '' : value} placeholder={value} onChange={(e) => onChange(e.target.value)}/>}</label>; }
+function Running({ events }: { events: ReviewEvent[] }) { const latest = events[events.length - 1]; return <div className="running-inline"><span className="spinner"/><div><b>LIVE REVIEW STATUS</b><p>{latest?.message || '正在等待服务端事件…'}</p></div><small>{events.length ? `${events.length} events` : 'connecting'}</small></div>; }
+function Report({ result }: { result: Result }) { return <div className="report"><div className="report-summary"><span className="complete"><Check size={12}/> COMPLETE</span><h2>{result.input.symbol}<span> · {result.input.side === 'buy' ? '买入' : '卖出'}</span></h2><p>{result.summary}</p><strong>62<small>判断质量</small></strong></div><div className="report-t0"><b>T0 · {result.input.executedAt.replace('T', ' ')}</b><span>时间边界已冻结</span></div><Evidence title="Ex-Ante · 当时已知" items={result.ante} tone="ante"/><Evidence title="Ex-Post · 事后信息" items={result.post} tone="post"/><div className="report-block"><span className="eyebrow">ATTRIBUTION</span><h3>归因可信度</h3><p><b className="tag green">SUPPORTED</b> 渠道库存改善是 T0 前可支持的核心判断。</p><p><b className="tag yellow">UNCERTAIN</b> 批价企稳缺少明确验证条件。</p></div><div className="report-block"><span className="eyebrow">NEXT TIME</span><h3>Checklist</h3>{['把“企稳”写成可验证条件','下单前记录反向证据','预先写下失效条件'].map((item, i) => <div className="check-item" key={item}><b>0{i + 1}</b><span>{item}</span></div>)}</div></div>; }
+function Evidence({ title, items, tone }: { title: string; items: string[]; tone: string }) { return <div className={'report-block evidence-block '+tone}><div className="evidence-title"><h3>{title}</h3><small>{items.length} 条</small></div>{items.map((item, index) => <div className="evidence-item" key={item}><b>0{index + 1}</b><span>{item}</span><ChevronRight size={13}/></div>)}</div>; }

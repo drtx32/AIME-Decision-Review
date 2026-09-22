@@ -18,6 +18,7 @@ export interface OpenAICompatibleOptions {
 
 export class OpenAICompatibleProvider implements ModelProvider {
   readonly id = "openai-compatible";
+  readonly configured = true;
   readonly modelName: string;
   private client: OpenAI;
 

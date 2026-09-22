@@ -4,6 +4,7 @@
  */
 
 export interface AppConfig {
+  runtime: "development" | "production";
   port: number;
   sqlitePath: string;
   logLevel: "debug" | "info" | "warn" | "error";
@@ -103,6 +104,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     (env.PORT === "3000" && nodeEnv !== "test");
 
   return {
+    runtime: env.NODE_ENV === "production" ? "production" : "development",
     port: Number(env.PORT ?? 3000),
     sqlitePath: env.SQLITE_PATH ?? "./data/decision-review.db",
     logLevel: (env.LOG_LEVEL as AppConfig["logLevel"]) ?? "info",

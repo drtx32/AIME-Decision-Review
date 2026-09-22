@@ -108,4 +108,37 @@ describe("Decision Review Agent — vertical slice scenarios", () => {
     const labels = outcome.result.biases.map((b) => b.label);
     expect(labels).toContain("overconfidence-language");
   });
+
+  test("invalid structured judgment never fabricates supported attribution", async () => {
+    const id = `rev_${crypto.randomUUID()}`;
+    ctx.repo.createRun(id, baseDecision, baseDecision.executedAt);
+    ctx.deps.provider = { id: "invalid", modelName: "invalid", configured: true, complete: async () => ({ text: "not-json" }) };
+    const outcome = await new DecisionReviewAgent(ctx.deps).run(id, baseDecision);
+    expect(outcome.result.attribution).toEqual([]);
+    expect(outcome.result.decisionQuality.rating).toBe("insufficient");
+    expect(outcome.result.uncertainties.some((item) => /missing or invalid JSON/i.test(item))).toBe(true);
+    expect(ctx.repo.getRun(id)?.status).toBe("partial");
+  });
+
+  test("nonexistent evidence IDs are rejected and do not become supported claims", async () => {
+    const id = `rev_${crypto.randomUUID()}`;
+    ctx.repo.createRun(id, baseDecision, baseDecision.executedAt);
+    ctx.deps.provider = { id: "ungrounded", modelName: "ungrounded", configured: true, complete: async () => ({ text: JSON.stringify({ rating: "good", verdict: "looks good", attribution: [{ claim: "unsupported claim", status: "supported", evidenceIds: ["does-not-exist"] }] }) }) };
+    const outcome = await new DecisionReviewAgent(ctx.deps).run(id, baseDecision);
+    expect(outcome.result.attribution).toEqual([]);
+    expect(outcome.result.citations.every((citation) => outcome.result.exAnteEvidence.some((evidence) => evidence.id === citation.evidenceId))).toBe(true);
+    expect(outcome.result.uncertainties.some((item) => /outside the ex-ante set|No model attribution/i.test(item))).toBe(true);
+    expect(ctx.repo.getRun(id)?.status).toBe("partial");
+  });
+
+  test("missing rating is insufficient rather than fair-by-evidence-count", async () => {
+    const id = `rev_${crypto.randomUUID()}`;
+    ctx.repo.createRun(id, baseDecision, baseDecision.executedAt);
+    ctx.deps.provider = { id: "no-rating", modelName: "no-rating", configured: true, complete: async () => ({ text: JSON.stringify({ verdict: "evidence exists", attribution: [] }) }) };
+    const outcome = await new DecisionReviewAgent(ctx.deps).run(id, baseDecision);
+    expect(outcome.result.decisionQuality.rating).toBe("insufficient");
+    expect(outcome.result.decisionQuality.rating).not.toBe("fair");
+    expect(outcome.result.uncertainties.some((item) => /valid rating/i.test(item))).toBe(true);
+    expect(ctx.repo.getRun(id)?.status).toBe("partial");
+  });
 });

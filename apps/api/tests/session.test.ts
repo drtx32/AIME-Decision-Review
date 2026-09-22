@@ -129,7 +129,7 @@ describe("Conversation session contract", () => {
     const snapshot = await restored.json() as any;
     expect(snapshot.session.status).toBe("partial");
     expect(snapshot.messages.some((message: any) => message.role === "assistant")).toBe(true);
-    expect(snapshot.messages.some((message: any) => message.content.includes("数据源"))).toBe(true);
+    expect(snapshot.messages.some((message: any) => message.content.includes("Structured model judgment"))).toBe(true);
     expect(snapshot.memories).toHaveLength(3);
     expect(snapshot.memories.every((memory: any) => memory.sourceSessionId === body.sessionId && memory.sourceDecisionId === body.decisions[0].id)).toBe(true);
     expect((await ctx.app.request(`/api/sessions/${body.sessionId}/confirm`, { method: "POST", headers: { cookie } })).status).toBe(202);

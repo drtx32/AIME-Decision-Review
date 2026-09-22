@@ -55,7 +55,7 @@ describe("Review API contract", () => {
       body: JSON.stringify({ symbol: "600519", market: "CN", action: "buy", executedAt: "2024-03-15T00:00:00Z", userReason: "channel checks" }),
     });
     expect(review.status).toBe(503);
-    expect(await review.json()).toEqual({ error: "MODEL_NOT_CONFIGURED", message: "当前未配置可用的大模型服务，请联系管理员。" });
+    expect(await review.json()).toMatchObject({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", message: "当前未配置可用的大模型服务，请联系管理员。" });
   });
 
   test("POST /api/reviews rejects non-compliant (T11) deterministic-prediction language", async () => {

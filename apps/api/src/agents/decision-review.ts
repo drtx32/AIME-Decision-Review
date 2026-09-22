@@ -146,9 +146,10 @@ export class DecisionReviewAgent {
     const hasPermanent = toolStatuses.some((s) => s.status === "permanent_error");
     const allEmpty = toolStatuses.every((s) => s.status === "empty");
     const hasTransient = toolStatuses.some((s) => s.status === "transient_error");
+    const judgmentDegraded = draft.uncertainties.some((item) => item.startsWith("Structured model judgment" ) || item.startsWith("A model attribution") || item.startsWith("No model attribution"));
     let terminal: ReviewStatus = "completed";
     if (hasPermanent) terminal = "failed";
-    else if (allEmpty || hasTransient) terminal = "partial";
+    else if (allEmpty || hasTransient || judgmentDegraded) terminal = "partial";
 
     repo.updateStatus(reviewId, terminal, { finishedAt: new Date().toISOString() });
     repo.saveResult(reviewId, finalResult);
@@ -276,23 +277,45 @@ export class DecisionReviewAgent {
     }));
 
     const exAnteIds = new Set(exAnte.map((e) => e.id));
-    const modelAttribution = Array.isArray(judgment?.attribution)
-      ? judgment.attribution
-        .filter((item: any) => item && typeof item.claim === "string" && Array.isArray(item.evidenceIds))
-        .map((item: any) => ({
-          claim: item.claim.trim(),
+    const judgmentIssues: string[] = [];
+    if (!judgment) judgmentIssues.push("Structured model judgment was missing or invalid JSON.");
+
+    const validRatings = new Set(["poor", "fair", "good", "strong"]);
+    const modelRating = typeof judgment?.rating === "string" && validRatings.has(judgment.rating)
+      ? judgment.rating
+      : null;
+    if (!modelRating) judgmentIssues.push("Structured model judgment did not provide a valid rating.");
+
+    const modelAttribution: AttributionItem[] = [];
+    if (!Array.isArray(judgment?.attribution) || judgment.attribution.length === 0) {
+      judgmentIssues.push("Structured model judgment did not provide grounded attribution.");
+    } else {
+      for (const rawItem of judgment.attribution) {
+        const item = rawItem as any;
+        if (!item || typeof item.claim !== "string" || !Array.isArray(item.evidenceIds)) {
+          judgmentIssues.push("A model attribution item was malformed.");
+          continue;
+        }
+        const validEvidenceIds = item.evidenceIds.filter(
+          (id: unknown): id is string => typeof id === "string" && exAnteIds.has(id)
+        );
+        if (validEvidenceIds.length !== item.evidenceIds.length) {
+          judgmentIssues.push("A model attribution item referenced evidence outside the ex-ante set.");
+        }
+        const claim = item.claim.trim();
+        if (!claim || validEvidenceIds.length === 0) {
+          judgmentIssues.push("A model attribution item had no valid grounded evidence.");
+          continue;
+        }
+        modelAttribution.push({
+          claim,
           status: ["supported", "uncertain", "unsupported"].includes(item.status) ? item.status : "uncertain",
-          evidenceIds: item.evidenceIds.filter((id: unknown): id is string => typeof id === "string" && exAnteIds.has(id)),
-        }))
-        .filter((item: AttributionItem) => item.claim.length > 0 && item.evidenceIds.length > 0)
-      : [];
-    const attribution: AttributionItem[] = modelAttribution.length > 0
-      ? modelAttribution
-      : exAnte.slice(0, 5).map((e) => ({
-        claim: `T0 前证据：${truncate(e.title, 80)}。${truncate(e.content, 160)}`,
-        status: "supported" as const,
-        evidenceIds: [e.id],
-      }));
+          evidenceIds: validEvidenceIds,
+        });
+      }
+      if (modelAttribution.length === 0) judgmentIssues.push("No model attribution survived evidence validation.");
+    }
+    const attribution = modelAttribution;
 
     const biases: BiasFlag[] = (judgment?.bias_signals ?? []).filter((item: any) => item && typeof item.label === "string").map((item: any) => ({ label: item.label, description: String(item.description ?? item.label), severity: ["low", "medium", "high"].includes(item.severity) ? item.severity : "medium" }));
     if (decision.userReason && /sure|certain|definitely/i.test(decision.userReason)) {
@@ -330,6 +353,7 @@ export class DecisionReviewAgent {
     ];
 
     const uncertainties = [];
+    uncertainties.push(...judgmentIssues);
     if (decision.timePrecision === "approximate") {
       uncertainties.push("T0 was user-confirmed as approximate; timestamp-bound findings may shift within the stated time window.");
     }
@@ -358,10 +382,10 @@ export class DecisionReviewAgent {
       exAnteEvidence: exAnte,
       exPostEvidence: exPost,
       decisionQuality: {
-        rating: ["poor", "fair", "good", "strong"].includes(judgment?.rating ?? "")
-          ? judgment?.rating ?? "fair"
-          : exAnte.length > 0 ? "fair" : "poor",
-        reasoning: judgment?.verdict || judgment?.ex_ante_summary || `Decision reviewed against ${exAnte.length} ex-ante evidence item(s); ${biases.length} bias signal(s) flagged.`,
+        rating: modelRating ?? "insufficient",
+        reasoning: judgmentIssues.length > 0
+          ? "Structured model judgment is insufficient; evidence is not being promoted to supported conclusions."
+          : judgment?.verdict || judgment?.ex_ante_summary || "Structured model judgment did not provide a conclusion.",
         processFactors: [
           `${exAnte.length} pre-T0 evidence item(s) reviewed.`,
           `${decision.userReason ? "User reason recorded" : "No user reason recorded"}; rating based on unknown rubric.`,

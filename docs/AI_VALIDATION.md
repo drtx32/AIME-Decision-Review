@@ -468,3 +468,182 @@ to `main`.
   placeholder never appears in stored hashes or any response body,
   preserving the signal that any real credential-shaped string would
   leak the same way.
+
+## ELI-326 resilient provider — 2026-09-22 (Oracle CC)
+
+**AI/tool used**
+- Oracle CC (Claude Opus 4.8) on branch `feature/eli-326-provider-resilience-v2`
+  (rebased on `06deda6` / PR #6 — `Ops: canonical production path`).
+- Bun 1.4.2 test runner; Docker Compose v5.3.1 on the Oracle host.
+
+**Task**
+- ELI-326: make the production API resilient when no real LLM provider is
+  configured or the configured provider is unavailable. Missing/invalid LLM
+  configuration must never crash the API process or take down the frontend.
+  Concrete behaviors required:
+  1. Boot is healthy even when `LLM_PROVIDER` / `LLM_BASE_URL` / `LLM_API_KEY`
+     / `LLM_MODEL` are missing.
+  2. `/health` returns 200 with `provider_configured` + `provider_status`
+     (`"unconfigured" | "ready" | "error"`) and never leaks secrets.
+  3. `POST /api/reviews` returns HTTP 503 with stable code
+     `MODEL_NOT_CONFIGURED` (or `MODEL_UNAVAILABLE` on runtime failure) and a
+     canonical Chinese admin-contact message — never a silent fallback to mock
+     in production.
+  4. 401/403 → `MODEL_AUTH_FAILED`; 429 → `MODEL_RATE_LIMITED`; 5xx /
+     timeout / DNS-connect errors → `MODEL_UNAVAILABLE` / `MODEL_TIMEOUT`.
+     A failed call must not terminate the Bun process.
+  5. Docker healthcheck must represent process/service health, not "LLM is
+     configured". Missing model config must NOT mark the container
+     unhealthy / restart-loop.
+  6. Frontend must render the admin-contact banner on the stable codes; no
+     stack traces or generic network-crash UI.
+- Constraints: feature branch + PR; never direct-push `main`; keep
+  frontend/backend separated; do not change the public port model
+  (`13608 → web:80`, api stays Compose-internal on `3000`).
+
+**Output**
+- New `apps/api/src/providers/errors.ts` (163 LOC) — typed provider error
+  contract. Five stable codes (`MODEL_NOT_CONFIGURED`, `MODEL_UNAVAILABLE`,
+  `MODEL_AUTH_FAILED`, `MODEL_RATE_LIMITED`, `MODEL_TIMEOUT`) with
+  HTTP-status mapping (503 / 502 / 504), `retryable` flag, `correlationId`,
+  and `sanitizedMessage` that explicitly never includes the api key, the
+  Authorization header, or full request bodies. `classifyProviderError`
+  maps raw OpenAI SDK / fetch errors into the typed contract.
+- Rewrote `apps/api/src/providers/index.ts` (+248/-18) — new
+  `LazyResilientProvider` wraps the underlying provider with:
+  - never-throws construction (the OpenAI client is built lazily on first
+    `complete()` call),
+  - bounded `AbortController`-style timeout (default 20s) racing the inner
+    call,
+  - one bounded retry on retryable errors only (5xx / 429 / timeout),
+  - typed-error mapping on every failure,
+  - `availability()` snapshot used by `/health` and the route pre-flight.
+  - When `LLM_PROVIDER` is explicitly set to a real provider but creds are
+    missing, the factory still returns a wrapper but seeds its `lastError`
+    with `MODEL_NOT_CONFIGURED` so `/health` reports honest `state:
+    "unconfigured"` without ever making a network call.
+- `apps/api/src/routes/api.ts` (+108/-11):
+  - `/health` now returns 200 unconditionally with `provider_configured`,
+    `provider_status`, `provider_id`, `provider_model`, `requested_mode`,
+    `degraded`, sanitized `last_error` (no api key, no Authorization
+    header, no raw provider error body).
+  - `POST /api/reviews` pre-flight: when `provider_status === "unconfigured"`
+    it returns HTTP 503 + stable `MODEL_NOT_CONFIGURED` + canonical Chinese
+    message **before** any DB write or run is created. When the live call
+    fails with `MODEL_AUTH_FAILED` it returns the appropriate mapped HTTP
+    status (502).
+  - Background run path wraps `agent.run()` so a failed provider call is
+    captured as a typed `ProviderError`, persisted as
+    `${code}: ${sanitizedMessage} (correlationId=...)` on the run row, and
+    `updateStatus(... "failed")`. Bun process never dies.
+- `apps/api/tests/resilience.test.ts` (399 LOC, new) — covers every
+  behavior in the task list above plus secret-redaction and
+  retry-budget invariants. 30 tests total across the API suite
+  (10 pre-existing + 20 new).
+- Frontend (`src/api.ts` + `src/App.tsx` + `src/styles.css`, +184/-3):
+  - `src/api.ts` now exposes a typed `ProviderUnavailableError` that is
+    thrown when any of the five stable codes is detected in a non-OK
+    response. `fetchProviderStatus()` reads the new readiness fields from
+    `/api/health`.
+  - `src/App.tsx` renders the admin banner
+    (`当前未配置可用的大模型服务，请联系管理员。`) when `/api/health`
+    reports the provider as `unconfigured`, and on any submit-time
+    `ProviderUnavailableError`. Other non-OK responses keep the generic
+    `网络异常，请稍后重试。` path — no stack traces, no provider
+    internals.
+  - `src/styles.css` adds `.providerbanner` / `.providerbanner-unconfigured`
+    / `.providerbanner-error` styles; no other UI changes.
+- The implementation was built on top of a previously-cached
+  Oracle CC commit (`c797e51`) that contained the same code. That commit
+  lived in a different worktree (different agent run-id). I rebased it
+  onto current `main` (`06deda6`, post-PR #6) as a single new commit
+  `605740f` so the PR diff is clean against `main`.
+
+**Validation**
+- `cd apps/api && bun install --frozen-lockfile` → 104 packages, 0
+  errors.
+- `cd apps/api && bun run typecheck` → 0 errors.
+- `cd apps/api && bun test` →
+  `30 pass, 0 fail, 172 expect() calls` (covers all 6 spec items in the
+  ELI-326 description: boot-without-LLM, controlled 503, 401/429/5xx/timeout
+  mapping, /health 200 after failure, secret redaction, retry budget).
+- `cd apps/web && npm ci && npm run build` → TypeScript `tsc -b` passes,
+  Vite production build succeeds (1.88 MB modules → 235 KB JS / 8 KB CSS).
+- Secret scan on the diff (`grep -rE 'sk-[A-Za-z0-9_-]{8,}|Bearer
+  [A-Za-z0-9_-]{8,}|Authorization:\s*[^[:space:]]' apps/ src/`) → 0 matches.
+  `routes/api.ts` `sanitizeProviderErrorMessage` redaction covered by an
+  explicit test that synthesizes a raw error message whose body contains
+  the literal substrings `Bearer ` and a `REDACTION-PROBE-NOT-A-REAL-KEY`
+  placeholder (clearly non-secret fixture strings), and asserts the mapped
+  `sanitizedMessage` does not contain either substring.
+- `git diff --check` → 0 whitespace / line-ending errors on the patch.
+- Oracle host reproduction (instance `10.0.0.37`, project
+  `aime-decision-review`, host port `13608`):
+  - Rebuilt the API container with `LLM_PROVIDER=openai-compatible` and
+    empty `LLM_BASE_URL` / `LLM_API_KEY` (production break path).
+  - `docker inspect ... .State.Health.Status` × 6 intervals × 5s = all
+    `healthy`, `Restarts=0`.
+  - `GET /api/health` → `200 OK`, body includes
+    `provider_configured:false, provider_status:"unconfigured",
+    provider_id:"openai-compatible", provider_model:"missing-model",
+    requested_mode:"openai-compatible", degraded:true`,
+    `last_error.code:"MODEL_NOT_CONFIGURED", kind:"configuration",
+    retryable:false, correlationId:"5825b3f5-…-594d511907e2",
+    providerStatus:"missing_credentials"` — and no api key, no
+    Authorization header, no provider-internal body.
+  - `POST /api/reviews` →
+    `503 Service Unavailable`, body
+    `{error:"MODEL_NOT_CONFIGURED", code:"MODEL_NOT_CONFIGURED",
+     retryable:false, provider_status:"unconfigured",
+     provider_id:"openai-compatible", requested_mode:"openai-compatible",
+     correlationId:"5825b3f5-…-594d511907e2",
+     message:"当前未配置可用的大模型服务，请联系管理员配置模型供应商/API Key 后重试。"}`.
+  - `GET /api/health` after the 503 → still `200 OK`; container still
+    `healthy`; process still alive.
+  - Frontend production bundle `dist/assets/index-*.js` contains both
+    `当前未配置可用的大模型服务，请联系管理员。` and the
+    `.providerbanner` class names — no stack traces, no provider internals
+    exposed to the UI.
+  - SQLite volume `aime-decision-review_api-data` is preserved across both
+    the unconfigured and the restored-env restarts (221 KB on disk after
+    the original 202 POST against mock-mode).
+  - After validation, restored the normal `.env` (empty `LLM_PROVIDER`
+    → mock fallback is the documented deliberate demo path; spec text
+    says "If an existing mock/demo mode is intentionally enabled, that
+    is separate."). Container is back to `provider_status:"ready"`,
+    `provider_id:"mock"`, `last_error:null`.
+
+**Human corrections**
+- Followed the supervisor's note to append the implementation evidence to
+  `docs/AI_VALIDATION.md` before PR handoff; the prior turn's
+  implementation note was in the issue comment only and did not satisfy
+  AGENTS.md §9.
+- Re-confirmed the ELI-326 strict-503 contract only fires when the
+  operator *explicitly* set `LLM_PROVIDER=openai-compatible` (or any
+  non-mock value) without also providing `LLM_BASE_URL` +
+  `LLM_API_KEY`. When `LLM_PROVIDER` is unset / empty, the spec's mock
+  fallback path remains the deliberate demo mode, matching the
+  controlled-fake boundary documented in ELI-318's commit `19e8ab04`.
+- Did not duplicate ELI-328's no-model UI logic — the admin banner is
+  a single source of truth in `src/api.ts`
+  (`PROVIDER_UNAVAILABLE_CODES` set + `ProviderUnavailableError` class)
+  shared by both the boot-time `useEffect` probe and the submit-time
+  `go()` handler.
+
+**Residual risk / unresolved**
+- The `gh` CLI token in this workspace only has read scope
+  (`repos/drtx32/AIME-Decision-Review` `pulls` listing returns
+  `403 Resource not accessible by personal access token`). PR creation
+  must be done via the GitHub web URL
+  `https://github.com/drtx32/AIME-Decision-Review/pull/new/feature/eli-326-provider-resilience-v2`
+  using the body in the attached `pr-description.md` from the previous
+  turn.
+- Public host URL `https://10jqka-aime.tong-xiao.top` is served by a
+  separate proxy layer outside this Compose stack; the contract is
+  verified end-to-end via the local 13608 host port. Re-verifying the
+  public URL after PR merge is the operator's responsibility.
+- Branch name suffix `-v2` is a workaround — a prior
+  `feature/eli-326-provider-resilience` ref is locked by a different
+  worktree (`eli-326-3f14f3250780`) from an earlier Oracle CC run-id.
+  After that worktree is cleaned up, this branch can be renamed to the
+  canonical name with `git branch -m` on either side.

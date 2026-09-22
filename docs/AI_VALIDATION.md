@@ -508,3 +508,47 @@ data".
    available; this is not a transport bug.
 
 PR #3 stays Draft; status `in_progress`; assignee Oracle CC.
+
+## ELI-318 rebase onto ELI-325 / PR #9 — 2026-09-22 (Oracle CC)
+
+`feature/eli-318-real-llm-mcp-integration` rebased onto
+`add7b86` (PR #9, bootstrap admin / managed users / HttpOnly
+session / must_change_password gate). Rebase required three conflict
+resolutions in `docs/AI_VALIDATION.md` (c308d11 / 416f6c5 / 3612732
+each appended new content after the previous mainline entry) and one
+`src/App.tsx` conflict (c308d11's pre-auth UI vs ELI-325's auth-aware
+UI).
+
+**What was NOT dropped from ELI-325**
+
+- `apps/api/src/auth/{middleware,routes,admin,repository,passwords,types}.ts` — all present, unchanged.
+- `apps/api/src/index.ts` — still calls `UserRepository.ensureBootstrapAdmin` before `buildServer`.
+- `apps/api/src/server.ts` — still wires `userRepo` into `buildServer`.
+- `apps/api/src/routes/api.ts` — still gates `/api/reviews/*` with `requireAuth + gateMustChangePassword`, `/api/*` with `rejectClientUserIdHeader`, plus `/api/auth/*` and `/api/admin/*` mounts.
+- `src/auth-api.ts` — kept; provides `auth.login / me / logout / changePassword` and `adminUsers.*`.
+- `src/App.tsx` — rewritten to **combine** the ELI-325 auth shell (login, change-password, admin, logout, Header) with the ELI-318 real backend adapter (`createReview / pollResult` from `src/api.ts`). The previous pre-rebase App.tsx used only the auth shell + the static mock; the new version routes every authenticated call through `createReview / pollResult` with `credentials: "include"` so the HttpOnly cookie flows naturally.
+- `src/api.ts` — added `credentials: "include"` to the three `fetch` calls (`POST /api/reviews`, `GET /api/reviews/:id`, `GET /api/reviews/:id/result`) so the session cookie is sent on every review round-trip.
+
+**Conflict resolution in `src/App.tsx`**
+
+- Took ELI-325 main's auth shell (Header, LoginScreen, ChangePasswordScreen, AdminScreen, plus the new `Screen` type and the screen-router in `App`).
+- Replaced the body of the `Home` submit handler (the `setS("running") … mock.createReview / mock.result` block) with the ELI-318 real path (`createReview` / `pollResult`), wrapped in try/catch so a backend error renders a `failed` ReviewResult rather than crashing the UI.
+- Replaced the `Result` component to read the new `ReviewResult.result` shape (decision, exAnteEvidence, exPostEvidence, decisionQuality, outcome, attribution, lessons, nextChecklist, toolStatuses, citations) instead of the old `Result { id, input, summary, ante, post }` shape.
+
+**Validation gate after rebase**
+
+- `cd apps/api && bun run typecheck` — 0 errors.
+- `cd apps/api && bun test` — **72/72 pass, 302 `expect()`** across 6 files (was 33/186 pre-rebase; the +39 tests are the ELI-325 auth suite).
+- `npm run build` (root) — Vite production build clean (`dist/assets/index-*.js` 248 kB / 78 kB gz, css 10 kB / 3 kB gz).
+- `apps/api/scripts/llm-smoke.ts` and `apps/api/scripts/mcp-probe.ts` still runnable in fake + real-gateway modes (no changes in this round).
+- Live auth gate spot-check: `POST /api/reviews` with no cookie → `401 {"error":"unauthenticated"}` ✓. Post-login E2E was not re-driven in this round because the prod DB users-table is on the live deployment, not in this workdir; the equivalent paths are covered by `bun test tests/api.test.ts` (login + cookie + 3 review tests) and `bun test tests/auth.test.ts` (39 cases).
+- Secret scan — only `sk-fake-smoke-token-for-trace-only` literal in `scripts/llm-smoke.ts` (intentional fake). No production credentials in any trace, log, or commit.
+
+**Outstanding (unchanged from prior turn)**
+
+1. iFinD real-gateway 404 on every documented slug — operator confirmation of the correct base path / slug still needed. `McpStreamableHttpClient` correctly classifies these as `PermanentMcpError`.
+2. `normalizeItems.relationToDecision` uses `ms <= Date.now()` (T0-agnostic) — small follow-up to thread T0 through.
+3. Retry / backoff in `LiveMcpAdapter` — follow-up.
+4. `HITHINK_FINANCE_TOOL_MAP` is shared across all Fuyao servers; applying `price:get_a_share_prices_snapshot` to the `meta` server produces a 403 (correctly surfaced as `permanent_error`). Per-server toolMap is a small follow-up.
+
+PR #3 head now `8c40086` (will be amended to the new rebase head); force-pushed; still Draft.

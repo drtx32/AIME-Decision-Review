@@ -77,6 +77,7 @@ export async function createReview(input: Input): Promise<{ id: string; input: I
   };
   const res = await fetch(`${apiBase}/api/reviews`, {
     method: "POST",
+    credentials: "include",
     headers: { "content-type": "application/json" },
     body: JSON.stringify(body),
   });
@@ -98,7 +99,7 @@ export async function pollResult(id: string, input: Input): Promise<ReviewResult
   }
   // Poll status until terminal.
   for (let i = 0; i < 120; i++) {
-    const statusRes = await fetch(`${apiBase}/api/reviews/${id}`);
+    const statusRes = await fetch(`${apiBase}/api/reviews/${id}`, { credentials: "include" });
     if (!statusRes.ok) throw new Error(`poll status failed: HTTP ${statusRes.status}`);
     const statusBody = (await statusRes.json()) as { status: string };
     if (
@@ -106,7 +107,7 @@ export async function pollResult(id: string, input: Input): Promise<ReviewResult
       statusBody.status === "partial" ||
       statusBody.status === "failed"
     ) {
-      const resultRes = await fetch(`${apiBase}/api/reviews/${id}/result`);
+      const resultRes = await fetch(`${apiBase}/api/reviews/${id}/result`, { credentials: "include" });
       if (!resultRes.ok) throw new Error(`fetch result failed: HTTP ${resultRes.status}`);
       const resultBody = (await resultRes.json()) as { status: string; result: ReviewResult["result"] };
       return { id, status: resultBody.status, result: resultBody.result };

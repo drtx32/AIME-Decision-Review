@@ -19,8 +19,8 @@ services:
       IFIND_MCP_SERVERS: ${IFIND_MCP_SERVERS:-stock,news,index}
     volumes:
       - api-data:/var/lib/aime
-    ports:
-      - "${API_PORT:-3000}:3000"
+    expose:
+      - "3000"
     healthcheck:
       test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/health || exit 1"]
       interval: 5s
@@ -38,7 +38,7 @@ services:
       api:
         condition: service_healthy
     ports:
-      - "${WEB_PORT:-8080}:80"
+      - "${WEB_PORT:-13608}:80"
 
 volumes:
   api-data:

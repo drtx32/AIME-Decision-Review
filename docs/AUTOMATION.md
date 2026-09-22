@@ -25,9 +25,13 @@ The supervisor reviews GitHub push / pull_request events and then:
 Workflow:
 `.github/workflows/multica-supervisor.yml`
 
+The checked-in workflow is authoritative: it listens for pushes to `main` and
+pull-request events targeting `main`. It does not listen for pushes to
+`feature/**`; feature-branch pushes are covered when a pull request event is
+emitted.
+
 Triggers:
 - push to `main`
-- push to `feature/**`
 - pull request opened/synchronized/reopened/ready-for-review/closed
 - manual `workflow_dispatch`
 

@@ -176,3 +176,17 @@ Expected:
 - [ ] compliance boundary tested
 - [ ] secrets absent from repo/build/logs
 - [ ] known limitations documented
+
+## Execution results — 2026-09-22
+
+| Check | Result | Evidence / limitation |
+| --- | --- | --- |
+| Frontend production build | PASS | `npm ci && npm run build` completed locally; produces `dist/`. |
+| Backend typecheck | PASS (baseline) | `bun run typecheck` passed in the prior backend MVP validation; rerun after this docs/origin change is pending because Bun is unavailable in the current runner. |
+| Backend tests | PASS (baseline) | Prior MVP suite passed 11/11; the new configured-origin CORS test requires a Bun rerun in a Bun-enabled environment. |
+| API health smoke | PENDING | Command is documented; no production server or live URL is claimed in this branch. |
+| Secret scan | PENDING | Must be rerun against the final build and deployment environment before submission. |
+| Live MCP/model integration | PENDING | Requires credentials/connectivity; current evidence is mock-provider based. |
+| Browser / deployed URL | PENDING | Static deployment and real frontend API adapter remain outstanding. |
+
+These results are local repository evidence, not evidence of a live deployment. Update this section with the command output, URL, and date after deployment; do not convert pending items into passes without running them.

@@ -33,9 +33,39 @@ describe("Conversation session contract", () => {
     expect(calls).toEqual(["DecisionExtractionResult"]);
     const blocked = await ctx.app.request(`/api/sessions/${body.sessionId}/confirm`, { method: "POST", headers: { cookie: alice } });
     expect(blocked.status).toBe(422);
-    expect((await blocked.json() as any).decisionIds).toHaveLength(3);
+    const blockedBody = await blocked.json() as any;
+    expect(blockedBody.decisionIds).toEqual([body.decisions[1].id, body.decisions[2].id]);
     const hidden = await ctx.app.request(`/api/sessions/${body.sessionId}`, { headers: { cookie: bob } });
     expect(hidden.status).toBe(404);
+  });
+
+  test("explicitly confirmed approximate T0 stays approximate and is visible in uncertainty", async () => {
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "approx", "approx-pass");
+    const candidate = { ...extraction.decisions[0], needsConfirmation: ["确认近似成交时间"] };
+    ctx.deps.provider = {
+      id: "test", modelName: "test", configured: true,
+      complete: async (req) => req.schemaHint === "DecisionExtractionResult"
+        ? { text: JSON.stringify({ decisions: [candidate] }) }
+        : { text: JSON.stringify({ verdict: "基于已检索的 T0 前证据完成复盘。", lessons: ["记录时间窗口与失效条件。"] }) },
+    } satisfies ModelProvider;
+    const created = await ctx.app.request("/api/sessions", {
+      method: "POST", headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ message: "昨天大概下午卖出金牛化工", clientNow: "2025-03-18T09:00:00+08:00", timezone: "Asia/Shanghai" }),
+    });
+    const body = await created.json() as any;
+    const decision = body.decisions[0];
+    const patched = await ctx.app.request(`/api/sessions/${body.sessionId}/decisions/${decision.id}`, {
+      method: "PATCH", headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ executedAt: decision.executedAt, timePrecision: "approximate", needsConfirmation: [] }),
+    });
+    expect(patched.status).toBe(200);
+    const confirmed = await ctx.app.request(`/api/sessions/${body.sessionId}/confirm`, { method: "POST", headers: { cookie } });
+    expect(confirmed.status).toBe(202);
+    const restored = await ctx.app.request(`/api/sessions/${body.sessionId}`, { headers: { cookie } });
+    const restoredBody = await restored.json() as any;
+    expect(restoredBody.decisions[0].timePrecision).toBe("approximate");
+    expect(restoredBody.results[0].result.decision.timePrecision).toBe("approximate");
+    expect(restoredBody.results[0].result.uncertainties.some((item: string) => /approximate|近似/i.test(item))).toBe(true);
   });
 
   test("no model cannot create a session or fake decisions", async () => {

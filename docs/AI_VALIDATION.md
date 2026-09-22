@@ -35,6 +35,33 @@ This file records how AI tools are used in the project, what they generated, how
 
 ---
 
+## ELI-333 rerun on PR #7 final candidate — 2026-09-22
+
+**AI/tool used**
+- Oracle Codex with Bun 1.4.2, direct Hono API requests, a structured test provider, and MCP HTTP contract fixtures.
+
+**Task**
+- Re-run the exact required Chinese multi-trade narrative against PR #7 head `5d5ffec98ab5e3a824fc0c9c9afc1c4bf754e1b8`, including approximate T0 confirmation, findings grounding, temporal invariants, learning persistence, and follow-up.
+
+**Output**
+- Before the fix, extraction was correct (exactly 3 decisions: 金牛化工 SELL, 中粮糖业 BUY, 中粮糖业 SELL; 16.57; 2手→200 shares; lunch-break order placement in notes), but `/confirm` blocked all approximate decisions and PATCH could not clear `needsConfirmation`.
+- Minimal fix: known approximate T0 can proceed after explicit confirmation; unknown/null T0 and unresolved confirmation questions still block. The result retains `timePrecision: approximate` and adds an explicit uncertainty.
+- Structured model rating/checklist/attribution are consumed when valid; attribution evidence IDs are restricted to ex-ante IDs. Fallback claims now include actual evidence content rather than generic `Pre-T0 evidence supported...` text.
+- Fuyao envelope `data.timestamp` is now preserved as `metadata.observedAt` and never promoted to `publishedAt`; timestamp-less snapshot items become `empty`, preventing retrieval time or snapshot time from masquerading as event publication time.
+
+**Validation**
+- `bun run typecheck` passed.
+- Full API suite: 63 tests passed after updating the session contract for approximate confirmation; the new approximate-T0 persistence test and MCP snapshot timestamp test passed.
+- Direct API golden path: initial confirm `422`; after explicit approximate confirmations, session `completed`, 3 results, symbols `金牛化工/中粮糖业/中粮糖业`, all 3 results retained `timePrecision=approximate`, all ex-ante/ex-post evidence respected T0 and `retrievedAt >= publishedAt`, and findings were non-template/evidence-grounded.
+- All 3 results contained 3 lessons each; 5 deduplicated learning memories had aggregate strength 9, showing all lesson occurrences were persisted/reinforced rather than only the first result. Follow-up returned 201 and was grounded on the current session.
+- No LLM/MCP credentials were available on the Oracle host, so real MiniMax/Fuyao/iFinD calls were not run. The live adapter contract keeps iFinD 404/permanent errors visible and does not fabricate success; no secrets were printed.
+
+**Human corrections**
+- No new architecture or PR was created. Changes are limited to the existing PR #7 candidate worktree.
+
+**Residual risk / unresolved**
+- The real provider and real upstream payload semantics still require credentialed host verification before submission; envelope-only snapshot data is intentionally treated as unusable for T0-bound publication reasoning until an item-level event/publication timestamp is supplied.
+
 ## Initial project decisions — 2026-09-22
 
 **AI/tool used**

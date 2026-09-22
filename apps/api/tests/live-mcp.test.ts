@@ -47,7 +47,7 @@ describe("Live MCP adapter contract", () => {
     expect(new Headers(receivedHeaders).get("Authorization")).toBe("Bearer secret");
   });
 
-  test("uses the upstream envelope timestamp and T0 for relation", async () => {
+  test("does not mislabel an upstream snapshot timestamp as publication time", async () => {
     globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { method: string };
       const result = body.method === "tools/list"
@@ -59,8 +59,7 @@ describe("Live MCP adapter contract", () => {
     }) as typeof fetch;
     const adapter = new LiveMcpAdapter({ provider: "fuyao", serverKey: "a-share", endpoint: "https://mcp.example.test/a-share", credentials: { apiKey: "secret" }, toolForIntent: () => "a_share_price", fetchImpl: globalThis.fetch });
     const result = await adapter.fetch({ intent: "price", symbol: "600519", market: "CN", T0: "2025-03-17T00:00:00Z" });
-    expect(result.status).toBe("success");
-    expect(result.data?.[0].relationToDecision).toBe("ex_post");
-    expect(result.data?.[0].publishedAt).toBe("2025-03-18T00:00:00.000Z");
+    expect(result.status).toBe("empty");
+    expect(result.data).toEqual([]);
   });
 });

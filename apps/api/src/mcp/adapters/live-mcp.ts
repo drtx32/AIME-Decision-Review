@@ -228,15 +228,15 @@ export function parseToolContent(
       const obj = parsed as Record<string, unknown>;
       // Some gateways (e.g. Fuyao) wrap successful payloads as
       //   { code, message, data: { item | items | data | results | [...] , timestamp } }
-      // We unwrap the envelope, propagate any upstream `data.timestamp` (ms
-      // epoch) as each item's `publishedAt` source so T0 hard wall remains
-      // intact (the timestamp comes from upstream, not from `retrievedAt`).
+      // We unwrap the envelope. `data.timestamp` is a gateway observation /
+      // snapshot time, not proof of publication or event time; preserve it as
+      // metadata and require an item-level publication timestamp for T0 use.
       const envelope = unwrapEnvelope(obj);
       const envelopeTs = envelope ? readEnvelopeTimestamp(obj) : null;
       if (envelope) {
         for (const child of envelope) {
           if (child && typeof child === "object" && envelopeTs !== null) {
-            items.push(decorateWithPublishedAt(child as Record<string, unknown>, envelopeTs));
+            items.push(decorateWithObservedAt(child as Record<string, unknown>, envelopeTs));
           } else {
             items.push(child);
           }
@@ -246,7 +246,7 @@ export function parseToolContent(
       if (Array.isArray(obj.items)) {
         for (const child of obj.items) {
           if (child && typeof child === "object" && envelopeTs !== null) {
-            items.push(decorateWithPublishedAt(child as Record<string, unknown>, envelopeTs));
+            items.push(decorateWithObservedAt(child as Record<string, unknown>, envelopeTs));
           } else {
             items.push(child);
           }
@@ -254,7 +254,7 @@ export function parseToolContent(
       } else if (Array.isArray(obj.data)) {
         for (const child of obj.data) {
           if (child && typeof child === "object" && envelopeTs !== null) {
-            items.push(decorateWithPublishedAt(child as Record<string, unknown>, envelopeTs));
+            items.push(decorateWithObservedAt(child as Record<string, unknown>, envelopeTs));
           } else {
             items.push(child);
           }
@@ -262,7 +262,7 @@ export function parseToolContent(
       } else if (Array.isArray(obj.results)) {
         for (const child of obj.results) {
           if (child && typeof child === "object" && envelopeTs !== null) {
-            items.push(decorateWithPublishedAt(child as Record<string, unknown>, envelopeTs));
+            items.push(decorateWithObservedAt(child as Record<string, unknown>, envelopeTs));
           } else {
             items.push(child);
           }
@@ -302,13 +302,20 @@ function readEpochMs(v: unknown): number | null {
   return null;
 }
 
-/** Stamp an item with a publishedAt derived from the envelope's timestamp. */
-function decorateWithPublishedAt(
+/** Preserve gateway snapshot time without mislabeling it as publication time. */
+function decorateWithObservedAt(
   item: Record<string, unknown>,
   epochMs: number
 ): Record<string, unknown> {
   if (typeof item.publishedAt === "string" || typeof item.publish_time === "string") return item;
-  return { ...item, publishedAt: new Date(epochMs).toISOString() };
+  return {
+    ...item,
+    metadata: {
+      ...(item.metadata && typeof item.metadata === "object" ? item.metadata : {}),
+      observedAt: new Date(epochMs).toISOString(),
+      observedAtSource: "gateway.data.timestamp",
+    },
+  };
 }
 
 /**

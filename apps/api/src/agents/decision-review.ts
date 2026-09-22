@@ -275,11 +275,24 @@ export class DecisionReviewAgent {
       claim: truncate(e.content, 80),
     }));
 
-    const attribution: AttributionItem[] = exAnte.slice(0, 5).map((e) => ({
-      claim: `Pre-T0 evidence supported: ${truncate(e.title, 80)}`,
-      status: "supported" as const,
-      evidenceIds: [e.id],
-    }));
+    const exAnteIds = new Set(exAnte.map((e) => e.id));
+    const modelAttribution = Array.isArray(judgment?.attribution)
+      ? judgment.attribution
+        .filter((item: any) => item && typeof item.claim === "string" && Array.isArray(item.evidenceIds))
+        .map((item: any) => ({
+          claim: item.claim.trim(),
+          status: ["supported", "uncertain", "unsupported"].includes(item.status) ? item.status : "uncertain",
+          evidenceIds: item.evidenceIds.filter((id: unknown): id is string => typeof id === "string" && exAnteIds.has(id)),
+        }))
+        .filter((item: AttributionItem) => item.claim.length > 0 && item.evidenceIds.length > 0)
+      : [];
+    const attribution: AttributionItem[] = modelAttribution.length > 0
+      ? modelAttribution
+      : exAnte.slice(0, 5).map((e) => ({
+        claim: `T0 前证据：${truncate(e.title, 80)}。${truncate(e.content, 160)}`,
+        status: "supported" as const,
+        evidenceIds: [e.id],
+      }));
 
     const biases: BiasFlag[] = (judgment?.bias_signals ?? []).filter((item: any) => item && typeof item.label === "string").map((item: any) => ({ label: item.label, description: String(item.description ?? item.label), severity: ["low", "medium", "high"].includes(item.severity) ? item.severity : "medium" }));
     if (decision.userReason && /sure|certain|definitely/i.test(decision.userReason)) {
@@ -306,14 +319,20 @@ export class DecisionReviewAgent {
       );
     }
 
-    const nextChecklist: string[] = [
-      "Re-read the pre-T0 evidence before judging decision quality.",
-      "Compare user reason against retrieved ex-ante facts, item by item.",
-      "Hold final outcome / P&L out of decision-quality evaluation.",
-      "Note counter-evidence that was visible at T0 but not used.",
+    const modelChecklist = Array.isArray(judgment?.checklist)
+      ? judgment.checklist.filter((item: unknown): item is string => typeof item === "string" && item.trim().length > 0).slice(0, 5)
+      : [];
+    const nextChecklist: string[] = modelChecklist.length > 0 ? modelChecklist : [
+      exAnte.length > 0 ? `复核 ${truncate(exAnte[0].title, 80)} 等 T0 前证据，并记录支持与反证。` : "先补齐 T0 前证据，再评价判断质量。",
+      "将用户理由逐项映射到可核验的 T0 前事实。",
+      "把最终结果与决策质量分开，避免结果倒灌判断。",
+      exAnte.length > 1 ? `检查 ${exAnte.length} 条 T0 前证据中的反向信号是否被记录。` : "记录当时可见但未采用的反向证据。",
     ];
 
     const uncertainties = [];
+    if (decision.timePrecision === "approximate") {
+      uncertainties.push("T0 was user-confirmed as approximate; timestamp-bound findings may shift within the stated time window.");
+    }
     if (toolStatuses.some((s) => s.status === "transient_error")) {
       uncertainties.push("Some MCP sources returned transient errors; their evidence may be incomplete.");
     }
@@ -333,12 +352,15 @@ export class DecisionReviewAgent {
         action: decision.action,
         executedAt: decision.executedAt,
         T0,
+        timePrecision: decision.timePrecision,
         userReason: decision.userReason,
       },
       exAnteEvidence: exAnte,
       exPostEvidence: exPost,
       decisionQuality: {
-        rating: exAnte.length > 0 ? "fair" : "poor",
+        rating: ["poor", "fair", "good", "strong"].includes(judgment?.rating ?? "")
+          ? judgment?.rating ?? "fair"
+          : exAnte.length > 0 ? "fair" : "poor",
         reasoning: judgment?.verdict || judgment?.ex_ante_summary || `Decision reviewed against ${exAnte.length} ex-ante evidence item(s); ${biases.length} bias signal(s) flagged.`,
         processFactors: [
           `${exAnte.length} pre-T0 evidence item(s) reviewed.`,
@@ -387,7 +409,7 @@ function truncate(text: string, n: number): string {
   return `${text.slice(0, n - 1)}…`;
 }
 
-function parseStructuredJudgment(text: string): { verdict?: string; ex_ante_summary?: string; lessons?: unknown[]; bias_signals?: unknown[] } | null {
+function parseStructuredJudgment(text: string): { verdict?: string; ex_ante_summary?: string; rating?: string; lessons?: unknown[]; checklist?: unknown[]; attribution?: unknown[]; bias_signals?: unknown[] } | null {
   const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
   try {
     const parsed = JSON.parse(trimmed);
@@ -408,7 +430,7 @@ function buildJudgmentPrompt(
     `User reason: ${decision.userReason ?? "(none)"}`,
     `Ex-ante evidence count: ${exAnte.length}`,
     `Ex-post evidence count: ${exPost.length}`,
-    "Return JSON with verdict, ex_ante_summary, ex_post_summary, bias_signals.",
+    "Return JSON with rating, verdict, ex_ante_summary, bias_signals, lessons, checklist, and attribution. Each attribution item must include claim, status, and evidenceIds copied only from the provided ex-ante evidence.",
   ].join("\n");
 }
 

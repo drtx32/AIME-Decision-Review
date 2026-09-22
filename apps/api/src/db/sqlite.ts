@@ -11,6 +11,7 @@
  */
 
 import { Database } from "bun:sqlite";
+import { randomUUID } from "node:crypto";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import type {
@@ -28,6 +29,44 @@ export interface ReviewRunRow {
   updatedAt: string;
   finishedAt: string | null;
   errorMessage: string | null;
+}
+
+export interface SessionDecisionRow {
+  id: string;
+  sessionId: string;
+  userId: string;
+  symbol: string;
+  market: string;
+  action: "buy" | "sell";
+  executedAt: string;
+  price: number | null;
+  quantity: number | null;
+  reason: string;
+  notes: string;
+  reviewId: string | null;
+  confirmed: boolean;
+}
+
+export interface SessionMessageRow {
+  id: string;
+  sessionId: string;
+  userId: string;
+  role: "user" | "assistant" | "status";
+  content: string;
+  createdAt: string;
+}
+
+export interface LearningMemoryRow {
+  id: string;
+  userId: string;
+  text: string;
+  kind: "pattern" | "lesson" | "preference";
+  sourceSessionId: string;
+  sourceDecisionId: string | null;
+  strength: number;
+  active: boolean;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export class ReviewRepository {
@@ -109,10 +148,71 @@ export class ReviewRepository {
         FOREIGN KEY(reviewId) REFERENCES review_runs(id)
       );
       CREATE INDEX IF NOT EXISTS idx_events_reviewId ON events(reviewId);
+
+      CREATE TABLE IF NOT EXISTS review_sessions (
+        id TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        title TEXT NOT NULL,
+        scope TEXT NOT NULL DEFAULT 'single',
+        status TEXT NOT NULL DEFAULT 'draft',
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_review_sessions_user ON review_sessions(userId, updatedAt DESC);
+
+      CREATE TABLE IF NOT EXISTS conversation_messages (
+        id TEXT PRIMARY KEY,
+        sessionId TEXT NOT NULL,
+        userId TEXT NOT NULL,
+        role TEXT NOT NULL,
+        content TEXT NOT NULL,
+        createdAt TEXT NOT NULL,
+        FOREIGN KEY(sessionId) REFERENCES review_sessions(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_conversation_messages_session ON conversation_messages(sessionId, createdAt);
+
+      CREATE TABLE IF NOT EXISTS session_decisions (
+        id TEXT PRIMARY KEY,
+        sessionId TEXT NOT NULL,
+        userId TEXT NOT NULL,
+        symbol TEXT NOT NULL,
+        market TEXT NOT NULL,
+        action TEXT NOT NULL,
+        executedAt TEXT NOT NULL,
+        price REAL,
+        quantity REAL,
+        reason TEXT NOT NULL,
+        notes TEXT NOT NULL DEFAULT '',
+        reviewId TEXT,
+        confirmed INTEGER NOT NULL DEFAULT 0,
+        FOREIGN KEY(sessionId) REFERENCES review_sessions(id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_session_decisions_user ON session_decisions(userId, sessionId);
+
+      CREATE TABLE IF NOT EXISTS learning_memories (
+        id TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        text TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        sourceSessionId TEXT NOT NULL,
+        sourceDecisionId TEXT,
+        strength INTEGER NOT NULL DEFAULT 1,
+        active INTEGER NOT NULL DEFAULT 1,
+        createdAt TEXT NOT NULL,
+        updatedAt TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_learning_memories_user ON learning_memories(userId, active, updatedAt DESC);
     `);
+    // Safe migration for databases created before sessions were introduced.
+    for (const statement of [
+      "ALTER TABLE review_runs ADD COLUMN sessionId TEXT",
+      "ALTER TABLE review_runs ADD COLUMN userId TEXT",
+    ]) {
+      try { this.db.exec(statement); } catch { /* column already exists */ }
+    }
   }
 
-  createRun(id: string, decision: DecisionInput, T0: string): ReviewRunRow {
+  createRun(id: string, decision: DecisionInput, T0: string, sessionId?: string, userId?: string): ReviewRunRow {
     const now = new Date().toISOString();
     const row: ReviewRunRow = {
       id,
@@ -124,10 +224,10 @@ export class ReviewRepository {
     };
     this.db
       .prepare(
-        `INSERT INTO review_runs (id, status, createdAt, updatedAt, finishedAt, errorMessage)
-         VALUES (?, ?, ?, ?, NULL, NULL)`
+        `INSERT INTO review_runs (id, status, createdAt, updatedAt, finishedAt, errorMessage, sessionId, userId)
+         VALUES (?, ?, ?, ?, NULL, NULL, ?, ?)`
       )
-      .run(row.id, row.status, row.createdAt, row.updatedAt);
+      .run(row.id, row.status, row.createdAt, row.updatedAt, sessionId ?? null, userId ?? null);
 
     this.db
       .prepare(
@@ -306,5 +406,46 @@ export class ReviewRepository {
 
   close() {
     this.db.close();
+  }
+
+  createSession(userId: string, title: string, scope: string): string {
+    const id = `ses_${randomUUID()}`;
+    const now = new Date().toISOString();
+    this.db.prepare(`INSERT INTO review_sessions (id,userId,title,scope,status,createdAt,updatedAt) VALUES (?,?,?,?,?,?,?)`)
+      .run(id, userId, title, scope, "draft", now, now);
+    return id;
+  }
+
+  updateSession(id: string, userId: string, status: string): void {
+    this.db.prepare(`UPDATE review_sessions SET status=?, updatedAt=? WHERE id=? AND userId=?`)
+      .run(status, new Date().toISOString(), id, userId);
+  }
+
+  addMessage(sessionId: string, userId: string, role: SessionMessageRow["role"], content: string): SessionMessageRow {
+    const row = { id: `msg_${randomUUID()}`, sessionId, userId, role, content, createdAt: new Date().toISOString() };
+    this.db.prepare(`INSERT INTO conversation_messages (id,sessionId,userId,role,content,createdAt) VALUES (?,?,?,?,?,?)`)
+      .run(row.id, row.sessionId, row.userId, row.role, row.content, row.createdAt);
+    this.db.prepare(`UPDATE review_sessions SET updatedAt=? WHERE id=? AND userId=?`).run(row.createdAt, sessionId, userId);
+    return row;
+  }
+
+  addSessionDecision(input: Omit<SessionDecisionRow, "id" | "reviewId" | "confirmed">): SessionDecisionRow {
+    const row: SessionDecisionRow = { ...input, id: `dec_${randomUUID()}`, reviewId: null, confirmed: false };
+    this.db.prepare(`INSERT INTO session_decisions (id,sessionId,userId,symbol,market,action,executedAt,price,quantity,reason,notes,reviewId,confirmed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(row.id,row.sessionId,row.userId,row.symbol,row.market,row.action,row.executedAt,row.price,row.quantity,row.reason,row.notes,null,0);
+    return row;
+  }
+
+  listSessions(userId: string) { return this.db.prepare(`SELECT * FROM review_sessions WHERE userId=? ORDER BY updatedAt DESC`).all(userId) as Array<Record<string, unknown>>; }
+  getSession(id: string, userId: string) { return this.db.prepare(`SELECT * FROM review_sessions WHERE id=? AND userId=?`).get(id,userId) as Record<string, unknown> | null; }
+  listMessages(sessionId: string, userId: string) { return this.db.prepare(`SELECT * FROM conversation_messages WHERE sessionId=? AND userId=? ORDER BY createdAt ASC`).all(sessionId,userId) as SessionMessageRow[]; }
+  listSessionDecisions(sessionId: string, userId: string) { return this.db.prepare(`SELECT * FROM session_decisions WHERE sessionId=? AND userId=? ORDER BY rowid ASC`).all(sessionId,userId).map((r: any) => ({ ...r, price: r.price ?? null, quantity: r.quantity ?? null, confirmed: Boolean(r.confirmed) })) as SessionDecisionRow[]; }
+  linkDecisionReview(decisionId: string, userId: string, reviewId: string): void { this.db.prepare(`UPDATE session_decisions SET reviewId=?, confirmed=1 WHERE id=? AND userId=?`).run(reviewId, decisionId, userId); }
+  listMemories(userId: string) { return this.db.prepare(`SELECT * FROM learning_memories WHERE userId=? AND active=1 ORDER BY updatedAt DESC`).all(userId) as LearningMemoryRow[]; }
+  addMemory(userId: string, text: string, kind: LearningMemoryRow["kind"], sourceSessionId: string, sourceDecisionId: string | null): void {
+    const now = new Date().toISOString();
+    const existing = this.db.prepare(`SELECT id FROM learning_memories WHERE userId=? AND text=? AND active=1`).get(userId,text) as { id: string } | null;
+    if (existing) this.db.prepare(`UPDATE learning_memories SET strength=strength+1, updatedAt=? WHERE id=? AND userId=?`).run(now, existing.id, userId);
+    else this.db.prepare(`INSERT INTO learning_memories (id,userId,text,kind,sourceSessionId,sourceDecisionId,strength,active,createdAt,updatedAt) VALUES (?,?,?,?,?,?,1,1,?,?)`).run(`mem_${randomUUID()}`,userId,text,kind,sourceSessionId,sourceDecisionId,now,now);
   }
 }

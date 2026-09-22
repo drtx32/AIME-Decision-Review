@@ -1,85 +1,69 @@
-import { useEffect, useMemo, useState } from 'react';
-import { Check, ChevronRight, CircleAlert, FileText, History, Menu, Plus, Send, Sparkles, X } from 'lucide-react';
-import { reviewApi, type Input, type Result, type ReviewEvent } from './api';
+import { useEffect, useState } from 'react';
+import { BookOpen, Check, ChevronRight, CircleAlert, FileText, LogOut, Menu, Plus, Send, Settings, Sparkles, X } from 'lucide-react';
+import { reviewApi, resultView, type LearningMemory, type Result, type SessionDecision, type SessionMessage, type SessionSnapshot } from './api';
 
-type Phase = 'compose' | 'running' | 'review';
-type Message = { role: 'assistant' | 'user'; text: string; time?: string };
-const blank: Input = { symbol: '', market: 'A股', side: 'buy', executedAt: '2024-03-18T10:24', price: '', quantity: '', reason: '', notes: '' };
-const demoMessages: Message[] = [{ role: 'assistant', text: '你好，我会把这次投资决策还原到 T0。你可以直接描述当时为什么买入或卖出，我会先提取关键信息，再请你确认。' }];
+type Phase = 'compose' | 'confirm' | 'running' | 'review';
+type PanelTab = 'decisions' | 'timeline' | 'evidence' | 'findings' | 'learning';
+const welcome: SessionMessage = { id: 'welcome', sessionId: '', userId: 'dev-user', role: 'assistant', content: '告诉我一笔或一组历史投资决策。我会先识别每个 decision 的 T0、方向与标的，确认后再开始复盘。', createdAt: new Date().toISOString() };
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>('compose');
-  const [input, setInput] = useState<Input>(blank);
+  const [sessionId, setSessionId] = useState('');
+  const [sessions, setSessions] = useState<Array<{ id: string; title: string; status: string; updatedAt: string }>>([]);
+  const [snapshot, setSnapshot] = useState<SessionSnapshot | null>(null);
+  const [messages, setMessages] = useState<SessionMessage[]>([welcome]);
+  const [decisions, setDecisions] = useState<SessionDecision[]>([]);
+  const [memories, setMemories] = useState<LearningMemory[]>([]);
   const [draft, setDraft] = useState('');
-  const [messages, setMessages] = useState<Message[]>(demoMessages);
-  const [result, setResult] = useState<Result | null>(null);
-  const [events, setEvents] = useState<ReviewEvent[]>([]);
   const [error, setError] = useState('');
-  const [reviewId, setReviewId] = useState('');
-  const [history, setHistory] = useState<string[]>([]);
+  const [tab, setTab] = useState<PanelTab>('decisions');
+  const [mobileSidebar, setMobileSidebar] = useState(false);
   const [mobilePanel, setMobilePanel] = useState(false);
-  const demoMode = !import.meta.env.VITE_API_BASE_URL;
 
-  const update = (key: keyof Input, value: string) => setInput((current) => ({ ...current, [key]: value }));
-  const extracted = useMemo(() => input.symbol || draft.match(/\b\d{5,6}\b/)?.[0] || '', [draft, input.symbol]);
+  const applySnapshot = (next: SessionSnapshot) => { setSnapshot(next); setMessages(next.messages); setDecisions(next.decisions); setMemories(next.memories); };
+  useEffect(() => { reviewApi.listSessions().then(setSessions).catch(() => undefined); }, []);
 
-  useEffect(() => {
-    if (extracted && !input.symbol) update('symbol', extracted);
-  }, [extracted]);
+  const newReview = () => { setSessionId(''); setSnapshot(null); setMessages([welcome]); setDecisions([]); setMemories([]); setDraft(''); setError(''); setPhase('compose'); setTab('decisions'); setMobileSidebar(false); };
+  const openSession = async (id: string) => { try { const next = await reviewApi.getSession(id); setSessionId(id); applySnapshot(next); setPhase(next.results.length ? 'review' : next.decisions.length ? 'confirm' : 'compose'); setMobileSidebar(false); } catch (e) { setError(e instanceof Error ? e.message : '无法恢复会话。'); } };
 
-  const send = async (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!draft.trim() && !input.reason.trim()) return;
-    const reason = input.reason || draft.trim();
-    const next = { ...input, symbol: extracted, reason };
-    if (!next.symbol) { setError('请在描述中提供标的代码或名称。'); return; }
-    setInput(next);
-    setMessages((items) => [...items, { role: 'user', text: draft.trim() || reason }]);
-    setDraft(''); setError('');
-  };
-
-  const run = async () => {
-    if (!input.symbol || !input.reason) { setError('请先发送一段决策描述，并确认标的信息。'); return; }
-    setPhase('running'); setError(''); setEvents([]);
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault(); const content = draft.trim(); if (!content || phase === 'running') return; setDraft(''); setError('');
     try {
-      const created = await reviewApi.create(input);
-      setReviewId(created.id);
-      if (created.demo) {
-        setEvents(created.events);
-        const next = await reviewApi.result(created.id);
-        setResult(next); setHistory((items) => [input.symbol, ...items.filter((x) => x !== input.symbol)]); setPhase('review');
-        setMessages((items) => [...items, { role: 'assistant', text: '我已完成这次演示复盘。右侧保留证据与结果，你也可以继续追问。' }]);
-        return;
-      }
-      await reviewApi.waitForResult(created.id, (nextEvents) => setEvents(nextEvents));
-      const next = await reviewApi.result(created.id);
-      setResult(next); setHistory((items) => [input.symbol, ...items.filter((x) => x !== input.symbol)]); setPhase('review');
-      setMessages((items) => [...items, { role: 'assistant', text: '复盘完成。我把事前证据、事后结果和归因拆开了，你可以在右侧查看详情。' }]);
-    } catch (e) {
-      setPhase('compose'); setError(e instanceof Error ? e.message : '复盘暂时无法启动，请稍后重试。');
-    }
+      if (!sessionId) { const created = await reviewApi.createSession(content); setSessionId(created.sessionId); setMessages(created.messages); setDecisions(created.decisions); setMemories(created.memories); setPhase('confirm'); if (created.local) setError('当前为本地壳模式；确认并运行需要已配置的服务端模型。'); return; }
+      const message = await reviewApi.sendMessage(sessionId, content); setMessages((items) => [...items, message]);
+    } catch (e) { setError(e instanceof Error ? e.message : '消息发送失败。'); }
   };
 
-  const followUp = (event: React.FormEvent) => {
-    event.preventDefault();
-    if (!draft.trim()) return;
-    const question = draft.trim(); setDraft('');
-    setMessages((items) => [...items, { role: 'user', text: question }, { role: 'assistant', text: '这个问题已加入当前复盘上下文。请结合右侧的 Ex-Ante 证据和失效条件继续核对；新的模型追问能力将在服务端配置后启用。' }]);
+  const confirm = async () => {
+    if (!sessionId || !decisions.length) return; setError(''); setPhase('running');
+    try { await reviewApi.confirm(sessionId); const next = await reviewApi.waitForSession(sessionId, applySnapshot); applySnapshot(next); setPhase('review'); setSessions(await reviewApi.listSessions()); setTab('evidence'); }
+    catch (e) { setPhase('confirm'); setError(e instanceof Error ? e.message : '复盘服务暂时不可用。'); }
   };
 
-  const newReview = () => { setPhase('compose'); setInput(blank); setResult(null); setReviewId(''); setEvents([]); setError(''); setMessages(demoMessages); };
-
-  return <div className="app">
-    <header><div className="brand"><b><i>A</i>AIME</b><small>DECISION REVIEW</small></div><div className="header-status"><span className={demoMode ? 'status-dot demo' : 'status-dot'} />{demoMode ? 'DEV / DEMO MODE' : 'SESSION SECURE'}<button className="mobile-menu" onClick={() => setMobilePanel(!mobilePanel)}><Menu size={17}/></button></div></header>
-    <div className="workspace">
-      <aside className={mobilePanel ? 'sidebar open' : 'sidebar'}><div className="sidebar-title"><span><History size={14}/> REVIEW SESSIONS</span><button onClick={newReview}><Plus size={15}/></button></div><button className="new-session" onClick={newReview}><Plus size={14}/> 新建决策复盘</button><div className="session-list">{history.length ? history.map((item) => <button className="session" key={item}><span className="session-mark"/><span><b>{item}</b><small>刚刚 · 投资决策</small></span></button>) : <p className="empty-history">你的复盘会出现在这里</p>}</div><div className="sidebar-bottom"><span>WORKSPACE</span><b>景羿霖的研究空间</b><small>{demoMode ? '本地演示数据，不写入服务端' : '证据仅在服务端处理'}</small></div></aside>
-      <main className="conversation"><div className="conversation-head"><div><span className="eyebrow">INVESTMENT DECISION REVIEW</span><h1>{phase === 'compose' ? '从一次决策开始' : phase === 'running' ? '正在重建证据链' : `${input.symbol} · 决策复盘`}</h1></div><span className="t0-badge">T0 <b>{input.executedAt.replace('T', ' ')}</b></span></div><div className="conversation-body">{messages.map((message, index) => <div className={'message-row '+message.role} key={index}><div className="avatar">{message.role === 'assistant' ? <Sparkles size={14}/> : '景'}</div><div className="message"><span>{message.role === 'assistant' ? 'AIME REVIEW AGENT' : 'YOU'}</span><p>{message.text}</p></div></div>)}{phase === 'running' && <Running events={events}/>} {phase === 'review' && <div className="review-ready"><Check size={15}/> REVIEW READY <small>右侧已更新完整报告</small></div>}</div><form className="composer" onSubmit={phase === 'review' ? followUp : send}><textarea value={draft} onChange={(e) => setDraft(e.target.value)} placeholder={phase === 'review' ? '继续追问这次复盘…' : '例如：我在 2024 年 3 月 18 日以 1680 元买入 600519，因为渠道库存改善…'} /><div className="composer-foot"><span>{phase === 'review' ? 'FOLLOW-UP IN THIS SESSION' : '自然语言输入 · AIME 会提取结构化字段'}</span><button aria-label="发送" disabled={phase === 'running'}><Send size={16}/></button></div></form>{error && <div className="error-banner"><CircleAlert size={15}/>{error}<button onClick={() => setError('')}><X size={14}/></button></div>}{phase === 'compose' && <div className="confirm-card"><div><span className="eyebrow">EXTRACTED DECISION</span><strong>{input.symbol || '等待标的'}</strong></div><div className="chips"><Chip label="市场" value={input.market} options={['A股','港股','美股']} onChange={(value) => update('market', value)}/><Chip label="方向" value={input.side === 'buy' ? '买入' : '卖出'} options={['买入','卖出']} onChange={(value) => update('side', value === '买入' ? 'buy' : 'sell')}/><Chip label="价格" value={input.price || '待确认'} onChange={(value) => update('price', value)}/><Chip label="数量" value={input.quantity || '待确认'} onChange={(value) => update('quantity', value)}/></div><button className="run-button" onClick={run} disabled={!input.symbol || !input.reason}><Sparkles size={15}/>确认字段并开始复盘 <ChevronRight size={15}/></button></div>}</main>
-      <aside className={mobilePanel ? 'evidence-panel open' : 'evidence-panel'}><div className="panel-head"><span><FileText size={14}/> REVIEW REPORT</span><button onClick={() => setMobilePanel(false)}><X size={15}/></button></div>{result ? <Report result={result}/> : <div className="panel-placeholder"><div className="placeholder-icon"><FileText size={22}/></div><h3>证据报告将在这里展开</h3><p>完成一次复盘后，这里会显示 Ex-Ante / Ex-Post 证据、归因和下一次 Checklist。</p><div className="placeholder-line"/><div className="placeholder-line short"/></div>}</aside>
-    </div><footer>Evidence before hindsight. <span>{demoMode ? 'DEV / DEMO MODE · 演示数据' : 'MCP status: server configured'}</span></footer>
+  const result = snapshot ? resultView(snapshot) : null;
+  return <div id="app">
+    <button className="mobile-toggle" onClick={() => setMobileSidebar(!mobileSidebar)}><Menu size={18}/></button>
+    <aside className={mobileSidebar ? 'sidebar open' : 'sidebar'}>
+      <div className="brand"><span className="brand-dot">A</span><span>AIME<small>Decision Review</small></span></div>
+      <nav className="nav-group"><span className="nav-eyebrow">NEW REVIEW</span><button className={!sessionId ? 'nav-item active' : 'nav-item'} onClick={newReview}><Plus size={15}/> 新建复盘</button></nav>
+      <nav className="nav-group"><span className="nav-eyebrow">REVIEW SESSIONS</span><div className="session-nav">{sessions.length ? sessions.map((item) => <button className={item.id === sessionId ? 'nav-item active' : 'nav-item'} key={item.id} onClick={() => openSession(item.id)}><span className="session-dot"/><span>{item.title}<small>{item.status === 'completed' ? '已完成' : '进行中'}</small></span></button>) : <p className="nav-empty">还没有历史会话</p>}</div></nav>
+      <nav className="nav-group"><span className="nav-eyebrow">LEARNING</span><button className={tab === 'learning' ? 'nav-item active' : 'nav-item'} onClick={() => { setTab('learning'); setMobilePanel(true); }}><BookOpen size={15}/> Patterns & Learning</button></nav>
+      <div className="side-note"><b>景羿霖</b><span>数据私有 · 仅本人可见</span><small>Session context 按 user_id 隔离</small></div>
+      <div className="account-actions"><button><Settings size={14}/> 设置</button><button><LogOut size={14}/> 退出</button></div>
+    </aside>
+    <main className="main-shell"><div className="conversation-top"><div><span className="eyebrow">AIME / REVIEW SESSION</span><h1>{snapshot?.session.title || '从一次决策开始'}</h1></div><div className="private-badge"><span/> PRIVATE WORKSPACE</div></div>
+      <section className="conversation-stream">{messages.map((message, index) => <Message key={message.id || index} message={message}/>)}{phase === 'running' && <div className="status-message"><span className="pulse"/><div><b>LIVE REVIEW STATUS</b><p>正在重建每笔决策各自的 T0 前信息环境…</p></div></div>}{phase === 'review' && <div className="status-message done"><Check size={15}/><div><b>REVIEW COMPLETE</b><p>证据、归因与学习已写回当前 session。</p></div></div>}</section>
+      <form className="composer" onSubmit={submit}><textarea value={draft} onChange={(e) => setDraft(e.target.value)} disabled={phase === 'running'} placeholder={phase === 'review' ? '继续追问这次复盘，问题会发送到当前 session…' : '例如：我今天卖了金牛化工，又买入 XX，还给 YY 加仓，帮我一起复盘。'}/><div className="composer-meta"><span>{sessionId ? 'MESSAGE IN CURRENT SESSION' : 'NATURAL LANGUAGE · 1..N DECISIONS'}</span><button type="submit" disabled={phase === 'running' || !draft.trim()}><Send size={15}/></button></div></form>
+      {error && <div className="error-banner"><CircleAlert size={15}/><span>{error}</span><button onClick={() => setError('')}><X size={14}/></button></div>}
+      {phase === 'confirm' && decisions.length > 0 && <DecisionConfirm decisions={decisions} onConfirm={confirm}/>}
+    </main>
+    <aside className={mobilePanel ? 'context-panel open' : 'context-panel'}><div className="context-head"><span><FileText size={14}/> SESSION CONTEXT</span><button className="panel-close" onClick={() => setMobilePanel(false)}><X size={15}/></button></div><div className="context-tabs">{(['decisions','timeline','evidence','findings','learning'] as PanelTab[]).map((item) => <button className={tab === item ? 'active' : ''} key={item} onClick={() => setTab(item)}>{item}</button>)}</div><ContextPanel tab={tab} decisions={decisions} messages={messages} memories={memories} result={result}/></aside>
   </div>;
 }
 
-function Chip({ label, value, options, onChange }: { label: string; value: string; options?: string[]; onChange: (value: string) => void }) { return <label className="chip"><small>{label}</small>{options ? <select value={value} onChange={(e) => onChange(e.target.value)}>{options.map((option) => <option key={option}>{option}</option>)}</select> : <input value={value === '待确认' ? '' : value} placeholder={value} onChange={(e) => onChange(e.target.value)}/>}</label>; }
-function Running({ events }: { events: ReviewEvent[] }) { const latest = events[events.length - 1]; return <div className="running-inline"><span className="spinner"/><div><b>LIVE REVIEW STATUS</b><p>{latest?.message || '正在等待服务端事件…'}</p></div><small>{events.length ? `${events.length} events` : 'connecting'}</small></div>; }
-function Report({ result }: { result: Result }) { return <div className="report"><div className="report-summary"><span className="complete"><Check size={12}/> COMPLETE</span><h2>{result.input.symbol}<span> · {result.input.side === 'buy' ? '买入' : '卖出'}</span></h2><p>{result.summary}</p><strong>62<small>判断质量</small></strong></div><div className="report-t0"><b>T0 · {result.input.executedAt.replace('T', ' ')}</b><span>时间边界已冻结</span></div><Evidence title="Ex-Ante · 当时已知" items={result.ante} tone="ante"/><Evidence title="Ex-Post · 事后信息" items={result.post} tone="post"/><div className="report-block"><span className="eyebrow">ATTRIBUTION</span><h3>归因可信度</h3><p><b className="tag green">SUPPORTED</b> 渠道库存改善是 T0 前可支持的核心判断。</p><p><b className="tag yellow">UNCERTAIN</b> 批价企稳缺少明确验证条件。</p></div><div className="report-block"><span className="eyebrow">NEXT TIME</span><h3>Checklist</h3>{['把“企稳”写成可验证条件','下单前记录反向证据','预先写下失效条件'].map((item, i) => <div className="check-item" key={item}><b>0{i + 1}</b><span>{item}</span></div>)}</div></div>; }
-function Evidence({ title, items, tone }: { title: string; items: string[]; tone: string }) { return <div className={'report-block evidence-block '+tone}><div className="evidence-title"><h3>{title}</h3><small>{items.length} 条</small></div>{items.map((item, index) => <div className="evidence-item" key={item}><b>0{index + 1}</b><span>{item}</span><ChevronRight size={13}/></div>)}</div>; }
+function Message({ message }: { message: SessionMessage }) { const status = message.role === 'status'; return <div className={'message-row '+message.role}><div className="message-avatar">{message.role === 'assistant' ? <Sparkles size={14}/> : message.role === 'status' ? <span className="status-mark"/> : '景'}</div><div className="message-bubble"><span>{message.role === 'assistant' ? 'AIME REVIEW AGENT' : message.role === 'status' ? 'REVIEW STATUS' : 'YOU'}</span><p className={status ? 'status-copy' : ''}>{message.content}</p></div></div>; }
+function DecisionConfirm({ decisions, onConfirm }: { decisions: SessionDecision[]; onConfirm: () => void }) { return <div className="decision-confirm"><div className="confirm-heading"><div><span className="eyebrow">EXTRACTED DECISIONS</span><strong>{decisions.length} 笔，请确认后开始</strong></div><button onClick={onConfirm}><Sparkles size={14}/> 确认并复盘 <ChevronRight size={14}/></button></div><div className="decision-cards">{decisions.map((decision, i) => <div className="decision-card" key={decision.id}><span className="decision-index">0{i + 1}</span><div><b>{decision.symbol}</b><span className={decision.action === 'buy' ? 'buy' : 'sell'}>{decision.action === 'buy' ? '买入' : '卖出'}</span><small>T0 · {decision.executedAt.replace('T', ' ').slice(0, 16)}</small></div></div>)}</div></div>; }
+function ContextPanel({ tab, decisions, messages, memories, result }: { tab: PanelTab; decisions: SessionDecision[]; messages: SessionMessage[]; memories: LearningMemory[]; result: Result | null }) { if (tab === 'decisions') return <div className="context-content"><span className="eyebrow">DECISIONS</span>{decisions.length ? decisions.map((d, i) => <div className="context-decision" key={d.id}><b>0{i + 1} · {d.symbol}</b><span>{d.action === 'buy' ? '买入' : '卖出'} · T0 {d.executedAt.slice(0, 16).replace('T', ' ')}</span></div>) : <Empty text="自然语言识别出的 decisions 会出现在这里。"/>}</div>; if (tab === 'timeline') return <div className="context-content"><span className="eyebrow">TIMELINE</span>{messages.filter((m) => m.role === 'status').map((m) => <div className="timeline-item" key={m.id}><i/>{m.content}</div>)}<p className="muted">每个 review run 的状态由服务端事件写入 session。</p></div>; if (tab === 'learning') return <div className="context-content"><span className="eyebrow">ACTIVE LEARNING</span>{memories.length ? memories.map((m) => <div className="memory" key={m.id}><BookOpen size={14}/><span>{m.text}<small>{m.kind} · strength {m.strength}</small></span></div>) : <Empty text="完成复盘后，长期学习会沉淀在这里。"/>}</div>; if (tab === 'evidence') return result ? <Report result={result}/> : <Empty text="复盘完成后，Ex-Ante / Ex-Post 证据会在这里展开。"/>; return <div className="context-content"><span className="eyebrow">FINDINGS</span>{result ? <><Finding label="SUPPORTED" text="事前证据与核心判断链条已完成对齐。"/><Finding label="UNCERTAIN" text="时间判断仍需要明确的验证条件。"/><Finding label="NEXT" text="下一次决策前记录反向证据与失效条件。"/></> : <Empty text="归因与下一次 Checklist 将出现在这里。"/>}</div>; }
+function Finding({ label, text }: { label: string; text: string }) { return <div className="finding"><b>{label}</b><span>{text}</span></div>; }
+function Empty({ text }: { text: string }) { return <p className="panel-empty">{text}</p>; }
+function Report({ result }: { result: Result }) { return <div className="context-content report"><span className="complete"><Check size={12}/> REVIEW RESULT</span><h2>{result.input.symbol}<small> · {result.input.side === 'buy' ? '买入' : '卖出'}</small></h2><p className="report-summary">{result.summary}</p><section className="evidence-mini ante"><b>EX-ANTE · 当时已知</b>{result.ante.map((item) => <p key={item}>{item}</p>)}</section><section className="evidence-mini post"><b>EX-POST · 事后信息</b>{result.post.map((item) => <p key={item}>{item}</p>)}</section></div>; }

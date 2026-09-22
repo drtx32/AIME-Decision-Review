@@ -84,6 +84,7 @@ export function buildApi(deps: RouteDeps): Hono {
     deps.repo.addMessage(id, userId, "status", "正在重建每笔决策各自的 T0 前信息环境…");
     const agent = new DecisionReviewAgent({ repo: deps.repo, registry: deps.registry, provider: deps.provider, config: deps.config });
     const runIds: string[] = [];
+    const pending: Promise<void>[] = [];
     for (const item of decisions) {
       const runId = `rev_${randomUUID()}`;
       const decision: DecisionInput = { symbol: item.symbol, market: item.market as "CN" | "HK" | "US", action: item.action, executedAt: item.executedAt, price: item.price ?? undefined, quantity: item.quantity ?? undefined, userReason: item.reason, notes: item.notes };
@@ -101,9 +102,10 @@ export function buildApi(deps: RouteDeps): Hono {
           deps.repo.addMessage(id, userId, "status", `${item.symbol} 复盘失败，已保留会话上下文。`);
         }
       };
-      if (deps.runSync) await execute(); else void execute();
+      if (deps.runSync) await execute(); else pending.push(execute());
     }
-    deps.repo.updateSession(id, userId, deps.runSync ? "completed" : "running");
+    if (deps.runSync) deps.repo.updateSession(id, userId, "completed");
+    else void Promise.all(pending).then(() => deps.repo.updateSession(id, userId, "completed"));
     return c.json({ sessionId: id, runIds, status: deps.runSync ? "completed" : "running" }, 202);
   });
 

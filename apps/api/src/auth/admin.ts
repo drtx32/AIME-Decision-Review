@@ -77,12 +77,20 @@ export function buildAdminRoutes(repo: UserRepository) {
     }
     const tempPassword = generateTemporaryPassword();
     const hash = await hashPassword(tempPassword);
-    repo.setPassword(row.id, hash);
+    // resetPassword() persists mustChangePassword = 1 so the user MUST
+    // change the temporary password on first login. Overlaying the flag in
+    // the JSON response is not enough — the contract must hold in the
+    // users table itself.
+    repo.resetPassword(row.id, hash);
     // Force-revoke existing sessions for this user.
     repo.deleteSessionsForUser(row.id);
+    const persisted = repo.findById(row.id)!;
     return c.json(
       {
-        user: toPublicUser({ ...row, passwordHash: hash, mustChangePassword: 1 }),
+        user: toPublicUser({
+          ...persisted,
+          passwordHash: hash,
+        }),
         temporaryPassword: tempPassword,
       },
       200

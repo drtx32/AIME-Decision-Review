@@ -8,10 +8,14 @@ services:
       SQLITE_PATH: ${SQLITE_PATH:-/var/lib/aime/decision-review.db}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Bootstrap admin — created on first startup if no admin exists,
-      # forced to change the default password at first login. Defaults
-      # follow the issue acceptance; override in your local .env.
+      # forced to change the password at first login. The password MUST
+      # be supplied via the host environment / .env file (set as a
+      # GitHub Secret in CI); there is intentionally no Compose default
+      # so a misconfigured deployment fails fast instead of running with
+      # a public credential. INITIAL_ADMIN_USERNAME is a public label and
+      # defaults to "admin".
       INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
-      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-admin@123}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?INITIAL_ADMIN_PASSWORD is required (set it in .env or the deployment secret store)}
       LLM_PROVIDER: ${LLM_PROVIDER:-mock}
       LLM_MODEL: ${LLM_MODEL:-mvp-mock-model}
       LLM_BASE_URL: ${LLM_BASE_URL:-}

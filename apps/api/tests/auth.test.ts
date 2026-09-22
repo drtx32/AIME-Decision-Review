@@ -15,6 +15,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import {
   makeTestServer,
   loginAndCookie,
+  TEST_PASSWORD,
   type TestServer,
 } from "./helpers.ts";
 import { hashPassword } from "../src/auth/passwords.ts";
@@ -23,7 +24,7 @@ import { UserRepository } from "../src/auth/repository.ts";
 async function seedAdmin(
   repo: UserRepository,
   username = "admin",
-  password = "admin@123",
+  password = TEST_PASSWORD,
   mustChange = true
 ) {
   const hash = await hashPassword(password);
@@ -65,7 +66,7 @@ describe("Auth bootstrap", () => {
   test("ensureBootstrapAdmin creates admin with mustChangePassword=1 on fresh DB", async () => {
     const result = await ctx.userRepo.ensureBootstrapAdmin({
       initialAdminUsername: "admin",
-      initialAdminPassword: "admin@123",
+      initialAdminPassword: TEST_PASSWORD,
     });
     expect(result.created).toBe(true);
     if (result.created) {
@@ -74,7 +75,7 @@ describe("Auth bootstrap", () => {
       expect(result.user.mustChangePassword).toBe(1);
       expect(result.user.enabled).toBe(1);
       // Password is argon2id; never the plaintext.
-      expect(result.user.passwordHash).not.toBe("admin@123");
+      expect(result.user.passwordHash).not.toBe(TEST_PASSWORD);
       expect(result.user.passwordHash.startsWith("$argon2id$")).toBe(true);
     }
   });
@@ -93,7 +94,7 @@ describe("Auth bootstrap", () => {
   test("ensureBootstrapAdmin is idempotent — restart does not overwrite admin", async () => {
     await ctx.userRepo.ensureBootstrapAdmin({
       initialAdminUsername: "admin",
-      initialAdminPassword: "admin@123",
+      initialAdminPassword: TEST_PASSWORD,
     });
     const row1 = ctx.userRepo.findByUsername("admin");
     expect(row1).not.toBeNull();
@@ -123,6 +124,27 @@ describe("Auth bootstrap", () => {
       })
     ).rejects.toThrow(/PASSWORD/);
   });
+
+  test("loadConfig rejects INITIAL_ADMIN_PASSWORD without a repository fallback (security)", async () => {
+    // Regression for ELI-325 follow-up: the API must NOT silently fall
+    // back to a hardcoded default password. When the env var is unset,
+    // AppConfig.initialAdmin.password is null and the bootstrap path in
+    // apps/api/src/index.ts refuses to start on a fresh DB.
+    const { loadConfig } = await import("../src/config.ts");
+    const cfg = loadConfig({});
+    expect(cfg.initialAdmin.username).toBe("admin");
+    expect(cfg.initialAdmin.password).toBeNull();
+  });
+
+  test("loadConfig propagates a non-empty INITIAL_ADMIN_PASSWORD", async () => {
+    const { loadConfig } = await import("../src/config.ts");
+    const cfg = loadConfig({
+      INITIAL_ADMIN_USERNAME: "ops",
+      INITIAL_ADMIN_PASSWORD: "supplied-from-deployment-secret",
+    });
+    expect(cfg.initialAdmin.username).toBe("ops");
+    expect(cfg.initialAdmin.password).toBe("supplied-from-deployment-secret");
+  });
 });
 
 describe("Auth login / logout / me", () => {
@@ -138,7 +160,7 @@ describe("Auth login / logout / me", () => {
     const res = await ctx.app.request("/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "admin", password: "admin@123" }),
+      body: JSON.stringify({ username: "admin", password: TEST_PASSWORD }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -183,7 +205,7 @@ describe("Auth login / logout / me", () => {
     const res = await ctx.app.request("/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "admin", password: "admin@123" }),
+      body: JSON.stringify({ username: "admin", password: TEST_PASSWORD }),
     });
     expect(res.status).toBe(403);
     const body = (await res.json()) as { error: string };
@@ -193,7 +215,7 @@ describe("Auth login / logout / me", () => {
   test("GET /api/auth/me requires session", async () => {
     const r1 = await ctx.app.request("/api/auth/me");
     expect(r1.status).toBe(401);
-    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123", { role: "admin", mustChangePassword: false });
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD, { role: "admin", mustChangePassword: false });
     const r2 = await ctx.app.request("/api/auth/me", { headers: { cookie } });
     expect(r2.status).toBe(200);
     const body = (await r2.json()) as { user: { username: string } };
@@ -201,7 +223,7 @@ describe("Auth login / logout / me", () => {
   });
 
   test("POST /api/auth/logout invalidates the session", async () => {
-    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123", { role: "admin", mustChangePassword: false });
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD, { role: "admin", mustChangePassword: false });
     const r1 = await ctx.app.request("/api/auth/me", { headers: { cookie } });
     expect(r1.status).toBe(200);
     const logout = await ctx.app.request("/api/auth/logout", {
@@ -214,7 +236,7 @@ describe("Auth login / logout / me", () => {
   });
 
   test("disabled accounts are auto-logged-out on a subsequent request", async () => {
-    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123", { role: "admin", mustChangePassword: false });
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD, { role: "admin", mustChangePassword: false });
     const me = await ctx.app.request("/api/auth/me", { headers: { cookie } });
     expect(me.status).toBe(200);
     const admin = ctx.userRepo.findByUsername("admin")!;
@@ -238,7 +260,7 @@ describe("Forced first-login password change", () => {
     const loginRes = await ctx.app.request("/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "admin", password: "admin@123" }),
+      body: JSON.stringify({ username: "admin", password: TEST_PASSWORD }),
     });
     expect(loginRes.status).toBe(200);
     const setCookie = loginRes.headers.get("set-cookie")!;
@@ -276,7 +298,7 @@ describe("Forced first-login password change", () => {
     const loginRes = await ctx.app.request("/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "admin", password: "admin@123" }),
+      body: JSON.stringify({ username: "admin", password: TEST_PASSWORD }),
     });
     const cookie = loginRes.headers.get("set-cookie")!.split(";")[0];
 
@@ -284,7 +306,7 @@ describe("Forced first-login password change", () => {
       method: "POST",
       headers: { "content-type": "application/json", cookie },
       body: JSON.stringify({
-        currentPassword: "admin@123",
+        currentPassword: TEST_PASSWORD,
         newPassword: "brand-new-password-456",
       }),
     });
@@ -308,7 +330,7 @@ describe("Forced first-login password change", () => {
   });
 
   test("change-password with wrong current password returns 401", async () => {
-    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123", { role: "admin" });
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD, { role: "admin" });
     const res = await ctx.app.request("/api/auth/change-password", {
       method: "POST",
       headers: { "content-type": "application/json", cookie },
@@ -323,12 +345,12 @@ describe("Forced first-login password change", () => {
   });
 
   test("change-password enforces minimum length", async () => {
-    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123", { role: "admin" });
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD, { role: "admin" });
     const res = await ctx.app.request("/api/auth/change-password", {
       method: "POST",
       headers: { "content-type": "application/json", cookie },
       body: JSON.stringify({
-        currentPassword: "admin@123",
+        currentPassword: TEST_PASSWORD,
         newPassword: "short",
       }),
     });
@@ -344,7 +366,7 @@ describe("Role protection", () => {
 
   beforeEach(async () => {
     ctx = makeTestServer();
-    await seedAdmin(ctx.userRepo, "admin", "admin@123", false);
+    await seedAdmin(ctx.userRepo, "admin", TEST_PASSWORD, false);
     await seedNormal(ctx.userRepo, "alice", "alice-pass-12345");
     userCookie = await loginAndCookie(ctx.app, ctx.userRepo, "alice", "alice-pass-12345");
   });
@@ -369,7 +391,7 @@ describe("Role protection", () => {
   });
 
   test("admin can list users", async () => {
-    const adminCookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123");
+    const adminCookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD);
     const r = await ctx.app.request("/api/admin/users", { headers: { cookie: adminCookie } });
     expect(r.status).toBe(200);
     const body = (await r.json()) as { users: Array<{ username: string; role: string }> };
@@ -385,8 +407,8 @@ describe("Admin user management", () => {
 
   beforeEach(async () => {
     ctx = makeTestServer();
-    await seedAdmin(ctx.userRepo, "admin", "admin@123", false);
-    adminCookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123");
+    await seedAdmin(ctx.userRepo, "admin", TEST_PASSWORD, false);
+    adminCookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD);
   });
   afterEach(() => ctx.cleanup());
 
@@ -480,17 +502,153 @@ describe("Admin user management", () => {
     expect(resetBody.temporaryPassword).not.toBe(temp1);
     expect(resetBody.user.mustChangePassword).toBe(true);
 
-    // Carol's old session is revoked.
-    const me2 = await ctx.app.request("/api/auth/me", { headers: { cookie: carolCookie } });
-    expect(me2.status).toBe(401);
+    // Persisted flag — the contract holds in the users table itself, not
+    // only in the JSON response.
+    const carolAfter = ctx.userRepo.findByUsername("carol")!;
+    expect(carolAfter.mustChangePassword).toBe(1);
 
-    // New temp password works.
+    // Login with the reset password succeeds BUT the session is gated:
+    // must_change_password blocks protected routes. Without the gate,
+    // the reset user would bypass the required first-login change.
     const login2 = await ctx.app.request("/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ username: "carol", password: resetBody.temporaryPassword }),
     });
     expect(login2.status).toBe(200);
+    const login2Body = (await login2.json()) as { mustChangePassword: boolean };
+    expect(login2Body.mustChangePassword).toBe(true);
+    const carolResetCookie = login2.headers.get("set-cookie")!.split(";")[0];
+
+    // /api/auth/me is allowed (it lives in the auth namespace).
+    const me3 = await ctx.app.request("/api/auth/me", { headers: { cookie: carolResetCookie } });
+    expect(me3.status).toBe(200);
+    const me3Body = (await me3.json()) as { user: { mustChangePassword: boolean } };
+    expect(me3Body.user.mustChangePassword).toBe(true);
+
+    // /api/reviews is gated.
+    const blocked = await ctx.app.request("/api/reviews", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: carolResetCookie },
+      body: JSON.stringify({
+        symbol: "600519",
+        action: "buy",
+        executedAt: "2024-03-15T00:00:00Z",
+        userReason: "post-reset test",
+      }),
+    });
+    expect(blocked.status).toBe(403);
+    const blockedBody = (await blocked.json()) as { error: string };
+    expect(blockedBody.error).toBe("must_change_password");
+
+    // Carol's old session is revoked.
+    const me2 = await ctx.app.request("/api/auth/me", { headers: { cookie: carolCookie } });
+    expect(me2.status).toBe(401);
+  });
+
+  test("reset persists mustChangePassword=1 (regression for ELI-325 review finding)", async () => {
+    // Regression: PR #9 shipped with admin.ts:80 calling setPassword()
+    // (which always clears mustChangePassword). The reset endpoint only
+    // overlaid the flag in the JSON response, so a reset user could log
+    // in with the temporary password and bypass the must-change-password
+    // gate. This test pins the contract end-to-end:
+    //   - persisted users.mustChangePassword === 1 after reset
+    //   - login response reports mustChangePassword=true
+    //   - /api/auth/me reports mustChangePassword=true
+    //   - protected /api/reviews returns must_change_password (403)
+    const carolId = ctx.userRepo.createUser({
+      username: "carol-regression",
+      passwordHash: "ignored",
+      role: "user",
+      mustChangePassword: false,
+    }).id;
+
+    const reset = await ctx.app.request(`/api/admin/users/${carolId}/reset-password`, {
+      method: "POST",
+      headers: { cookie: adminCookie },
+    });
+    expect(reset.status).toBe(200);
+    const resetBody = (await reset.json()) as {
+      temporaryPassword: string;
+      user: { mustChangePassword: boolean };
+    };
+    expect(resetBody.temporaryPassword.length).toBeGreaterThanOrEqual(8);
+    expect(resetBody.user.mustChangePassword).toBe(true);
+
+    // Contract assertion: persisted flag, not just response flag.
+    const persisted = ctx.userRepo.findById(carolId)!;
+    expect(persisted.mustChangePassword).toBe(1);
+    expect(persisted.passwordHash).not.toBe("ignored");
+
+    // Login with the reset password.
+    const login = await ctx.app.request("/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "carol-regression", password: resetBody.temporaryPassword }),
+    });
+    expect(login.status).toBe(200);
+    const loginBody = (await login.json()) as { mustChangePassword: boolean };
+    expect(loginBody.mustChangePassword).toBe(true);
+    const carolCookie = login.headers.get("set-cookie")!.split(";")[0];
+
+    // /api/auth/me confirms the persisted gate.
+    const me = await ctx.app.request("/api/auth/me", { headers: { cookie: carolCookie } });
+    expect(me.status).toBe(200);
+    const meBody = (await me.json()) as { user: { mustChangePassword: boolean } };
+    expect(meBody.user.mustChangePassword).toBe(true);
+
+    // Protected route is gated: must_change_password.
+    const blocked = await ctx.app.request("/api/reviews", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: carolCookie },
+      body: JSON.stringify({
+        symbol: "600519",
+        action: "buy",
+        executedAt: "2024-03-15T00:00:00Z",
+        userReason: "post-reset regression",
+      }),
+    });
+    expect(blocked.status).toBe(403);
+    const blockedBody = (await blocked.json()) as { error: string };
+    expect(blockedBody.error).toBe("must_change_password");
+  });
+
+  test("self-service change-password still clears mustChangePassword (unaffected by fix)", async () => {
+    // Defensive symmetry: setPassword() (self-service) must keep clearing
+    // the flag — the fix only changed resetPassword(). A user who just
+    // supplied their current password is allowed through after change.
+    const bobId = ctx.userRepo.createUser({
+      username: "bob-selfservice",
+      passwordHash: "ignored",
+      role: "user",
+      mustChangePassword: true,
+    }).id;
+    const carolCookie = await loginAndCookie(
+      ctx.app,
+      ctx.userRepo,
+      "bob-selfservice",
+      "ignored" // won't actually log in — we set the real hash next
+    ).catch(async () => {
+      // Direct login via a known-good password.
+      const newHash = await hashPassword("known-pass-9876");
+      ctx.userRepo.resetPassword(bobId, newHash);
+      return loginAndCookie(ctx.app, ctx.userRepo, "bob-selfservice", "known-pass-9876");
+    });
+
+    // After login we still have mustChangePassword=1; change it.
+    const change = await ctx.app.request("/api/auth/change-password", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: carolCookie },
+      body: JSON.stringify({
+        currentPassword: "known-pass-9876",
+        newPassword: "fresh-pass-1234",
+      }),
+    });
+    expect(change.status).toBe(200);
+    const changeBody = (await change.json()) as { user: { mustChangePassword: boolean } };
+    expect(changeBody.user.mustChangePassword).toBe(false);
+    const persisted = ctx.userRepo.findById(bobId)!;
+    expect(persisted.mustChangePassword).toBe(0);
   });
 
   test("admin cannot disable self", async () => {
@@ -604,7 +762,7 @@ describe("Session behavior", () => {
 
   beforeEach(async () => {
     ctx = makeTestServer();
-    await seedAdmin(ctx.userRepo, "admin", "admin@123", false);
+    await seedAdmin(ctx.userRepo, "admin", TEST_PASSWORD, false);
   });
   afterEach(() => ctx.cleanup());
 
@@ -631,7 +789,7 @@ describe("Session behavior", () => {
       method: "POST",
       headers: { "content-type": "application/json", cookie: cookie1 },
       body: JSON.stringify({
-        currentPassword: "admin@123",
+        currentPassword: TEST_PASSWORD,
         newPassword: "rotated-pass-9876",
       }),
     });
@@ -644,7 +802,7 @@ describe("Session behavior", () => {
     const res = await ctx.app.request("/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "admin", password: "admin@123" }),
+      body: JSON.stringify({ username: "admin", password: TEST_PASSWORD }),
     });
     const setCookie = (res.headers.get("set-cookie") ?? "").toLowerCase();
     expect(setCookie).toContain("httponly");
@@ -666,38 +824,38 @@ describe("Secret hygiene", () => {
   test("stored user record contains only argon2id hash, never the plaintext password", async () => {
     await ctx.userRepo.ensureBootstrapAdmin({
       initialAdminUsername: "admin",
-      initialAdminPassword: "admin@123",
+      initialAdminPassword: TEST_PASSWORD,
     });
     const row = ctx.userRepo.findByUsername("admin")!;
-    expect(row.passwordHash).not.toContain("admin@123");
+    expect(row.passwordHash).not.toContain(TEST_PASSWORD);
     expect(row.passwordHash.startsWith("$argon2id$")).toBe(true);
   });
 
   test("login response does not echo the submitted password", async () => {
     await ctx.userRepo.ensureBootstrapAdmin({
       initialAdminUsername: "admin",
-      initialAdminPassword: "admin@123",
+      initialAdminPassword: TEST_PASSWORD,
     });
     const res = await ctx.app.request("/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "admin", password: "admin@123" }),
+      body: JSON.stringify({ username: "admin", password: TEST_PASSWORD }),
     });
     const text = await res.text();
-    expect(text.includes("admin@123")).toBe(false);
+    expect(text.includes(TEST_PASSWORD)).toBe(false);
   });
 
   test("create-user does not echo the temporary password in the user payload", async () => {
     await ctx.userRepo.ensureBootstrapAdmin({
       initialAdminUsername: "admin",
-      initialAdminPassword: "admin@123",
+      initialAdminPassword: TEST_PASSWORD,
     });
     // Clear mustChangePassword so the admin can use the admin endpoint.
     const admin = ctx.userRepo.findByUsername("admin")!;
     ctx.userRepo.setPassword(admin.id, admin.passwordHash); // no-op on hash, then disable flag
     const refreshed = ctx.userRepo.findByUsername("admin")!;
     // Manually clear mustChangePassword via SQL — setPassword already clears it.
-    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123");
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD);
 
     const create = await ctx.app.request("/api/admin/users", {
       method: "POST",
@@ -734,8 +892,8 @@ describe("Identity-contract guard (ELI-328 / PR #7 collision)", () => {
 
   beforeEach(async () => {
     ctx = makeTestServer();
-    await seedAdmin(ctx.userRepo, "admin", "admin@123", false);
-    cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123");
+    await seedAdmin(ctx.userRepo, "admin", TEST_PASSWORD, false);
+    cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD);
   });
   afterEach(() => ctx.cleanup());
 

@@ -130,11 +130,33 @@ export class UserRepository {
     return row;
   }
 
+  /**
+   * Self-service password change (e.g. /api/auth/change-password).
+   * Always clears `mustChangePassword` because the user just supplied the
+   * current password — the change is itself proof of possession.
+   */
   setPassword(id: string, newHash: string): void {
     const now = new Date().toISOString();
     this.db
       .prepare(
         `UPDATE users SET passwordHash = ?, mustChangePassword = 0, updatedAt = ? WHERE id = ?`
+      )
+      .run(newHash, now, id);
+  }
+
+  /**
+   * Admin-initiated password reset. Sets the new hash AND forces
+   * `mustChangePassword = 1` so the user must change the temporary
+   * password on first login. This is the contract that the bootstrap
+   * admin flow and the reset endpoint both depend on — without it, a
+   * reset user could log in with the temporary password and bypass the
+   * required first-login password change.
+   */
+  resetPassword(id: string, newHash: string): void {
+    const now = new Date().toISOString();
+    this.db
+      .prepare(
+        `UPDATE users SET passwordHash = ?, mustChangePassword = 1, updatedAt = ? WHERE id = ?`
       )
       .run(newHash, now, id);
   }

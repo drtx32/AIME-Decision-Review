@@ -480,17 +480,153 @@ describe("Admin user management", () => {
     expect(resetBody.temporaryPassword).not.toBe(temp1);
     expect(resetBody.user.mustChangePassword).toBe(true);
 
-    // Carol's old session is revoked.
-    const me2 = await ctx.app.request("/api/auth/me", { headers: { cookie: carolCookie } });
-    expect(me2.status).toBe(401);
+    // Persisted flag — the contract holds in the users table itself, not
+    // only in the JSON response.
+    const carolAfter = ctx.userRepo.findByUsername("carol")!;
+    expect(carolAfter.mustChangePassword).toBe(1);
 
-    // New temp password works.
+    // Login with the reset password succeeds BUT the session is gated:
+    // must_change_password blocks protected routes. Without the gate,
+    // the reset user would bypass the required first-login change.
     const login2 = await ctx.app.request("/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ username: "carol", password: resetBody.temporaryPassword }),
     });
     expect(login2.status).toBe(200);
+    const login2Body = (await login2.json()) as { mustChangePassword: boolean };
+    expect(login2Body.mustChangePassword).toBe(true);
+    const carolResetCookie = login2.headers.get("set-cookie")!.split(";")[0];
+
+    // /api/auth/me is allowed (it lives in the auth namespace).
+    const me3 = await ctx.app.request("/api/auth/me", { headers: { cookie: carolResetCookie } });
+    expect(me3.status).toBe(200);
+    const me3Body = (await me3.json()) as { user: { mustChangePassword: boolean } };
+    expect(me3Body.user.mustChangePassword).toBe(true);
+
+    // /api/reviews is gated.
+    const blocked = await ctx.app.request("/api/reviews", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: carolResetCookie },
+      body: JSON.stringify({
+        symbol: "600519",
+        action: "buy",
+        executedAt: "2024-03-15T00:00:00Z",
+        userReason: "post-reset test",
+      }),
+    });
+    expect(blocked.status).toBe(403);
+    const blockedBody = (await blocked.json()) as { error: string };
+    expect(blockedBody.error).toBe("must_change_password");
+
+    // Carol's old session is revoked.
+    const me2 = await ctx.app.request("/api/auth/me", { headers: { cookie: carolCookie } });
+    expect(me2.status).toBe(401);
+  });
+
+  test("reset persists mustChangePassword=1 (regression for ELI-325 review finding)", async () => {
+    // Regression: PR #9 shipped with admin.ts:80 calling setPassword()
+    // (which always clears mustChangePassword). The reset endpoint only
+    // overlaid the flag in the JSON response, so a reset user could log
+    // in with the temporary password and bypass the must-change-password
+    // gate. This test pins the contract end-to-end:
+    //   - persisted users.mustChangePassword === 1 after reset
+    //   - login response reports mustChangePassword=true
+    //   - /api/auth/me reports mustChangePassword=true
+    //   - protected /api/reviews returns must_change_password (403)
+    const carolId = ctx.userRepo.createUser({
+      username: "carol-regression",
+      passwordHash: "ignored",
+      role: "user",
+      mustChangePassword: false,
+    }).id;
+
+    const reset = await ctx.app.request(`/api/admin/users/${carolId}/reset-password`, {
+      method: "POST",
+      headers: { cookie: adminCookie },
+    });
+    expect(reset.status).toBe(200);
+    const resetBody = (await reset.json()) as {
+      temporaryPassword: string;
+      user: { mustChangePassword: boolean };
+    };
+    expect(resetBody.temporaryPassword.length).toBeGreaterThanOrEqual(8);
+    expect(resetBody.user.mustChangePassword).toBe(true);
+
+    // Contract assertion: persisted flag, not just response flag.
+    const persisted = ctx.userRepo.findById(carolId)!;
+    expect(persisted.mustChangePassword).toBe(1);
+    expect(persisted.passwordHash).not.toBe("ignored");
+
+    // Login with the reset password.
+    const login = await ctx.app.request("/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "carol-regression", password: resetBody.temporaryPassword }),
+    });
+    expect(login.status).toBe(200);
+    const loginBody = (await login.json()) as { mustChangePassword: boolean };
+    expect(loginBody.mustChangePassword).toBe(true);
+    const carolCookie = login.headers.get("set-cookie")!.split(";")[0];
+
+    // /api/auth/me confirms the persisted gate.
+    const me = await ctx.app.request("/api/auth/me", { headers: { cookie: carolCookie } });
+    expect(me.status).toBe(200);
+    const meBody = (await me.json()) as { user: { mustChangePassword: boolean } };
+    expect(meBody.user.mustChangePassword).toBe(true);
+
+    // Protected route is gated: must_change_password.
+    const blocked = await ctx.app.request("/api/reviews", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: carolCookie },
+      body: JSON.stringify({
+        symbol: "600519",
+        action: "buy",
+        executedAt: "2024-03-15T00:00:00Z",
+        userReason: "post-reset regression",
+      }),
+    });
+    expect(blocked.status).toBe(403);
+    const blockedBody = (await blocked.json()) as { error: string };
+    expect(blockedBody.error).toBe("must_change_password");
+  });
+
+  test("self-service change-password still clears mustChangePassword (unaffected by fix)", async () => {
+    // Defensive symmetry: setPassword() (self-service) must keep clearing
+    // the flag — the fix only changed resetPassword(). A user who just
+    // supplied their current password is allowed through after change.
+    const bobId = ctx.userRepo.createUser({
+      username: "bob-selfservice",
+      passwordHash: "ignored",
+      role: "user",
+      mustChangePassword: true,
+    }).id;
+    const carolCookie = await loginAndCookie(
+      ctx.app,
+      ctx.userRepo,
+      "bob-selfservice",
+      "ignored" // won't actually log in — we set the real hash next
+    ).catch(async () => {
+      // Direct login via a known-good password.
+      const newHash = await hashPassword("known-pass-9876");
+      ctx.userRepo.resetPassword(bobId, newHash);
+      return loginAndCookie(ctx.app, ctx.userRepo, "bob-selfservice", "known-pass-9876");
+    });
+
+    // After login we still have mustChangePassword=1; change it.
+    const change = await ctx.app.request("/api/auth/change-password", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: carolCookie },
+      body: JSON.stringify({
+        currentPassword: "known-pass-9876",
+        newPassword: "fresh-pass-1234",
+      }),
+    });
+    expect(change.status).toBe(200);
+    const changeBody = (await change.json()) as { user: { mustChangePassword: boolean } };
+    expect(changeBody.user.mustChangePassword).toBe(false);
+    const persisted = ctx.userRepo.findById(bobId)!;
+    expect(persisted.mustChangePassword).toBe(0);
   });
 
   test("admin cannot disable self", async () => {

@@ -7,6 +7,13 @@ export interface AppConfig {
   port: number;
   sqlitePath: string;
   logLevel: "debug" | "info" | "warn" | "error";
+  /** Production-ish flag toggles Secure cookies and stricter auth headers. */
+  isProduction: boolean;
+
+  initialAdmin: {
+    username: string;
+    password: string;
+  };
 
   llm: {
     provider: "openai-compatible" | "mock";
@@ -70,10 +77,30 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const provider: AppConfig["llm"]["provider"] =
     providerRaw === "mock" || providerRaw === "" ? "mock" : "openai-compatible";
 
+  // INITIAL_ADMIN_USERNAME / INITIAL_ADMIN_PASSWORD carry the *bootstrap*
+  // admin credentials. They are only used on a fresh DB and never logged.
+  // Default username "admin" / password "admin@123" is the documented
+  // fallback; Compose passes through real values when present.
+  const initialAdminUsername = (env.INITIAL_ADMIN_USERNAME ?? "admin").trim() || "admin";
+  const initialAdminPassword = env.INITIAL_ADMIN_PASSWORD?.length
+    ? env.INITIAL_ADMIN_PASSWORD
+    : "admin@123";
+
+  const nodeEnv = (env.NODE_ENV ?? "development").toLowerCase();
+  const isProduction =
+    nodeEnv === "production" ||
+    nodeEnv === "prod" ||
+    (env.PORT === "3000" && nodeEnv !== "test");
+
   return {
     port: Number(env.PORT ?? 3000),
     sqlitePath: env.SQLITE_PATH ?? "./data/decision-review.db",
     logLevel: (env.LOG_LEVEL as AppConfig["logLevel"]) ?? "info",
+    isProduction,
+    initialAdmin: {
+      username: initialAdminUsername,
+      password: initialAdminPassword,
+    },
     llm: {
       provider,
       model: env.LLM_MODEL ?? "mvp-mock-model",

@@ -7,6 +7,11 @@ services:
       PORT: "3000"
       SQLITE_PATH: ${SQLITE_PATH:-/var/lib/aime/decision-review.db}
       LOG_LEVEL: ${LOG_LEVEL:-info}
+      # Bootstrap admin — created on first startup if no admin exists,
+      # forced to change the default password at first login. Defaults
+      # follow the issue acceptance; override in your local .env.
+      INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-admin@123}
       LLM_PROVIDER: ${LLM_PROVIDER:-mock}
       LLM_MODEL: ${LLM_MODEL:-mvp-mock-model}
       LLM_BASE_URL: ${LLM_BASE_URL:-}

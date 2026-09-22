@@ -6,15 +6,15 @@
 - [x] README documents web/API separation, root `.env.example`, server-only credentials, SQLite volume, product choices, AI role, Fuyao/iFinD data sources, T0 boundaries, and known limits.
 - [x] `docs/DEPLOYMENT.md` documents `docker compose up --build`, config/health checks, persistence, lifecycle, and rollback.
 - [x] `docs/TEST_PLAN.md` and `docs/AI_VALIDATION.md` contain Compose-oriented evidence and explicit pending items.
-- [x] No live URL or credentialed LLM/MCP completion is claimed.
+- [x] Public URL is verified: `https://10jqka-aime.tong-xiao.top`.
+- [x] Deployment smoke confirms web-only host exposure on `13608`; API remains internal at `api:3000`.
 
 ## Must be completed before final submission
 
-- [ ] Deploy the Compose stack on the target host and record the real public URL.
-- [ ] Run a clean-browser check against the deployed web container.
+- [x] Deploy the Compose stack on the target host and record the real public URL.
+- [x] Verify the public homepage, `/api/health`, and POST `/api/reviews` through the deployed web proxy.
 - [ ] Run credentialed real LLM smoke and at least one real Fuyao plus one real iFinD gateway smoke; record source/timestamp provenance and failures.
-- [ ] Resolve PR #3 conflicts and confirm the real gateway validation result before finalizing the integration claim.
-- [ ] Update README, deployment, test, and AI validation evidence with those actual results.
+- [ ] Resolve PR #3/real-gateway work and confirm the credentialed validation result before finalizing the integration claim.
 - [ ] Run final secret/image scan and confirm no credential reaches the web image or browser.
 
 Canonical references: `README.md`, `.env.example`, `docker-compose.yml`, `docs/DEPLOYMENT.md`, `docs/SPEC.md`, `docs/TEST_PLAN.md`, `docs/AI_VALIDATION.md`, and `docs/AUTOMATION.md`.

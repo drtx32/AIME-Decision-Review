@@ -184,11 +184,11 @@ Expected:
 | Frontend production build | PASS | `npm run build` passed for the root Vite app in the Compose integration work. |
 | Compose configuration | PASS | `docker compose config` validated service wiring, healthcheck, dependency, environment mapping, and named volume on 2026-09-22. |
 | Compose image build | PASS | `docker compose build` built the separate `web` and `api` images on 2026-09-22. |
-| Compose mock smoke | PASS | With `WEB_PORT=28081 API_PORT=23001`, API `/health` and web `/health` returned 200; POST through web `/api` completed with `status=completed` and a review id. Default 8080/18080 were occupied by unrelated local services. |
+| Compose mock smoke | PASS | Oracle host verification: web-only `13608:80`; `/health` and `/api/health` returned 200; POST through `/api/reviews` returned 202. API had no host port mapping and SQLite volume was healthy. |
 | SQLite volume / runtime user | PASS | API uses `/var/lib/aime` named `api-data` volume and the container runtime is non-root; fresh-volume persistence was checked in Compose integration. |
 | Backend typecheck/tests | PASS (baseline) | Prior backend MVP validation recorded typecheck success and 11/11 tests; rerun after final integration changes remains required in a Bun-enabled environment. |
 | Secret/image scan | PENDING | Must be rerun against final images and deployment environment before submission. |
-| Credentialed real LLM/MCP smoke | PENDING | Requires credentials and the PR #3 gateway/conflict resolution; no completion is claimed. |
-| Clean browser / public URL | PENDING | No live deployment URL is claimed; final hosted browser evidence remains outstanding. |
+| Credentialed real LLM/MCP smoke | PENDING | Requires credentials and the real-gateway work; no completion is claimed. |
+| Public URL / deployed app | PASS | `https://10jqka-aime.tong-xiao.top` returned the AIME homepage, `/api/health` returned 200, and public POST `/api/reviews` returned 202. |
 
-The Compose passes are repository/local integration evidence, not evidence of a live public deployment or credentialed gateway integration. Update this section with the actual URL, commands, and timestamp after release; do not convert pending items into passes without running them.
+The deployment/public URL passes are based on the Oracle host smoke report; they do not imply credentialed gateway integration. Keep the credentialed LLM/MCP row pending until those calls are actually run.

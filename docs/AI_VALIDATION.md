@@ -209,3 +209,49 @@ This file records how AI tools are used in the project, what they generated, how
 Note: The `feature/backend-agent-core` branch now contains the merged
 Local CC MVP + Oracle CC T11 boundary + Oracle CC T11 test. Ready for PR
 to `main`.
+
+---
+
+## PR #2 Supervisor blocker fix — 2026-09-22 (Oracle CC)
+
+**AI/tool used**
+- Oracle CC (Claude Opus 4.8) on branch `feature/backend-agent-core`
+
+**Task**
+- Resolve PR #2 Supervisor blocker: `apps/api/src/providers/openai-compatible.ts`
+  directly imports `"openai"`, but `apps/api/package.json` only declared
+  `"openai"` transitively via `@openai/agents`.
+
+**Output**
+- `apps/api/package.json`: added `"openai": "^5.23.2"` to direct dependencies
+  (matches the version already resolved transitively; `import OpenAI from
+  "openai"` + `new OpenAI({ apiKey, baseURL })` is the v5 SDK contract).
+- `apps/api/bun.lock`: regenerated with explicit `openai` entry; `configVersion`
+  bumped to 0 by Bun.
+- Merged `origin/main` into `feature/backend-agent-core` to bring the new
+  Product CI workflow (`.github/workflows/ci.yml`) into the PR base — the CI
+  workflow runs `bun install --frozen-lockfile && bun run typecheck && bun
+  test` in `apps/api`, matching the validated local flow.
+
+**Validation**
+- `bun run typecheck` → 0 errors.
+- `bun test` → 11/11 pass, 113 expect() calls.
+- `bun install --frozen-lockfile` resolves cleanly with the new dep declared.
+- Secret scan on `apps/api/` → no `sk-*`, `Bearer …`, or populated cred
+  values; no contract drift (only the dependency declaration changed).
+- New PR head: `15a02ca` (ahead of `main` by 3, behind 0).
+
+**Human corrections**
+- Drove the fix directly as ELI-313 lead instead of waiting on Local CC —
+  the blocker was small (one-line `package.json` + lockfile regen) and the
+  user explicitly named me as final integrator.
+- Did not rebase; used `--no-ff merge` style merge commit to keep history
+  readable for the supervisor.
+
+**Residual risk / unresolved**
+- Product CI `.github/workflows/ci.yml` runs the frontend job from repo
+  root (`npm ci && npm run build`) without a root `package-lock.json`;
+  the frontend job may fail on `npm ci` and need a `working-directory:
+  apps/web` adjustment. Backend job is correctly scoped to `apps/api`
+  and should pass.
+- Awaiting Codex / Supervisor follow-up review.

@@ -63,6 +63,15 @@ export function buildApi(deps: RouteDeps): Hono {
     return c.json({ session, decisions, messages: deps.repo.listMessages(id, userId), memories: deps.repo.listMemories(userId), results: decisions.filter((d) => d.reviewId).map((d) => ({ decisionId: d.id, reviewId: d.reviewId, result: deps.repo.getResult(d.reviewId!) })) });
   });
 
+  app.patch("/api/sessions/:id/decisions/:decisionId", async (c) => {
+    const userId = userIdFor(c);
+    const sessionId = c.req.param("id");
+    if (!deps.repo.getSession(sessionId, userId)) return c.json({ error: "not_found" }, 404);
+    const body = await c.req.json().catch(() => null);
+    deps.repo.updateSessionDecision(c.req.param("decisionId"), userId, body ?? {});
+    return c.json({ decisions: deps.repo.listSessionDecisions(sessionId, userId) });
+  });
+
   app.post("/api/sessions/:id/confirm", async (c) => {
     const userId = userIdFor(c);
     const id = c.req.param("id");

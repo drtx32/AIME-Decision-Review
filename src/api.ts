@@ -34,6 +34,7 @@ export const reviewApi = {
     return request('/sessions', { method: 'POST', body: JSON.stringify({ message }) });
   },
   async confirm(sessionId: string) { if (!apiBase) throw new Error(unavailable); return request(`/sessions/${encodeURIComponent(sessionId)}/confirm`, { method: 'POST' }); },
+  async updateDecision(sessionId: string, decisionId: string, patch: Partial<SessionDecision>) { if (!apiBase) return; await request(`/sessions/${encodeURIComponent(sessionId)}/decisions/${encodeURIComponent(decisionId)}`, { method: 'PATCH', body: JSON.stringify(patch) }); },
   async sendMessage(sessionId: string, content: string): Promise<SessionMessage> { if (!apiBase) throw new Error(unavailable); const body = await request(`/sessions/${encodeURIComponent(sessionId)}/messages`, { method: 'POST', body: JSON.stringify({ content }) }); return body.message; },
   async waitForSession(sessionId: string, onSnapshot: (snapshot: SessionSnapshot) => void) { for (let attempt = 0; attempt < 180; attempt += 1) { const snapshot = await this.getSession(sessionId); onSnapshot(snapshot); const linked = snapshot.decisions.filter((decision) => decision.reviewId); if (linked.length && linked.every((decision) => snapshot.results.some((item) => item.decisionId === decision.id && item.result))) return snapshot; await new Promise((resolve) => setTimeout(resolve, 500)); } throw new Error('复盘等待超时，请稍后查看服务状态。'); },
 };

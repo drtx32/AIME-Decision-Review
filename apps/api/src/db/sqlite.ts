@@ -441,6 +441,13 @@ export class ReviewRepository {
   listMessages(sessionId: string, userId: string) { return this.db.prepare(`SELECT * FROM conversation_messages WHERE sessionId=? AND userId=? ORDER BY createdAt ASC`).all(sessionId,userId) as SessionMessageRow[]; }
   listSessionDecisions(sessionId: string, userId: string) { return this.db.prepare(`SELECT * FROM session_decisions WHERE sessionId=? AND userId=? ORDER BY rowid ASC`).all(sessionId,userId).map((r: any) => ({ ...r, price: r.price ?? null, quantity: r.quantity ?? null, confirmed: Boolean(r.confirmed) })) as SessionDecisionRow[]; }
   linkDecisionReview(decisionId: string, userId: string, reviewId: string): void { this.db.prepare(`UPDATE session_decisions SET reviewId=?, confirmed=1 WHERE id=? AND userId=?`).run(reviewId, decisionId, userId); }
+  updateSessionDecision(id: string, userId: string, patch: Partial<Pick<SessionDecisionRow, "symbol" | "market" | "action" | "executedAt" | "price" | "quantity" | "reason" | "notes">>): void {
+    const allowed = ["symbol", "market", "action", "executedAt", "price", "quantity", "reason", "notes"] as const;
+    const entries = Object.entries(patch).filter(([key, value]) => allowed.includes(key as typeof allowed[number]) && value !== undefined);
+    if (!entries.length) return;
+    const set = entries.map(([key]) => `${key}=?`).join(", ");
+    this.db.prepare(`UPDATE session_decisions SET ${set} WHERE id=? AND userId=?`).run(...entries.map(([, value]) => value ?? null), id, userId);
+  }
   listMemories(userId: string) { return this.db.prepare(`SELECT * FROM learning_memories WHERE userId=? AND active=1 ORDER BY updatedAt DESC`).all(userId) as LearningMemoryRow[]; }
   addMemory(userId: string, text: string, kind: LearningMemoryRow["kind"], sourceSessionId: string, sourceDecisionId: string | null): void {
     const now = new Date().toISOString();

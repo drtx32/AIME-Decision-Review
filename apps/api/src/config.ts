@@ -9,17 +9,19 @@ export interface AppConfig {
   port: number;
   sqlitePath: string;
   logLevel: "debug" | "info" | "warn" | "error";
+  runtime: "development" | "production";
   /** Production-ish flag toggles Secure cookies and stricter auth headers. */
   isProduction: boolean;
 
   initialAdmin: {
     username: string;
-    password: string;
+    password: string | null;
   };
 
   llm: {
     provider: "openai-compatible" | "mock";
     model: string;
+    extractorModel: string;
     baseUrl: string | null;
     apiKey: string | null;
   };
@@ -128,12 +130,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
 
   // INITIAL_ADMIN_USERNAME / INITIAL_ADMIN_PASSWORD carry the *bootstrap*
   // admin credentials. They are only used on a fresh DB and never logged.
-  // Default username "admin" / password "admin@123" is the documented
-  // fallback; Compose passes through real values when present.
+  // The password must come from server env / GitHub Secrets; there is no
+  // repository fallback, so an unconfigured fresh deployment fails fast.
   const initialAdminUsername = (env.INITIAL_ADMIN_USERNAME ?? "admin").trim() || "admin";
   const initialAdminPassword = env.INITIAL_ADMIN_PASSWORD?.length
     ? env.INITIAL_ADMIN_PASSWORD
-    : "admin@123";
+    : null;
 
   const nodeEnv = (env.NODE_ENV ?? "development").toLowerCase();
   const isProduction =
@@ -142,6 +144,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     (env.PORT === "3000" && nodeEnv !== "test");
 
   return {
+    runtime: env.NODE_ENV === "production" ? "production" : "development",
     port: Number(env.PORT ?? 3000),
     sqlitePath: env.SQLITE_PATH ?? "./data/decision-review.db",
     logLevel: (env.LOG_LEVEL as AppConfig["logLevel"]) ?? "info",
@@ -153,6 +156,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     llm: {
       provider,
       model: env.LLM_MODEL ?? "mvp-mock-model",
+      extractorModel: env.LLM_EXTRACTOR_MODEL ?? env.LLM_MODEL ?? "mvp-mock-model",
       baseUrl: env.LLM_BASE_URL?.trim() || null,
       apiKey: env.LLM_API_KEY?.trim() || null,
     },

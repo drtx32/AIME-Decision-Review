@@ -2,6 +2,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { makeTestServer, loginAndCookie, type TestServer } from "./helpers.ts";
 import type { DecisionReviewResult } from "../src/types/index.ts";
 import type { ModelProvider } from "../src/providers/index.ts";
+import { getModelProvider } from "../src/providers/index.ts";
 
 describe("Review API contract", () => {
   let ctx: TestServer;
@@ -42,6 +43,10 @@ describe("Review API contract", () => {
   test("production with no configured model keeps health up but rejects review creation", async () => {
     const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "reviewer", "reviewer-pass");
     ctx.cfg.runtime = "production";
+    ctx.cfg.llm.provider = "openai-compatible";
+    ctx.cfg.llm.baseUrl = null;
+    ctx.cfg.llm.apiKey = null;
+    ctx.deps.provider = getModelProvider(ctx.cfg);
     const health = await ctx.app.request("/health");
     expect(health.status).toBe(200);
     const healthBody = await health.json() as { status: string; provider_configured: boolean; provider_status: string };
@@ -55,7 +60,7 @@ describe("Review API contract", () => {
       body: JSON.stringify({ symbol: "600519", market: "CN", action: "buy", executedAt: "2024-03-15T00:00:00Z", userReason: "channel checks" }),
     });
     expect(review.status).toBe(503);
-    expect(await review.json()).toEqual({ error: "MODEL_NOT_CONFIGURED", message: "当前未配置可用的大模型服务，请联系管理员。" });
+    expect(await review.json()).toMatchObject({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: "unconfigured", message: "当前未配置可用的大模型服务，请联系管理员。" });
   });
 
   test("POST /api/reviews rejects non-compliant (T11) deterministic-prediction language", async () => {

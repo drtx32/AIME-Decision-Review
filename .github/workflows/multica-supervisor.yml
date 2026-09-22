@@ -4,14 +4,12 @@ on:
   push:
     branches:
       - main
-      - "feature/**"
   pull_request:
     types:
       - opened
       - synchronize
       - reopened
       - ready_for_review
-      - closed
   workflow_dispatch:
 
 permissions:

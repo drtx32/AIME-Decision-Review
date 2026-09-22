@@ -2,7 +2,8 @@ name: Multica Supervisor
 
 on:
   push:
-    branches: [main]
+    branches:
+      - "**"
   pull_request:
     branches: [main]
   workflow_dispatch:
@@ -19,17 +20,53 @@ jobs:
   notify-multica:
     runs-on: ubuntu-latest
     steps:
+      - name: Check whether branch push already has an open PR
+        id: branch_guard
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT_NAME: ${{ github.event_name }}
+          REPOSITORY: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          notify=true
+          reason="default"
+
+          if [ "$EVENT_NAME" = "push" ] && [ "$REF_NAME" != "main" ]; then
+            count="$(
+              curl --fail-with-body --silent --show-error \
+                -H "Authorization: Bearer $GH_TOKEN" \
+                -H "Accept: application/vnd.github+json" \
+                "https://api.github.com/repos/$REPOSITORY/pulls?state=open&head=$OWNER:$REF_NAME&per_page=1" \
+              | jq 'length'
+            )"
+
+            if [ "$count" -gt 0 ]; then
+              notify=false
+              reason="branch_has_open_pr"
+            else
+              reason="branch_without_open_pr"
+            fi
+          fi
+
+          echo "notify=$notify" >> "$GITHUB_OUTPUT"
+          echo "reason=$reason" >> "$GITHUB_OUTPUT"
+
       - name: Build supervisor event payload
-        id: payload
+        if: steps.branch_guard.outputs.notify == 'true'
         env:
           EVENT_NAME: ${{ github.event_name }}
           EVENT_ACTION: ${{ github.event.action || '' }}
           REPOSITORY: ${{ github.repository }}
           REF_NAME: ${{ github.ref_name }}
+          REF: ${{ github.ref }}
           SHA: ${{ github.sha }}
           ACTOR: ${{ github.actor }}
           RUN_ID: ${{ github.run_id }}
           SERVER_URL: ${{ github.server_url }}
+          PUSH_CREATED: ${{ github.event.created || false }}
+          PUSH_DELETED: ${{ github.event.deleted || false }}
+          GUARD_REASON: ${{ steps.branch_guard.outputs.reason }}
           PR_NUMBER: ${{ github.event.pull_request.number || '' }}
           PR_URL: ${{ github.event.pull_request.html_url || '' }}
           PR_MERGED: ${{ github.event.pull_request.merged || false }}
@@ -42,9 +79,13 @@ jobs:
             --arg event_action "$EVENT_ACTION" \
             --arg repository "$REPOSITORY" \
             --arg ref_name "$REF_NAME" \
+            --arg ref "$REF" \
             --arg sha "$SHA" \
             --arg actor "$ACTOR" \
             --arg run_url "$SERVER_URL/$REPOSITORY/actions/runs/$RUN_ID" \
+            --arg push_created "$PUSH_CREATED" \
+            --arg push_deleted "$PUSH_DELETED" \
+            --arg guard_reason "$GUARD_REASON" \
             --arg pr_number "$PR_NUMBER" \
             --arg pr_url "$PR_URL" \
             --arg pr_merged "$PR_MERGED" \
@@ -57,10 +98,16 @@ jobs:
               repo: $repository,
               event: $event_name,
               action: $event_action,
-              ref: $ref_name,
+              ref: $ref,
+              ref_name: $ref_name,
               sha: $sha,
               actor: $actor,
               run_url: $run_url,
+              branch_push: {
+                created: ($push_created == "true"),
+                deleted: ($push_deleted == "true"),
+                guard_reason: $guard_reason
+              },
               pull_request: {
                 number: $pr_number,
                 url: $pr_url,
@@ -72,6 +119,7 @@ jobs:
             }' > /tmp/multica-event.json
 
       - name: Notify Multica supervisor
+        if: steps.branch_guard.outputs.notify == 'true'
         env:
           WEBHOOK_URL: ${{ secrets.MULTICA_AIME_SUPERVISOR_WEBHOOK_URL }}
         run: |

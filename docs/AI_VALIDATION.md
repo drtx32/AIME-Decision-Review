@@ -290,3 +290,18 @@ to `main`.
 **Residual risk / unresolved**
 - The default demo ports 8080/3000 may need overrides when another local service
   already occupies them; the Compose defaults remain simple for a clean host.
+- Existing volumes created by the earlier root-user image need a one-time
+  ownership migration before the non-root ELI-321 runtime can write SQLite;
+  fresh named volumes inherit the image's `/var/lib/aime` ownership.
+
+## Compose handoff alignment — 2026-09-22 (Oracle Codex)
+
+**Validation**
+- Re-read the ELI-320 and ELI-321 delivery comments and inspected their pushed
+  branches before finalizing Compose integration.
+- Compose now consumes the actual frontend `apps/web/Dockerfile` contract and
+  the backend multi-stage `apps/api/Dockerfile` contract: `/health`, non-root
+  runtime, and SQLite at `/var/lib/aime`.
+- Added the backend `.dockerignore` from the ELI-321 handoff and added the
+  repository-wide multi-component architecture/Compose planning rule to
+  `AGENTS.md`.

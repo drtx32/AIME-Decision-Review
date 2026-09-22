@@ -1,0 +1,13 @@
+.git
+.github
+.gitignore
+node_modules
+.idea
+.vscode
+dist
+*.tsbuildinfo
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db

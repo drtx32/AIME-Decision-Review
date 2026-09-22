@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     environment:
       PORT: "3000"
-      SQLITE_PATH: ${SQLITE_PATH:-/data/decision-review.db}
+      SQLITE_PATH: ${SQLITE_PATH:-/var/lib/aime/decision-review.db}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       LLM_PROVIDER: ${LLM_PROVIDER:-mock}
       LLM_MODEL: ${LLM_MODEL:-mvp-mock-model}
@@ -18,11 +18,11 @@ services:
       IFIND_MCP_AUTHORIZATION: ${IFIND_MCP_AUTHORIZATION:-}
       IFIND_MCP_SERVERS: ${IFIND_MCP_SERVERS:-stock,news,index}
     volumes:
-      - api-data:/data
+      - api-data:/var/lib/aime
     ports:
       - "${API_PORT:-3000}:3000"
     healthcheck:
-      test: ["CMD", "bun", "-e", "fetch('http://localhost:3000/health').then(r => { if (!r.ok) process.exit(1) })"]
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3000/health || exit 1"]
       interval: 5s
       timeout: 3s
       retries: 12

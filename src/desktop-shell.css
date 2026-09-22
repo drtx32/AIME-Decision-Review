@@ -1,9 +1,13 @@
 /* Desktop shell pass, aligned to PulseRelay's fixed 230px sidebar discipline. */
 @media (min-width: 1051px) {
   #app { grid-template-columns: 230px minmax(0, 1fr) 360px; }
-  #app.panel-collapsed { grid-template-columns: 230px minmax(0, 1fr) 0; }
+  #app.panel-collapsed { grid-template-columns: 230px minmax(0, 1fr) 34px; }
   #app.panel-collapsed .context-panel { min-width: 0; width: 0; padding: 0; border: 0; overflow: hidden; opacity: 0; pointer-events: none; }
-  .context-panel { min-width: 0; width: 360px; }
+  .context-panel { min-width: 0; width: 360px; grid-column: 3; grid-row: 1; }
+  .context-rail { display: none; }
+  #app.panel-collapsed .context-rail { grid-column: 3; grid-row: 1; display: flex; width: 34px; height: 100%; align-items: center; justify-content: center; gap: 3px; border: 0; border-left: 1px solid #dfe8df; background: #f9fcf7; color: #5f8065; writing-mode: vertical-rl; font: 500 9px 'DM Mono'; letter-spacing: .08em; cursor: pointer; }
+  #app.panel-collapsed .context-rail:hover { background: #e8f0e6; color: #315e3a; }
+  #app.panel-collapsed .context-rail:focus-visible, .collapse-panel:focus-visible { outline: 2px solid #77a77d; outline-offset: -2px; }
   .context-actions { display: flex; align-items: center; gap: 8px; }
   .collapse-panel { border: 0; background: transparent; color: #7c9082; font: 500 9px 'DM Mono'; letter-spacing: .06em; text-transform: uppercase; padding: 5px 6px; }
   .collapse-panel:hover { color: #315e3a; background: #e8f0e6; border-radius: 4px; }

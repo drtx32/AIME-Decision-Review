@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { BookOpen, Check, ChevronRight, CircleAlert, FileText, LogOut, Menu, Plus, Send, Settings, Sparkles, X } from 'lucide-react';
+import { BookOpen, Check, ChevronLeft, ChevronRight, CircleAlert, FileText, LogOut, Menu, Plus, Send, Settings, Sparkles, X } from 'lucide-react';
 import { reviewApi, resultView, type LearningMemory, type Result, type SessionDecision, type SessionMessage, type SessionSnapshot } from './api';
 
 type Phase = 'compose' | 'confirm' | 'running' | 'review';
@@ -58,7 +58,8 @@ export default function App() {
       {error && <div className="error-banner"><CircleAlert size={15}/><span>{error}</span><button onClick={() => setError('')}><X size={14}/></button></div>}
       {phase === 'confirm' && decisions.length > 0 && <DecisionConfirm decisions={decisions} onConfirm={confirm} onChange={(id, patch) => { setDecisions((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item)); if (sessionId) void reviewApi.updateDecision(sessionId, id, patch); }}/>}
     </main>
-    <aside className={mobilePanel ? 'context-panel open' : 'context-panel'}><div className="context-head"><span><FileText size={14}/> SESSION CONTEXT</span><div className="context-actions"><button className="collapse-panel" onClick={() => setPanelCollapsed(!panelCollapsed)}>{panelCollapsed ? '展开' : '收起'}</button><button className="panel-close" onClick={() => setMobilePanel(false)}><X size={15}/></button></div></div><div className="context-tabs">{(['decisions','timeline','evidence','findings','learning'] as PanelTab[]).map((item) => <button className={tab === item ? 'active' : ''} key={item} onClick={() => setTab(item)}>{item}</button>)}</div><ContextPanel tab={tab} decisions={decisions} messages={messages} memories={memories} result={result}/></aside>
+    <aside className={mobilePanel ? 'context-panel open' : 'context-panel'}><div className="context-head"><span><FileText size={14}/> SESSION CONTEXT</span><div className="context-actions"><button className="collapse-panel" aria-label="收起右侧 Context 面板" onClick={() => setPanelCollapsed(true)}><ChevronRight size={13}/> 收起</button><button className="panel-close" onClick={() => setMobilePanel(false)}><X size={15}/></button></div></div><div className="context-tabs">{(['decisions','timeline','evidence','findings','learning'] as PanelTab[]).map((item) => <button className={tab === item ? 'active' : ''} key={item} onClick={() => setTab(item)}>{item}</button>)}</div><ContextPanel tab={tab} decisions={decisions} messages={messages} memories={memories} result={result}/></aside>
+    <button className="context-rail" type="button" aria-label="展开右侧 Context 面板" onClick={() => setPanelCollapsed(false)}><ChevronLeft size={15}/><span>Context</span></button>
   </div>;
 }
 

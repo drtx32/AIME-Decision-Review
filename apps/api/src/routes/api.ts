@@ -7,6 +7,7 @@
  */
 
 import { Hono } from "hono";
+import { cors } from "hono/cors";
 import { randomUUID } from "node:crypto";
 import { DecisionInputSchema } from "../types/index.ts";
 import type { AppConfig } from "../config.ts";
@@ -44,6 +45,19 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   // gate. Runs after attachUser so it doesn't interfere with /health or
   // /api/auth/login response paths.
   app.use("/api/*", rejectClientUserIdHeader());
+
+  // CORS for the local React shell. Browser sends credentials=false here; we
+  // never expose secrets to the client, so a permissive origin list is fine
+  // for the MVP. Production deployments should pin a single origin.
+  app.use(
+    "*",
+    cors({
+      origin: (origin) => origin ?? "*",
+      allowMethods: ["GET", "POST", "OPTIONS"],
+      allowHeaders: ["content-type"],
+      maxAge: 600,
+    })
+  );
 
   app.get("/health", (c) => {
     return c.json({

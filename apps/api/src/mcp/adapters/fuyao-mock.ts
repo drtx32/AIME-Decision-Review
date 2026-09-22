@@ -27,6 +27,8 @@ const FUYAO_INTENT_MAP: Record<FuyaoServerKey, AdapterIntent[]> = {
   options: ["options"],
 };
 
+export { FUYAO_INTENT_MAP };
+
 const SYMBOL_PREFIX_LABEL: Record<string, string> = {
   "6": "SH",
   "0": "SZ",

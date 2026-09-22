@@ -13,13 +13,15 @@ export function buildServer(
   const userRepo = overrides.userRepo ?? new UserRepository(config.sqlitePath);
   const registry = overrides.registry ?? buildMcpRegistry(config);
   const provider = overrides.provider ?? getModelProvider(config);
+  // Default to async execution so a real browser session can poll for progress.
+  // Tests pass `runSync: true` to keep specs deterministic.
   const deps: RouteDeps = {
     config,
     repo,
     userRepo,
     registry,
     provider,
-    runSync: overrides.runSync ?? true,
+    runSync: overrides.runSync ?? false,
   };
   const app = buildApi(deps);
   return { app, deps, repo, userRepo };

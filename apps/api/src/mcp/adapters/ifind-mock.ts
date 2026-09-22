@@ -42,6 +42,8 @@ const IFIND_INTENT_MAP: Record<IFindServerKey, AdapterIntent[]> = {
   futures: ["futures"],
 };
 
+export { IFIND_INTENT_MAP };
+
 function daysOffsetIso(T0: string, days: number): string {
   const ms = Date.parse(T0);
   if (Number.isNaN(ms)) return T0;

@@ -35,6 +35,13 @@ export interface AdapterCredentials {
   authorization?: string | null;
 }
 
+export interface LiveAdapterOptions {
+  /** Per-request timeout in milliseconds. */
+  timeoutMs?: number;
+  /** Allow override of the request URL path; useful for local mock servers. */
+  pathFor?: (key: string, intent: AdapterIntent) => string;
+}
+
 export interface EvidenceAdapter {
   readonly serverKey: McpServerKey;
   readonly provider: "fuyao" | "ifind";

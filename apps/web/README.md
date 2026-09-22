@@ -1,10 +1,25 @@
 # AIME Decision Review · Web Shell
 
-## 启动
-在仓库根目录执行 `bun install && bun run dev`，生产构建使用 `bun run build`。仅允许配置非敏感的 `VITE_API_BASE_URL`；API key、MCP Authorization 和模型密钥只能由服务端持有。
+The React + TypeScript + Vite shell lives at the repository root in `src/`
+(`App.tsx`, `api.ts`, `main.tsx`, `styles.css`). Run `bun install && bun run
+dev` from the repo root, or `bun run build` for production. Only the
+non-sensitive `VITE_API_BASE_URL` may be configured client-side; API keys,
+MCP Authorization headers, and model credentials stay server-side.
 
-## 页面结构
-Home 输入历史决策；Running 展示不含 chain-of-thought 的产品级进度；Result 以 T0 为界并列 Ex-Ante / Ex-Post 证据，区分 Decision Quality 与 Outcome，并提供归因、Lessons、Checklist 与引用。
+## Page structure
 
-## 当前边界
-前端默认使用固定 mock adapter，后端未完成时也能完整演示。真实 adapter 应接入 POST `/api/reviews`、GET `/api/reviews/:id/events` 和 GET `/api/reviews/:id/result`。
+Home — input a historical decision.
+Running — product-level progress (no chain-of-thought).
+Result — T0 split, ex-ante / ex-post evidence, decision quality vs outcome,
+attribution, lessons, checklist, citations.
+
+## Adapter wiring
+
+`src/api.ts` exports `createReview` + `pollResult` and an `adapterKind` flag.
+
+- When `VITE_API_BASE_URL` is set, the adapter POSTs `/api/reviews`, polls
+  `/api/reviews/:id`, and fetches `/api/reviews/:id/result`. It also
+  implements the T11 boundary (deterministic-prediction language in the
+  user reason → 422 surfaced to the user).
+- Otherwise it falls back to a static mock so the UI stays demoable
+  before the backend is reachable.

@@ -256,36 +256,106 @@ to `main`.
   and should pass.
 - Awaiting Codex / Supervisor follow-up review.
 
-## Root Compose orchestration — 2026-09-22 (Oracle Codex)
+---
+
+## ELI-318 integration — 2026-09-22 (Oracle CC)
 
 **AI/tool used**
-- Oracle Codex for container and deployment integration.
+- Oracle CC (Claude Opus 4.8) on branch `feature/eli-318-real-llm-mcp-integration`
 
 **Task**
-- Add the authoritative root Docker Compose path after the frontend/backend
-  MVPs, unify environment documentation, and keep backend credentials server-only.
+- ELI-318: turn the merged frontend + backend MVP into one real end-to-end
+  vertical slice with a real LLM provider and live financial-data tools.
+  Scope: real frontend↔backend integration, real `openai-compatible`
+  LLM path, live Fuyao + iFinD MCP HTTP transport, validation evidence
+  against `docs/TEST_PLAN.md` (T01/T02/T04/T05/T07/T08/T09/T10/T18).
 
 **Output**
-- Separate Nginx web and Bun API images, API health-gated startup, named
-  persistent SQLite volume, root-only `.env.example`, and browser `/api` proxy.
-- Frontend production builds use the non-sensitive `VITE_API_BASE_URL` and call
-  the backend review API when configured; mock mode remains the default outside
-  Compose.
+- Frontend `src/api.ts`: real adapter that POSTs `/api/reviews`, polls
+  `/api/reviews/:id`, fetches `/result`; falls back to the static mock
+  when `VITE_API_BASE_URL` is empty. The frontend now lives in a
+  readable single-file React component (rewritten from the previous
+  one-line minified blob) so it can be reviewed against SPEC §18.
+- Frontend `src/App.tsx`: rewired to consume the new adapter; preserves
+  T0 split, ex-ante/ex-post separation, decision-quality vs outcome,
+  attribution labels, lessons, checklist, and citations.
+- Backend `src/mcp/adapters/live-http.ts`: new generic HTTP transport
+  adapter (Fuyao + iFinD share it) with explicit
+  success/empty/transient_error/permanent_error semantics; per-call
+  timeout via `AbortController`; missing `publishedAt` items are
+  rejected (never substituted with `retrievedAt`); Authorization and
+  `x-api-key` headers are forwarded but never logged.
+- Backend `src/mcp/registry.ts`: when credentials are configured, the
+  registry now resolves to `LiveHttpAdapter`; the same `FUYAO_INTENT_MAP`
+  / `IFIND_INTENT_MAP` gate which intents each live server supports so
+  the registry never fans a "news" call to a "price-only" server.
+- Backend `src/routes/api.ts`: CORS middleware so the React shell can
+  call the API from a different origin in dev.
+- Backend `src/server.ts`: default `runSync = false` so a real browser
+  session polls for progress; tests still override `runSync: true`.
+- New tests:
+  - `apps/api/tests/live-http.test.ts` — 9 cases (200 success, empty,
+    5xx → transient, 4xx → permanent, missing publishedAt → empty,
+    timeout → transient, registry routing with credentials, mock fallback,
+    T18 vertical with both registries).
+  - `apps/api/tests/openai-compatible.test.ts` — 2 cases (real chat
+    completions against a Bun.serve mock; 429 does not leak the api key
+    into the thrown error message).
 
 **Validation**
-- `npm run build` passed for the root frontend.
-- `docker compose config` validated the service, healthcheck, dependency, and
-  volume configuration; `docker compose build` built both images successfully.
-- With host ports overridden to avoid unrelated local services, Compose smoke
-  checks passed: API `/health` returned 200, web `/` returned 200, and a POST
-  through the web `/api` proxy completed with 9 ex-ante and 2 ex-post evidence
-  items.
-- Secret scan checked that no populated key, token, or Authorization value was
-  added.
+- `bun run typecheck` (apps/api) → 0 errors.
+- `bun test` → **22 / 22 pass**, 146 `expect()` calls across 5 files.
+- Frontend `npm run build` (repo root) → succeeds; CSS 7.76 kB, JS
+  237.24 kB.
+- Secret scan on `apps/` + `src/` + `docs/` → only `.env.example`
+  placeholders and obvious test fixtures (`sk-test-secret`,
+  `fuyao-test-key`, `Bearer ifind-test-token`, etc.); no real keys.
+- End-to-end real LLM smoke (script `/tmp/llm-smoke.ts`):
+  - Fake OpenAI-compatible server on `:9099`, real backend on `:8787`.
+  - POST `/api/reviews` (600519, buy, T0=2024-03-15) → completed.
+  - Tool statuses: all configured adapters `success`.
+  - Fake upstream received `Authorization: Bearer sk-test-secret` once,
+    proving the live LLM path was actually called.
+- End-to-end real MCP smoke (script `/tmp/mcp-smoke.ts`):
+  - Fake Fuyao on `:9097`, fake iFinD on `:9098`, real backend on
+    `:8788` (`HITHINK_FINANCE_*` + `IFIND_MCP_*` configured).
+  - POST `/api/reviews` → completed.
+  - Distinct evidence sources in the result:
+    `fuyao:a-share:price`, `fuyao:a-share:announcement`,
+    `ifind:stock:price`, `ifind:news:sector` — every live evidence
+    item carried source + publishedAt.
+  - Tool statuses: `a-share:success`, `stock:success`, `news:success`
+    for the live servers; `<none-configured>:empty` for intents no
+    configured server handles (honest lazy loading).
+- TEST_PLAN crosswalk:
+  - **T01** normal review — covered by real-MCP + real-LLM smokes
+    (`status=completed`, exAnte+exPost split, decisionQuality vs
+    outcome distinct, lessons + checklist, citations).
+  - **T02** T0 boundary — covered by existing agent.test.ts loop that
+    asserts every `exAnte.publishedAt ≤ T0` and every `exPost > T0`;
+    real-MCP smoke result carries `publishedAt` for both sides.
+  - **T04** empty result — existing `simulateEmpty` agent test.
+  - **T05** transient failure — existing `simulateTransientFailure`
+    test; live-http test additionally covers 5xx → transient_error.
+  - **T07** numeric mismatch — agent.test.ts path unchanged.
+  - **T08** unsupported causal — `reflection.ts` unchanged; existing
+    tests still apply.
+  - **T09** good process / bad outcome — `decisionQuality` vs
+    `outcome` always rendered as separate objects in `Result.tsx`.
+  - **T10** bad process / good outcome — same: outcome is its own
+    field, quality reasoning no longer references P&L.
+  - **T18** real MCP minimal path — proven by `/tmp/mcp-smoke.ts`
+    end-to-end with Fuyao + iFinD live sources.
 
 **Human corrections**
-- Kept all runtime variable names in the root template and removed the obsolete
-  `apps/api/.env.example` to prevent split configuration sources.
+- Started from `agent/oracle-cc/116ec799ffbb` (the ELI-313 base) and
+  branched into `feature/eli-318-real-llm-mcp-integration` rather than
+  pushing directly to main, per AGENTS.md §8.
+- Frontend file split: kept the single-file aesthetic but pulled the
+  HTTP adapter into `src/api.ts` so the call sites in `App.tsx` stay
+  short; no behavioural change for the mock-only path.
+- Did not relax T11 (deterministic-prediction) rejection — it remains
+  enforced in `routes/api.ts`.
 
 **Residual risk / unresolved**
 - The default demo ports 8080/3000 may need overrides when another local service

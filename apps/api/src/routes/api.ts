@@ -42,6 +42,21 @@ export function buildApi(deps: RouteDeps): Hono {
       );
     }
     const decision = parsed.data;
+    // TEST_PLAN T11 — reject requests asking for deterministic predictions or
+    // guaranteed-return / direct trade-instruction language. The product
+    // reviews historical decisions; it does not produce forward signals.
+    const nonCompliantReason = nonCompliantReasonFor(decision);
+    if (nonCompliantReason) {
+      return c.json(
+        {
+          error: "non_compliant_request",
+          reason: nonCompliantReason,
+          message:
+            "This product reviews historical decisions; it does not produce deterministic buy/sell signals or guaranteed-return claims.",
+        },
+        422
+      );
+    }
     const id = `rev_${randomUUID()}`;
     const T0 = decision.executedAt;
     deps.repo.createRun(id, decision, T0);
@@ -134,4 +149,22 @@ export function buildApi(deps: RouteDeps): Hono {
   });
 
   return app;
+}
+
+const NON_COMPLIANT_PATTERNS: Array<{ re: RegExp; label: string }> = [
+  { re: /\bguaranteed?\s+(return|profit|income|return[s]?)/i, label: "guaranteed return" },
+  { re: /\b100\s*%\s*(safe|return|profit)/i, label: "100% return" },
+  { re: /\b确定性(涨跌|收益|回报)/, label: "确定性收益" },
+  { re: /\b直接(买入|卖出)指令/, label: "直接买卖指令" },
+  { re: /\bsure\s+thing\b/i, label: "sure thing" },
+  { re: /\b(predict|tell me)\s+(the\s+)?(next\s+)?(price|stock|move)/i, label: "predict next price" },
+];
+
+function nonCompliantReasonFor(decision: { userReason?: string | null; notes?: string | null }): string | null {
+  const text = `${decision.userReason ?? ""} ${decision.notes ?? ""}`.trim();
+  if (!text) return null;
+  for (const { re, label } of NON_COMPLIANT_PATTERNS) {
+    if (re.test(text)) return label;
+  }
+  return null;
 }

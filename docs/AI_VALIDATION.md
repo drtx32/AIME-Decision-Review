@@ -151,3 +151,61 @@ This file records how AI tools are used in the project, what they generated, how
   configured endpoint.
 - SQLite is per-process; multi-instance deployment needs migration to
   PostgreSQL / shared volume.
+
+---
+
+## ELI-313 acceptance — 2026-09-22 (Oracle CC follow-up)
+
+**AI/tool used**
+- Oracle CC (Claude Opus 4.8) on branch `feature/backend-agent-core`
+
+**Task**
+- Validate Issue ELI-313 acceptance against the Local CC backend MVP and add
+  the T11 (non-compliant request) boundary that the original slice missed.
+
+**Output**
+- Added `nonCompliantReasonFor()` to `apps/api/src/routes/api.ts`: rejects
+  POST /api/reviews with HTTP 422 when the user reason contains deterministic
+  prediction / guaranteed-return / direct buy-sell instruction language.
+- Added bun:test case `POST /api/reviews rejects non-compliant (T11) ...`
+  to `apps/api/tests/api.test.ts`.
+
+**Validation**
+- `bun run typecheck` → 0 errors.
+- `bun test` → 11/11 pass, 113 expect() calls.
+- Live curl smoke (PORT=8787, `LLM_PROVIDER=mock`):
+  - GET /health → 200, provider=mock, 5 configured servers.
+  - POST /api/reviews (600519, T0=2024-03-15) → 202 with id; GET /api/reviews/:id
+    → status=completed, finishedAt set.
+  - GET /api/reviews/:id/events → 14 events across 9 distinct product-level
+    kinds: review_created, plan_started, market_data_retrieved,
+    index_sector_context_retrieved, news_events_retrieved, evidence_time_aligned,
+    fact_consistency_checked, reflection, final_review_generated.
+  - GET /api/reviews/:id/result → exAnte=9, exPost=2; decisionQuality and
+    outcome fields distinct; checklist=4, citations=9, uncertainties=2.
+  - T02 boundary: every exAnte.publishedAt ≤ max 2024-03-14T00:00:00Z (≤ T0
+    − 1d); every exPost.publishedAt ≥ min 2024-03-29T00:00:00Z (> T0 + 14d).
+  - T11 (POST with "Guaranteed 100% return in 30 days") → 422
+    `{ error: "non_compliant_request", reason: "100% return" }`.
+  - GET /api/reviews/missing → 404 `{ error: "not_found" }`.
+- Secret scan on `apps/api/`: no `sk-*`, no `Bearer …`, no populated credential
+  values; `.env.example` has variable names only; `.env*` gitignored.
+
+**Human corrections**
+- Verified T11 boundary was missing in the Local CC bootstrap commit and
+  added it before declaring acceptance.
+- Adopted the Local CC backend commit (1ef5255) instead of the duplicate
+  Oracle CC commit that diverged at the same SHA, per AGENTS.md "feature
+  branches / small reviewable commits" — kept a single canonical MVP and
+  added only the missing boundary.
+
+**Residual risk / unresolved**
+- Live Fuyao / iFinD HTTP transport still unverified (mock-only).
+- Real LLM (MiniMax) call not yet exercised; mock path is the canonical
+  vertical slice.
+- The result endpoint does not echo `T0`; clients must call /api/reviews/:id
+  for the canonical T0. (Low priority; documented.)
+
+Note: The `feature/backend-agent-core` branch now contains the merged
+Local CC MVP + Oracle CC T11 boundary + Oracle CC T11 test. Ready for PR
+to `main`.

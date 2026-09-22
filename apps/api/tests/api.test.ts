@@ -36,6 +36,24 @@ describe("Review API contract", () => {
     expect(body.error).toBe("invalid_input");
   });
 
+  test("POST /api/reviews rejects non-compliant (T11) deterministic-prediction language", async () => {
+    const res = await ctx.app.request("/api/reviews", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        symbol: "600519",
+        market: "CN",
+        action: "buy",
+        executedAt: "2024-03-15T00:00:00Z",
+        userReason: "Guaranteed 100% return in 30 days, buy now",
+      }),
+    });
+    expect(res.status).toBe(422);
+    const body = (await res.json()) as { error: string; reason: string };
+    expect(body.error).toBe("non_compliant_request");
+    expect(body.reason).toBeTruthy();
+  });
+
   test("POST /api/reviews → GET /result returns structured review (vertical slice)", async () => {
     const created = await ctx.app.request("/api/reviews", {
       method: "POST",

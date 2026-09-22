@@ -266,6 +266,7 @@ export class DecisionReviewAgent {
       schemaHint: "DecisionReviewResult",
       temperature: 0.1,
     });
+    const judgment = parseStructuredJudgment(llm.text);
 
     // Always derive the deterministic parts from our own code so the LLM
     // cannot fabricate evidence IDs or break T0.
@@ -280,7 +281,7 @@ export class DecisionReviewAgent {
       evidenceIds: [e.id],
     }));
 
-    const biases: BiasFlag[] = [];
+    const biases: BiasFlag[] = (judgment?.bias_signals ?? []).filter((item: any) => item && typeof item.label === "string").map((item: any) => ({ label: item.label, description: String(item.description ?? item.label), severity: ["low", "medium", "high"].includes(item.severity) ? item.severity : "medium" }));
     if (decision.userReason && /sure|certain|definitely/i.test(decision.userReason)) {
       biases.push({
         label: "overconfidence-language",
@@ -294,7 +295,7 @@ export class DecisionReviewAgent {
       missedEvidence.push("No ex-ante evidence was retrievable; process evaluation is severely limited.");
     }
 
-    const lessons: string[] = [];
+    const lessons: string[] = Array.isArray(judgment?.lessons) ? judgment.lessons.filter((item: unknown): item is string => typeof item === "string" && item.trim().length > 0).slice(0, 5) : [];
     if (exAnte.length > 0 && exPost.length === 0) {
       lessons.push(
         "Outcome window evidence could not be retrieved. Re-run later for outcome analysis."
@@ -338,7 +339,7 @@ export class DecisionReviewAgent {
       exPostEvidence: exPost,
       decisionQuality: {
         rating: exAnte.length > 0 ? "fair" : "poor",
-        reasoning: `Decision reviewed against ${exAnte.length} ex-ante evidence item(s); ${biases.length} bias signal(s) flagged.`,
+        reasoning: judgment?.verdict || judgment?.ex_ante_summary || `Decision reviewed against ${exAnte.length} ex-ante evidence item(s); ${biases.length} bias signal(s) flagged.`,
         processFactors: [
           `${exAnte.length} pre-T0 evidence item(s) reviewed.`,
           `${decision.userReason ? "User reason recorded" : "No user reason recorded"}; rating based on unknown rubric.`,
@@ -384,6 +385,16 @@ function freezeT0(raw: string): string {
 function truncate(text: string, n: number): string {
   if (text.length <= n) return text;
   return `${text.slice(0, n - 1)}…`;
+}
+
+function parseStructuredJudgment(text: string): { verdict?: string; ex_ante_summary?: string; lessons?: unknown[]; bias_signals?: unknown[] } | null {
+  const trimmed = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
 }
 
 function buildJudgmentPrompt(

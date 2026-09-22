@@ -118,7 +118,20 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
       const execute = async () => { try { await agent.run(runId, decision); const result = deps.repo.getResult(runId); if (result?.lessons[0]) deps.repo.addMemory(user.id, result.lessons[0], "lesson", id, item.id); deps.repo.addMessage(id, user.id, "status", `${item.symbol} 已完成 T0 对齐与证据复盘。`); } catch (error) { deps.repo.updateStatus(runId, "failed", { errorMessage: error instanceof Error ? error.message : String(error), finishedAt: new Date().toISOString() }); deps.repo.addMessage(id, user.id, "status", `${item.symbol} 复盘失败，已保留会话上下文。`); } };
       if (deps.runSync) await execute(); else pending.push(execute());
     }
-    if (deps.runSync) deps.repo.updateSession(id, user.id, "completed"); else void Promise.all(pending).then(() => deps.repo.updateSession(id, user.id, "completed"));
+    const finalizeSession = () => {
+      const runs = runIds.map((runId) => deps.repo.getRun(runId));
+      const failed = runs.some((run) => run?.status === "failed");
+      const partial = runs.some((run) => run?.status === "partial" || run?.status === "created" || run?.status === "retrieving");
+      const status = failed ? "failed" : partial ? "partial" : "completed";
+      deps.repo.updateSession(id, user.id, status);
+      const results = runIds.map((runId) => deps.repo.getResult(runId)).filter(Boolean) as any[];
+      if (results.length) {
+        const evidence = results.reduce((sum, result) => sum + result.exAnteEvidence.length + result.exPostEvidence.length, 0);
+        const findings = results.map((result) => result.decisionQuality.reasoning).filter(Boolean).join(" ");
+        deps.repo.addMessage(id, user.id, "assistant", `这次复盘已完成${status === "completed" ? "" : "部分"}：共整理 ${evidence} 条证据。${findings || "部分数据源不可用，结论仍需补充验证。"}`);
+      }
+    };
+    if (deps.runSync) finalizeSession(); else void Promise.all(pending).then(finalizeSession);
     return c.json({ sessionId: id, runIds, status: deps.runSync ? "completed" : "running" }, 202);
   });
 

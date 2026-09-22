@@ -20,6 +20,7 @@ import type {
 } from "../types/index.ts";
 import { MockFuyaoAdapter } from "./adapters/fuyao-mock.ts";
 import { MockIFindAdapter } from "./adapters/ifind-mock.ts";
+import { LiveMcpAdapter } from "./adapters/live-mcp.ts";
 import type { EvidenceAdapter, AdapterRequest } from "./adapters/types.ts";
 
 export interface McpRegistry {
@@ -39,16 +40,18 @@ export function buildMcpRegistry(cfg: AppConfig): McpRegistry {
 
   function buildAdapter(key: McpServerKey): EvidenceAdapter | null {
     if ((configuredFuyao as Set<string>).has(key)) {
-      return new MockFuyaoAdapter(key as FuyaoServerKey, {
+      const credentials = {
         baseUrl: cfg.fuyao.baseUrl,
         apiKey: cfg.fuyao.apiKey,
-      });
+      };
+      return cfg.fuyao.baseUrl && cfg.fuyao.apiKey ? new LiveMcpAdapter(key as FuyaoServerKey, credentials) : new MockFuyaoAdapter(key as FuyaoServerKey, credentials);
     }
     if ((configuredIFind as Set<string>).has(key)) {
-      return new MockIFindAdapter(key as IFindServerKey, {
+      const credentials = {
         baseUrl: cfg.ifind.baseUrl,
         authorization: cfg.ifind.authorization,
-      });
+      };
+      return cfg.ifind.baseUrl && cfg.ifind.authorization ? new LiveMcpAdapter(key as IFindServerKey, credentials) : new MockIFindAdapter(key as IFindServerKey, credentials);
     }
     return null;
   }

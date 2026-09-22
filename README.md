@@ -9,6 +9,7 @@ All agents and contributors MUST read the repository docs before implementation 
 - `docs/SPEC.md` — canonical product and technical specification
 - `docs/AI_VALIDATION.md` — AI usage and validation log
 - `docs/TEST_PLAN.md` — required test coverage and evidence
+- `docs/AUTOMATION.md` — GitHub Actions → Multica supervision
 
 If an Issue conflicts with `docs/SPEC.md`, the explicit newer Issue instruction wins; otherwise follow the docs.
 

@@ -165,6 +165,26 @@ Expected:
 - SQLite remains writable and persists in the named `api-data` volume
 - images contain no secrets and the API runtime remains non-root
 
+## 12. Authentication and managed users
+
+### T20 — Bootstrap admin and forced password change
+Expected:
+- fresh database creates exactly one configured admin
+- first login is accepted but protected product/admin routes remain blocked until password change
+- bootstrap credentials are never returned in API responses or frontend assets
+
+### T21 — Admin-managed users
+Expected:
+- admin can create, reset, disable, and enable normal users
+- temporary passwords are one-time server responses and users start with `mustChangePassword`
+- public registration is unavailable
+
+### T22 — Session and identity boundaries
+Expected:
+- HttpOnly session cookie authenticates the user
+- disabled users and logged-out sessions are rejected
+- client-supplied `x-user-id` headers cannot select identity on protected routes
+
 ## Pre-submit checklist
 
 - [ ] Web URL works in clean browser session
@@ -190,5 +210,6 @@ Expected:
 | Secret/image scan | PENDING | Must be rerun against final images and deployment environment before submission. |
 | Credentialed real LLM/MCP smoke | PENDING | Requires credentials and the real-gateway work; no completion is claimed. |
 | Public URL / deployed app | PASS | `https://10jqka-aime.tong-xiao.top` returned the AIME homepage, `/api/health` returned 200, and public POST `/api/reviews` returned 202. |
+| Auth baseline | PASS | Merged main auth evidence records 50/50 Bun tests, including bootstrap, forced change, managed-user lifecycle, session invalidation, and identity-header rejection. |
 
 The deployment/public URL passes are based on the Oracle host smoke report; they do not imply credentialed gateway integration. Keep the credentialed LLM/MCP row pending until those calls are actually run.

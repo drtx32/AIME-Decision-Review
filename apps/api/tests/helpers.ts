@@ -8,6 +8,15 @@
  * reaches the database and is never logged.
  */
 
+/**
+ * Shared test-only password. Not a credential shape, not committed to
+ * any production path — only used by bun:test cases that need to log in
+ * as a seeded admin/user. The plaintext-vs-hash separation tests rely
+ * on this exact value never appearing in stored hashes or response
+ * bodies; see the secret-hygiene describe block in auth.test.ts.
+ */
+export const TEST_PASSWORD = "test-only-bootstrap-password-do-not-reuse";
+
 import { rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -27,7 +36,7 @@ export function makeTestConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       // Test-only placeholder. The bootstrap path runs only in the
       // dedicated ensureBootstrapAdmin tests; everywhere else users are
       // seeded explicitly. Never reuse this literal as a real credential.
-      password: "test-only-placeholder-never-committed-elsewhere",
+      password: TEST_PASSWORD,
     },
     llm: {
       provider: "mock",

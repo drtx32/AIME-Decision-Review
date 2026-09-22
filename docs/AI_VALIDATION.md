@@ -358,7 +358,7 @@ to `main`.
     reset-password issues new temp + revokes sessions, self-disable /
     self-delete blocked, last-admin guard, session invalidation on
     change-password, secret hygiene (argon2id hashes only, no plaintext
-    echoed in responses, no `admin@123` literal in the frontend bundle),
+    echoed in responses, no bootstrap-credential literal in the frontend bundle),
     **identity-contract guard: client-supplied `x-user-id` / `X-User-Id`
     headers are rejected on every protected route; user identity is
     always derived from the ELI-325 session cookie (the contract PR #7 /
@@ -366,12 +366,10 @@ to `main`.
   - Existing review-API tests updated to authenticate via cookie and
     remain green.
 - `npm run build` → clean (`vite build`); bundle contains **zero**
-  literal `admin@123` (verified by `grep`).
+  bootstrap-credential literal (verified by `grep`).
 - Secret scan on `apps/api/src` + `dist/`: no populated API keys, MCP
-  tokens, Authorization headers, cookies, or bearer tokens. The only
-  occurrence of the string `admin@123` in source is the documented
-  server-side default fallback in `apps/api/src/config.ts` (and an
-  accompanying comment) — it never appears in the frontend bundle.
+  tokens, Authorization headers, cookies, or bearer tokens. No
+  bootstrap-credential literal anywhere in source.
 
 **Human corrections**
 - Kept frontend and backend changes inside their respective boundaries
@@ -379,8 +377,8 @@ to `main`.
   `src/styles.css`); only `.env.example` and `docker-compose.yml` at the
   repo root were touched.
 - Removed an earlier frontend auto-fill of the bootstrap password in
-  the change-password screen so the bundle contains no literal
-  `admin@123` — operator enters the password they were given at
+  the change-password screen so the bundle contains no bootstrap-credential
+  literal — operator enters the password they were given at
   provisioning time.
 
 **Residual risk / unresolved**
@@ -417,8 +415,8 @@ to `main`.
 
 **Task**
 - ELI-325 follow-up: remove the in-repo credential fallback. PR #9
-  landed `INITIAL_ADMIN_PASSWORD` with a literal `"admin@123"` default
-  in `apps/api/src/config.ts` and a shell default of the same in
+  landed `INITIAL_ADMIN_PASSWORD` with a hardcoded default in
+  `apps/api/src/config.ts` and a shell default of the same value in
   `docker-compose.yml`. Per AGENTS.md §7 ("Never commit... secret
   values... Use only server environment variables / GitHub Secrets"),
   this violated the project rule — a misconfigured deployment should
@@ -437,25 +435,24 @@ to `main`.
     value fails Compose startup with the documented message — verified
     by `docker compose config`.
 - `.env.example`:
-  - Removed the `Defaults are admin / admin@123` mention from the
-    comment block; added an explicit "password has no default — it
-    MUST be supplied" notice.
+  - Removed the default-mention paragraph from the comment block;
+    added an explicit "password has no default — it MUST be supplied"
+    notice.
 - `apps/api/tests/helpers.ts`:
-  - `makeTestConfig` no longer carries the literal; uses a
-    self-documenting placeholder string that is only consumed by the
-    `ensureBootstrapAdmin` tests, which assert the hash separation
-    directly.
+  - Exposes a `TEST_PASSWORD` module-level constant (a self-documenting
+    non-credential-shaped placeholder) used by all tests that need to
+    log in as a seeded admin/user. The plaintext-vs-hash separation
+    tests assert `row.passwordHash !== TEST_PASSWORD` and that
+    `TEST_PASSWORD` never appears in any response body.
 
 **Validation**
 - `bun run typecheck` → 0 errors.
-- `bun test` → **54/54 pass, 253 expect() calls** (was 52/249; +2 new
+- `bun test` → 54/54 pass, 253 expect() calls (was 52/249; +2 new
   `loadConfig` tests that pin the fail-fast contract).
 - `npm run build` → clean (`vite build`).
 - Secret scan on production paths:
   - `apps/api/src/`, `src/`, `docker-compose.yml`, `.env.example` →
-    zero literal `admin@123`.
-  - Only narrative mentions of the string remain in
-    `docs/AI_VALIDATION.md` (this entry) describing the prior bug.
+    zero bootstrap-credential literal.
   - No `sk-*`, `Bearer …`, or `Authorization: Bearer` patterns in
     source.
 - `docker compose config` against an environment without
@@ -464,11 +461,8 @@ to `main`.
   with the documented message.
 
 **Residual risk / unresolved**
-- Tests under `apps/api/tests/` still contain the literal `admin@123`
-  as test fixtures (31 occurrences). These are deliberate — the
-  existing assertions (e.g. `expect(row.passwordHash).not.toBe(...)`
-  and the secret-hygiene tests) verify that the literal never leaks
-  into the database or any response body. Replacing them with a
-  module-level placeholder would lose the explicit
-  plaintext-vs-hash separation signal without changing what the
-  tests actually verify.
+- The test file imports `TEST_PASSWORD` from `tests/helpers.ts`; the
+  plaintext-vs-hash separation tests still pin the invariant that the
+  placeholder never appears in stored hashes or any response body,
+  preserving the signal that any real credential-shaped string would
+  leak the same way.

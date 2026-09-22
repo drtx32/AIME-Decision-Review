@@ -15,6 +15,7 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import {
   makeTestServer,
   loginAndCookie,
+  TEST_PASSWORD,
   type TestServer,
 } from "./helpers.ts";
 import { hashPassword } from "../src/auth/passwords.ts";
@@ -23,7 +24,7 @@ import { UserRepository } from "../src/auth/repository.ts";
 async function seedAdmin(
   repo: UserRepository,
   username = "admin",
-  password = "admin@123",
+  password = TEST_PASSWORD,
   mustChange = true
 ) {
   const hash = await hashPassword(password);
@@ -65,7 +66,7 @@ describe("Auth bootstrap", () => {
   test("ensureBootstrapAdmin creates admin with mustChangePassword=1 on fresh DB", async () => {
     const result = await ctx.userRepo.ensureBootstrapAdmin({
       initialAdminUsername: "admin",
-      initialAdminPassword: "admin@123",
+      initialAdminPassword: TEST_PASSWORD,
     });
     expect(result.created).toBe(true);
     if (result.created) {
@@ -74,7 +75,7 @@ describe("Auth bootstrap", () => {
       expect(result.user.mustChangePassword).toBe(1);
       expect(result.user.enabled).toBe(1);
       // Password is argon2id; never the plaintext.
-      expect(result.user.passwordHash).not.toBe("admin@123");
+      expect(result.user.passwordHash).not.toBe(TEST_PASSWORD);
       expect(result.user.passwordHash.startsWith("$argon2id$")).toBe(true);
     }
   });
@@ -93,7 +94,7 @@ describe("Auth bootstrap", () => {
   test("ensureBootstrapAdmin is idempotent — restart does not overwrite admin", async () => {
     await ctx.userRepo.ensureBootstrapAdmin({
       initialAdminUsername: "admin",
-      initialAdminPassword: "admin@123",
+      initialAdminPassword: TEST_PASSWORD,
     });
     const row1 = ctx.userRepo.findByUsername("admin");
     expect(row1).not.toBeNull();
@@ -159,7 +160,7 @@ describe("Auth login / logout / me", () => {
     const res = await ctx.app.request("/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "admin", password: "admin@123" }),
+      body: JSON.stringify({ username: "admin", password: TEST_PASSWORD }),
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
@@ -204,7 +205,7 @@ describe("Auth login / logout / me", () => {
     const res = await ctx.app.request("/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "admin", password: "admin@123" }),
+      body: JSON.stringify({ username: "admin", password: TEST_PASSWORD }),
     });
     expect(res.status).toBe(403);
     const body = (await res.json()) as { error: string };
@@ -214,7 +215,7 @@ describe("Auth login / logout / me", () => {
   test("GET /api/auth/me requires session", async () => {
     const r1 = await ctx.app.request("/api/auth/me");
     expect(r1.status).toBe(401);
-    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123", { role: "admin", mustChangePassword: false });
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD, { role: "admin", mustChangePassword: false });
     const r2 = await ctx.app.request("/api/auth/me", { headers: { cookie } });
     expect(r2.status).toBe(200);
     const body = (await r2.json()) as { user: { username: string } };
@@ -222,7 +223,7 @@ describe("Auth login / logout / me", () => {
   });
 
   test("POST /api/auth/logout invalidates the session", async () => {
-    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123", { role: "admin", mustChangePassword: false });
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD, { role: "admin", mustChangePassword: false });
     const r1 = await ctx.app.request("/api/auth/me", { headers: { cookie } });
     expect(r1.status).toBe(200);
     const logout = await ctx.app.request("/api/auth/logout", {
@@ -235,7 +236,7 @@ describe("Auth login / logout / me", () => {
   });
 
   test("disabled accounts are auto-logged-out on a subsequent request", async () => {
-    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123", { role: "admin", mustChangePassword: false });
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD, { role: "admin", mustChangePassword: false });
     const me = await ctx.app.request("/api/auth/me", { headers: { cookie } });
     expect(me.status).toBe(200);
     const admin = ctx.userRepo.findByUsername("admin")!;
@@ -259,7 +260,7 @@ describe("Forced first-login password change", () => {
     const loginRes = await ctx.app.request("/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "admin", password: "admin@123" }),
+      body: JSON.stringify({ username: "admin", password: TEST_PASSWORD }),
     });
     expect(loginRes.status).toBe(200);
     const setCookie = loginRes.headers.get("set-cookie")!;
@@ -297,7 +298,7 @@ describe("Forced first-login password change", () => {
     const loginRes = await ctx.app.request("/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "admin", password: "admin@123" }),
+      body: JSON.stringify({ username: "admin", password: TEST_PASSWORD }),
     });
     const cookie = loginRes.headers.get("set-cookie")!.split(";")[0];
 
@@ -305,7 +306,7 @@ describe("Forced first-login password change", () => {
       method: "POST",
       headers: { "content-type": "application/json", cookie },
       body: JSON.stringify({
-        currentPassword: "admin@123",
+        currentPassword: TEST_PASSWORD,
         newPassword: "brand-new-password-456",
       }),
     });
@@ -329,7 +330,7 @@ describe("Forced first-login password change", () => {
   });
 
   test("change-password with wrong current password returns 401", async () => {
-    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123", { role: "admin" });
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD, { role: "admin" });
     const res = await ctx.app.request("/api/auth/change-password", {
       method: "POST",
       headers: { "content-type": "application/json", cookie },
@@ -344,12 +345,12 @@ describe("Forced first-login password change", () => {
   });
 
   test("change-password enforces minimum length", async () => {
-    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123", { role: "admin" });
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD, { role: "admin" });
     const res = await ctx.app.request("/api/auth/change-password", {
       method: "POST",
       headers: { "content-type": "application/json", cookie },
       body: JSON.stringify({
-        currentPassword: "admin@123",
+        currentPassword: TEST_PASSWORD,
         newPassword: "short",
       }),
     });
@@ -365,7 +366,7 @@ describe("Role protection", () => {
 
   beforeEach(async () => {
     ctx = makeTestServer();
-    await seedAdmin(ctx.userRepo, "admin", "admin@123", false);
+    await seedAdmin(ctx.userRepo, "admin", TEST_PASSWORD, false);
     await seedNormal(ctx.userRepo, "alice", "alice-pass-12345");
     userCookie = await loginAndCookie(ctx.app, ctx.userRepo, "alice", "alice-pass-12345");
   });
@@ -390,7 +391,7 @@ describe("Role protection", () => {
   });
 
   test("admin can list users", async () => {
-    const adminCookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123");
+    const adminCookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD);
     const r = await ctx.app.request("/api/admin/users", { headers: { cookie: adminCookie } });
     expect(r.status).toBe(200);
     const body = (await r.json()) as { users: Array<{ username: string; role: string }> };
@@ -406,8 +407,8 @@ describe("Admin user management", () => {
 
   beforeEach(async () => {
     ctx = makeTestServer();
-    await seedAdmin(ctx.userRepo, "admin", "admin@123", false);
-    adminCookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123");
+    await seedAdmin(ctx.userRepo, "admin", TEST_PASSWORD, false);
+    adminCookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD);
   });
   afterEach(() => ctx.cleanup());
 
@@ -761,7 +762,7 @@ describe("Session behavior", () => {
 
   beforeEach(async () => {
     ctx = makeTestServer();
-    await seedAdmin(ctx.userRepo, "admin", "admin@123", false);
+    await seedAdmin(ctx.userRepo, "admin", TEST_PASSWORD, false);
   });
   afterEach(() => ctx.cleanup());
 
@@ -788,7 +789,7 @@ describe("Session behavior", () => {
       method: "POST",
       headers: { "content-type": "application/json", cookie: cookie1 },
       body: JSON.stringify({
-        currentPassword: "admin@123",
+        currentPassword: TEST_PASSWORD,
         newPassword: "rotated-pass-9876",
       }),
     });
@@ -801,7 +802,7 @@ describe("Session behavior", () => {
     const res = await ctx.app.request("/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "admin", password: "admin@123" }),
+      body: JSON.stringify({ username: "admin", password: TEST_PASSWORD }),
     });
     const setCookie = (res.headers.get("set-cookie") ?? "").toLowerCase();
     expect(setCookie).toContain("httponly");
@@ -823,38 +824,38 @@ describe("Secret hygiene", () => {
   test("stored user record contains only argon2id hash, never the plaintext password", async () => {
     await ctx.userRepo.ensureBootstrapAdmin({
       initialAdminUsername: "admin",
-      initialAdminPassword: "admin@123",
+      initialAdminPassword: TEST_PASSWORD,
     });
     const row = ctx.userRepo.findByUsername("admin")!;
-    expect(row.passwordHash).not.toContain("admin@123");
+    expect(row.passwordHash).not.toContain(TEST_PASSWORD);
     expect(row.passwordHash.startsWith("$argon2id$")).toBe(true);
   });
 
   test("login response does not echo the submitted password", async () => {
     await ctx.userRepo.ensureBootstrapAdmin({
       initialAdminUsername: "admin",
-      initialAdminPassword: "admin@123",
+      initialAdminPassword: TEST_PASSWORD,
     });
     const res = await ctx.app.request("/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ username: "admin", password: "admin@123" }),
+      body: JSON.stringify({ username: "admin", password: TEST_PASSWORD }),
     });
     const text = await res.text();
-    expect(text.includes("admin@123")).toBe(false);
+    expect(text.includes(TEST_PASSWORD)).toBe(false);
   });
 
   test("create-user does not echo the temporary password in the user payload", async () => {
     await ctx.userRepo.ensureBootstrapAdmin({
       initialAdminUsername: "admin",
-      initialAdminPassword: "admin@123",
+      initialAdminPassword: TEST_PASSWORD,
     });
     // Clear mustChangePassword so the admin can use the admin endpoint.
     const admin = ctx.userRepo.findByUsername("admin")!;
     ctx.userRepo.setPassword(admin.id, admin.passwordHash); // no-op on hash, then disable flag
     const refreshed = ctx.userRepo.findByUsername("admin")!;
     // Manually clear mustChangePassword via SQL — setPassword already clears it.
-    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123");
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD);
 
     const create = await ctx.app.request("/api/admin/users", {
       method: "POST",
@@ -891,8 +892,8 @@ describe("Identity-contract guard (ELI-328 / PR #7 collision)", () => {
 
   beforeEach(async () => {
     ctx = makeTestServer();
-    await seedAdmin(ctx.userRepo, "admin", "admin@123", false);
-    cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123");
+    await seedAdmin(ctx.userRepo, "admin", TEST_PASSWORD, false);
+    cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", TEST_PASSWORD);
   });
   afterEach(() => ctx.cleanup());
 

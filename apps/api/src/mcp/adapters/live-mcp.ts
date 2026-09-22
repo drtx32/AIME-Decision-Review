@@ -376,20 +376,18 @@ export function normalizeItems(
       typeof item.sourceUrl === "string" && item.sourceUrl
         ? item.sourceUrl
         : undefined;
-    // T0-aware alignment: when the upstream payload lacks an explicit
-    // relationToDecision, we derive it from the decision T0, not from the
-    // current wall clock. Items whose publishedAt is strictly after T0 must
-    // be marked `ex_post` even when the entire review is historical. Falling
-    // back to `Date.now()` would silently label a later-than-T0 historical
-    // item as `ex_ante`, violating SPEC §9 (T0 hard wall).
+    // T0-aware alignment: with a valid review T0, publishedAt is the sole
+    // authority. Upstream relation labels are advisory only and can be stale
+    // or contradictory; trusting one would leave the persisted Evidence
+    // relation inconsistent with the buckets produced by alignEvidence.
     let relation: Evidence["relationToDecision"];
-    if (
+    if (useT0) {
+      relation = ms <= t0Ms ? "ex_ante" : "ex_post";
+    } else if (
       typeof item.relationToDecision === "string" &&
       (item.relationToDecision === "ex_ante" || item.relationToDecision === "ex_post")
     ) {
       relation = item.relationToDecision;
-    } else if (useT0) {
-      relation = ms > t0Ms ? "ex_post" : "ex_ante";
     } else if (ms <= Date.now()) {
       relation = "ex_ante";
     } else {

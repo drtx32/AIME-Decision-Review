@@ -27,6 +27,7 @@
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { McpStreamableHttpClient } from "../src/mcp/adapters/mcp-client.ts";
 import { LiveMcpAdapter, parseToolContent, normalizeItems } from "../src/mcp/adapters/live-mcp.ts";
+import { alignEvidence } from "../src/mcp/adapters/types.ts";
 import { buildMcpRegistry } from "../src/mcp/registry.ts";
 import { makeTestConfig } from "./helpers.ts";
 
@@ -549,8 +550,8 @@ describe("LiveMcpAdapter — registry-driven intent → tool", () => {
     expect(byTitle["pre-T0 close"].relationToDecision).toBe("ex_ante");
   });
 
-  // Regression: explicit upstream `relationToDecision` must still win.
-  test("normalizeItems: explicit relationToDecision from upstream overrides T0 fallback", () => {
+  // Regression: upstream relation labels must never override the T0 hard wall.
+  test("normalizeItems: T0 overrides a contradictory upstream relation", () => {
     const norm = normalizeItems(
       [
         {
@@ -566,7 +567,10 @@ describe("LiveMcpAdapter — registry-driven intent → tool", () => {
       "a-share",
       "2024-03-15T00:00:00Z"
     );
-    expect(norm[0].relationToDecision).toBe("ex_ante");
+    expect(norm[0].relationToDecision).toBe("ex_post");
+    const { exAnte, exPost } = alignEvidence(norm, "2024-03-15T00:00:00Z");
+    expect(exAnte).toHaveLength(0);
+    expect(exPost.map((item) => item.id)).toEqual([norm[0].id]);
   });
 
   test("LiveMcpAdapter.fetch: persisted item with publishedAt > T0 is ex_post", async () => {

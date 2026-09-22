@@ -47,7 +47,7 @@ This file records how AI tools are used in the project, what they generated, how
 - Before the fix, extraction was correct (exactly 3 decisions: 金牛化工 SELL, 中粮糖业 BUY, 中粮糖业 SELL; 16.57; 2手→200 shares; lunch-break order placement in notes), but `/confirm` blocked all approximate decisions and PATCH could not clear `needsConfirmation`.
 - Minimal fix: known approximate T0 can proceed after explicit confirmation; unknown/null T0 and unresolved confirmation questions still block. The result retains `timePrecision: approximate` and adds an explicit uncertainty.
 - Structured model rating/checklist/attribution are consumed when valid; attribution evidence IDs are restricted to ex-ante IDs. Fallback claims now include actual evidence content rather than generic `Pre-T0 evidence supported...` text.
-- Fuyao envelope `data.timestamp` is now preserved as `metadata.observedAt` and never promoted to `publishedAt`; timestamp-less snapshot items become `empty`, preventing retrieval time or snapshot time from masquerading as event publication time.
+- Fuyao price-snapshot envelopes may use upstream `data.timestamp` as the snapshot item's `publishedAt` for temporal placement; `retrievedAt` remains separately recorded. News/announcement envelopes must still provide item-level publication time and never borrow envelope or retrieval time. Timestamp-less items become `empty`.
 
 **Validation**
 - `bun run typecheck` passed.
@@ -60,7 +60,7 @@ This file records how AI tools are used in the project, what they generated, how
 - No new architecture or PR was created. Changes are limited to the existing PR #7 candidate worktree.
 
 **Residual risk / unresolved**
-- The real provider and real upstream payload semantics still require credentialed host verification before submission; envelope-only snapshot data is intentionally treated as unusable for T0-bound publication reasoning until an item-level event/publication timestamp is supplied.
+- The real provider and real upstream payload semantics still require credentialed host verification before submission. Price snapshot observation timestamps are usable for placing that snapshot around T0; they are not treated as news/event publication timestamps.
 
 ## Initial project decisions — 2026-09-22
 

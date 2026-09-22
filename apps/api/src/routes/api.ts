@@ -82,7 +82,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     } catch { return c.json({ error: "DECISION_EXTRACTION_FAILED", message: "无法可靠识别决策，请补充标的、方向与成交时间后重试。" }, 422); }
     const sessionId = deps.repo.createSession(user.id, decisions.length > 1 ? `${decisions.length} 笔投资决策` : `${decisions[0]?.symbol ?? "新"} 决策复盘`, body?.scope ?? (decisions.length > 1 ? "custom" : "single"));
     deps.repo.addMessage(sessionId, user.id, "user", message);
-    const stored = decisions.map((decision) => deps.repo.addSessionDecision({ ...decision, quantity: decision.quantityShares, reason: decision.rationale, sessionId, userId: user.id }));
+    const stored = decisions.map((decision) => deps.repo.addSessionDecision({ ...decision, market: decision.market ?? "CN", quantity: decision.quantityShares, reason: decision.rationale, sessionId, userId: user.id }));
     deps.repo.addMessage(sessionId, user.id, "status", `已识别 ${stored.length} 笔决策，请确认每笔 T0、方向与数量。`);
     return c.json({ sessionId, decisions: stored, messages: deps.repo.listMessages(sessionId, user.id), memories: deps.repo.listMemories(user.id) }, 201);
   });

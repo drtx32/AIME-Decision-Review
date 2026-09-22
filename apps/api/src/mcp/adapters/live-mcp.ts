@@ -52,7 +52,7 @@ export class LiveMcpAdapter implements EvidenceAdapter {
 
 function normalizeToolContent(content: unknown, provider: string, server: string, req: AdapterRequest): Evidence[] {
   const items = Array.isArray(content) ? content : content && typeof content === "object" && Array.isArray((content as any).items) ? (content as any).items : [content];
-  return items.filter(Boolean).map((item: any, index) => {
+  return items.filter(Boolean).map((item: any, index: number) => {
     const text = typeof item === "string" ? item : item.text ?? item.content ?? JSON.stringify(item);
     const publishedAt = item.publishedAt ?? item.published_at ?? item.date ?? req.T0;
     return { id: `mcp-${provider}-${server}-${req.intent}-${index}-${Date.now()}`, type: req.intent === "price" ? "price" : req.intent === "news" ? "news" : req.intent === "announcement" ? "announcement" : req.intent === "index" || req.intent === "industry" ? "industry" : "financial", title: item.title ?? `${req.intent} from ${server}`, content: text, source: `${provider}:${server}`, sourceUrl: item.url ?? item.sourceUrl, publishedAt: new Date(publishedAt).toISOString(), retrievedAt: new Date().toISOString(), relationToDecision: Date.parse(publishedAt) <= Date.parse(req.T0) ? "ex_ante" : "ex_post", confidence: typeof item.confidence === "number" ? item.confidence : undefined, metadata: { liveMcp: true, tool: item.tool } } as Evidence;

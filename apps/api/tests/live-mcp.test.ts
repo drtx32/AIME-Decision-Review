@@ -7,7 +7,7 @@ describe("Live MCP adapter contract", () => {
 
   test("uses initialize, tools/list, and tools/call over JSON-RPC", async () => {
     const methods: string[] = [];
-    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+    globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as { method: string };
       methods.push(body.method);
       const result = body.method === "tools/list" ? { tools: [{ name: "a_share_price", description: "price quote" }] } : body.method === "tools/call" ? { content: [{ title: "T0 前价格", text: "100.2", publishedAt: "2025-03-17T00:00:00Z" }] } : { protocolVersion: "2025-03-26" };

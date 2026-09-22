@@ -2,14 +2,9 @@ name: Multica Supervisor
 
 on:
   push:
-    branches:
-      - main
+    branches: [main]
   pull_request:
-    types:
-      - opened
-      - synchronize
-      - reopened
-      - ready_for_review
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -17,7 +12,7 @@ permissions:
   pull-requests: read
 
 concurrency:
-  group: multica-supervisor-${{ github.event_name }}-${{ github.ref }}
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:

@@ -5,19 +5,62 @@ describe("Live MCP adapter contract", () => {
   const originalFetch = globalThis.fetch;
   afterEach(() => { globalThis.fetch = originalFetch; });
 
+  function adapterWith(responseItems: unknown[], capture?: (init?: RequestInit) => void) {
+    globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+      capture?.(init);
+      const body = JSON.parse(String(init?.body)) as { method: string };
+      const result = body.method === "tools/list"
+        ? { tools: [{ name: "a_share_price", description: "price quote" }] }
+        : body.method === "tools/call"
+          ? { content: [{ type: "text", text: JSON.stringify(responseItems) }] }
+          : { protocolVersion: "2025-03-26", serverInfo: { name: "test" } };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), { status: 200 });
+    }) as typeof fetch;
+    return new LiveMcpAdapter({
+      provider: "fuyao",
+      serverKey: "a-share",
+      endpoint: "https://mcp.example.test/a-share",
+      credentials: { baseUrl: "https://mcp.example.test", apiKey: "secret" },
+      toolForIntent: (intent) => intent === "price" ? "a_share_price" : null,
+      fetchImpl: globalThis.fetch,
+    });
+  }
+
   test("uses initialize, tools/list, and tools/call over JSON-RPC", async () => {
     const methods: string[] = [];
-    globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
-      const body = JSON.parse(String(init?.body)) as { method: string };
-      methods.push(body.method);
-      const result = body.method === "tools/list" ? { tools: [{ name: "a_share_price", description: "price quote" }] } : body.method === "tools/call" ? { content: [{ title: "T0 前价格", text: "100.2", publishedAt: "2025-03-17T00:00:00Z" }] } : { protocolVersion: "2025-03-26" };
-      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), { status: 200, headers: { "content-type": "application/json" } });
-    }) as typeof fetch;
-    const adapter = new LiveMcpAdapter("a-share", { baseUrl: "https://mcp.example.test", apiKey: "secret" });
+    const adapter = adapterWith([{ title: "T0 前价格", text: "100.2", publishedAt: "2025-03-17T00:00:00Z" }], (init) => {
+      methods.push((JSON.parse(String(init?.body)) as { method: string }).method);
+    });
     const result = await adapter.fetch({ intent: "price", symbol: "600519", market: "CN", T0: "2025-03-18T00:00:00Z" });
     expect(methods).toEqual(["initialize", "tools/list", "tools/call"]);
     expect(result.status).toBe("success");
     expect(result.data?.[0].source).toBe("fuyao:a-share");
     expect(result.data?.[0].relationToDecision).toBe("ex_ante");
+  });
+
+  test("uses Fuyao X-api-key and rejects timestamp-less evidence", async () => {
+    let receivedHeaders: RequestInit["headers"];
+    const adapter = adapterWith([{ title: "无时间戳", content: "100.2" }], (init) => { receivedHeaders = init?.headers; });
+    const result = await adapter.fetch({ intent: "price", symbol: "600519", market: "CN", T0: "2025-03-18T00:00:00Z" });
+    expect(result.status).toBe("empty");
+    expect(new Headers(receivedHeaders).get("X-api-key")).toBe("secret");
+    expect(new Headers(receivedHeaders).get("Authorization")).toBe("Bearer secret");
+  });
+
+  test("uses the upstream envelope timestamp and T0 for relation", async () => {
+    globalThis.fetch = (async (_input: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as { method: string };
+      const result = body.method === "tools/list"
+        ? { tools: [{ name: "a_share_price", description: "price quote" }] }
+        : body.method === "tools/call"
+          ? { content: [{ type: "text", text: JSON.stringify({ code: 0, data: { timestamp: 1742256000000, items: [{ title: "快照", content: "100" }] } }) }] }
+          : { protocolVersion: "2025-03-26" };
+      return new Response(JSON.stringify({ jsonrpc: "2.0", id: 1, result }), { status: 200 });
+    }) as typeof fetch;
+    const adapter = new LiveMcpAdapter({ provider: "fuyao", serverKey: "a-share", endpoint: "https://mcp.example.test/a-share", credentials: { apiKey: "secret" }, toolForIntent: () => "a_share_price", fetchImpl: globalThis.fetch });
+    const result = await adapter.fetch({ intent: "price", symbol: "600519", market: "CN", T0: "2025-03-17T00:00:00Z" });
+    expect(result.status).toBe("success");
+    expect(result.data?.[0].relationToDecision).toBe("ex_post");
+    expect(result.data?.[0].publishedAt).toBe("2025-03-18T00:00:00.000Z");
   });
 });

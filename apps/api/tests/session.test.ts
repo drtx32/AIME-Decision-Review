@@ -31,6 +31,9 @@ describe("Conversation session contract", () => {
     expect(body.decisions[2].executedAt).toBeNull();
     expect(body.decisions[2].timePrecision).toBe("unknown");
     expect(calls).toEqual(["DecisionExtractionResult"]);
+    const blocked = await ctx.app.request(`/api/sessions/${body.sessionId}/confirm`, { method: "POST", headers: { cookie: alice } });
+    expect(blocked.status).toBe(422);
+    expect((await blocked.json() as any).decisionIds).toHaveLength(3);
     const hidden = await ctx.app.request(`/api/sessions/${body.sessionId}`, { headers: { cookie: bob } });
     expect(hidden.status).toBe(404);
   });
@@ -83,7 +86,7 @@ describe("Conversation session contract", () => {
   test("all source failures produce partial session and persisted assistant summary", async () => {
     const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "alice", "alice-pass");
     const candidate = { ...extraction.decisions[0], executedAt: "2025-03-18T09:00:00+08:00", timePrecision: "exact" };
-    ctx.deps.provider = { id: "test", modelName: "test", configured: true, complete: async (req) => req.schemaHint === "DecisionExtractionResult" ? { text: JSON.stringify({ decisions: [candidate] }) } : { text: JSON.stringify({ verdict: "数据源暂时不可用，结论需补充验证。", lessons: ["在数据源恢复后重跑证据核验。"] }) } } satisfies ModelProvider;
+    ctx.deps.provider = { id: "test", modelName: "test", configured: true, complete: async (req) => req.schemaHint === "DecisionExtractionResult" ? { text: JSON.stringify({ decisions: [candidate] }) } : { text: JSON.stringify({ verdict: "数据源暂时不可用，结论需补充验证。", lessons: ["在数据源恢复后重跑证据核验。", "先确认数据源时间戳。", "保留失败工具状态。"] }) } } satisfies ModelProvider;
     ctx.deps.registry = { configuredKeys: () => ["a-share"], resolve: () => null, resolveFor: () => [{ serverKey: "a-share", provider: "fuyao", canHandle: () => true, fetch: async () => ({ status: "transient_error", retrievedAt: new Date().toISOString(), error: { code: "UPSTREAM_DOWN", message: "upstream unavailable", retryable: true } }) }] };
     const created = await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ message: "昨天卖出金牛化工" }) });
     const body = await created.json() as { sessionId: string; decisions: Array<{ id: string }> };
@@ -95,5 +98,10 @@ describe("Conversation session contract", () => {
     expect(snapshot.session.status).toBe("partial");
     expect(snapshot.messages.some((message: any) => message.role === "assistant")).toBe(true);
     expect(snapshot.messages.some((message: any) => message.content.includes("数据源"))).toBe(true);
+    expect(snapshot.memories).toHaveLength(3);
+    expect(snapshot.memories.every((memory: any) => memory.sourceSessionId === body.sessionId && memory.sourceDecisionId === body.decisions[0].id)).toBe(true);
+    expect((await ctx.app.request(`/api/sessions/${body.sessionId}/confirm`, { method: "POST", headers: { cookie } })).status).toBe(202);
+    const deduped = await ctx.app.request(`/api/sessions/${body.sessionId}`, { headers: { cookie } });
+    expect((await deduped.json() as any).memories).toHaveLength(3);
   });
 });

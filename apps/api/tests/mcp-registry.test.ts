@@ -9,11 +9,13 @@ describe("MCP registry — selective construction", () => {
         baseUrl: null,
         apiKey: null,
         servers: ["a-share", "a-share-index"],
+        toolMap: {},
       },
       ifind: {
         baseUrl: null,
         authorization: null,
         servers: ["stock", "news"],
+        toolMap: {},
       },
     });
     const registry = buildMcpRegistry(cfg);

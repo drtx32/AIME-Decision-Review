@@ -107,7 +107,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     if (!deps.provider.configured) return c.json({ error: "MODEL_NOT_CONFIGURED", message: modelUnavailable }, 503);
     const decisions = deps.repo.listSessionDecisions(id, user.id);
     if (!decisions.length) return c.json({ error: "invalid_input", message: "没有可复盘的决策。" }, 400);
-    const pendingT0 = decisions.filter((item) => !item.executedAt || item.timePrecision === "unknown");
+    const pendingT0 = decisions.filter((item) => !item.executedAt || item.timePrecision !== "exact" || item.needsConfirmation.length > 0);
     if (pendingT0.length) return c.json({ error: "DECISION_CONFIRMATION_REQUIRED", message: "请先确认每笔决策的成交时间。", decisionIds: pendingT0.map((item) => item.id) }, 422);
     deps.repo.updateSession(id, user.id, "running"); deps.repo.addMessage(id, user.id, "status", "正在重建每笔决策各自的 T0 前信息环境…");
     const agent = new DecisionReviewAgent({ repo: deps.repo, registry: deps.registry, provider: deps.provider, config: deps.config });
@@ -115,7 +115,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     for (const item of decisions) {
       const runId = `rev_${randomUUID()}`; const decision: DecisionInput = { symbol: item.symbol, market: item.market as "CN" | "HK" | "US", action: item.action, executedAt: item.executedAt!, price: item.price ?? undefined, quantity: item.quantityShares ?? item.quantity ?? undefined, userReason: item.reason, notes: item.notes };
       deps.repo.createRun(runId, decision, item.executedAt!, id, user.id); deps.repo.linkDecisionReview(item.id, user.id, runId); runIds.push(runId);
-      const execute = async () => { try { await agent.run(runId, decision); const result = deps.repo.getResult(runId); if (result?.lessons[0]) deps.repo.addMemory(user.id, result.lessons[0], "lesson", id, item.id); deps.repo.addMessage(id, user.id, "status", `${item.symbol} 已完成 T0 对齐与证据复盘。`); } catch (error) { deps.repo.updateStatus(runId, "failed", { errorMessage: error instanceof Error ? error.message : String(error), finishedAt: new Date().toISOString() }); deps.repo.addMessage(id, user.id, "status", `${item.symbol} 复盘失败，已保留会话上下文。`); } };
+      const execute = async () => { try { await agent.run(runId, decision); const result = deps.repo.getResult(runId); for (const lesson of result?.lessons ?? []) { const text = lesson.trim(); if (text) deps.repo.addMemory(user.id, text, "lesson", id, item.id); } deps.repo.addMessage(id, user.id, "status", `${item.symbol} 已完成 T0 对齐与证据复盘。`); } catch (error) { deps.repo.updateStatus(runId, "failed", { errorMessage: error instanceof Error ? error.message : String(error), finishedAt: new Date().toISOString() }); deps.repo.addMessage(id, user.id, "status", `${item.symbol} 复盘失败，已保留会话上下文。`); } };
       if (deps.runSync) await execute(); else pending.push(execute());
     }
     const finalizeSession = () => {

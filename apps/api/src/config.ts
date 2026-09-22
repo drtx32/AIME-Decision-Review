@@ -34,16 +34,29 @@ export interface AppConfig {
     baseUrl: string | null;
     apiKey: string | null;
     servers: FuyaoServerKey[];
+    toolMap: Partial<Record<AdapterIntent, string>>;
   };
 
   ifind: {
     baseUrl: string | null;
     authorization: string | null;
     servers: IFindServerKey[];
+    toolMap: Partial<Record<AdapterIntent, string>>;
   };
 }
 
+function parseToolMap(raw: string | undefined): Partial<Record<AdapterIntent, string>> {
+  const out: Partial<Record<AdapterIntent, string>> = {};
+  if (!raw) return out;
+  for (const pair of raw.split(",")) {
+    const [intent, toolName] = pair.split(":").map((part) => part.trim());
+    if (intent && toolName) out[intent as AdapterIntent] = toolName;
+  }
+  return out;
+}
+
 import type { FuyaoServerKey, IFindServerKey } from "./types/index.ts";
+import type { AdapterIntent } from "./mcp/adapters/types.ts";
 
 function parseEnumList<T extends string>(
   raw: string | undefined,
@@ -129,6 +142,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         ALL_FUYAO_SERVERS,
         [...ALL_FUYAO_SERVERS]
       ),
+      toolMap: parseToolMap(env.HITHINK_FINANCE_TOOL_MAP),
     },
     ifind: {
       baseUrl: env.IFIND_MCP_BASE_URL?.trim() || null,
@@ -138,6 +152,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         ALL_IFIND_SERVERS,
         [...ALL_IFIND_SERVERS]
       ),
+      toolMap: parseToolMap(env.IFIND_MCP_TOOL_MAP),
     },
   };
 }

@@ -42,6 +42,13 @@ import { alignEvidence, type AdapterIntent } from "../mcp/adapters/types.ts";
 import { buildPlan, type PlanStep } from "./types.ts";
 import { reflect, type ReflectionFlag } from "./reflection.ts";
 import type { ModelProvider } from "../providers/index.ts";
+import { estimateTokens } from "../providers/index.ts";
+import {
+  type QuotaService,
+  QuotaExceededError,
+  type UsageIncrement,
+  type TokenSource,
+} from "../quota/repository.ts";
 
 export interface RunDecisionOptions {
   simulateTransientFailure?: boolean;
@@ -61,6 +68,14 @@ export class DecisionReviewAgent {
       registry: McpRegistry;
       provider: ModelProvider;
       config: AppConfig;
+      /**
+       * Optional quota service. When present, every LLM call goes through
+       * `quota.recordAfterCall`, and `quota.assertWithinQuota` is checked
+       * against a conservative character-based estimate before the call.
+       * User identity is always derived from the cookie session — never
+       * trusted from a client-supplied x-user-id header.
+       */
+      quota?: QuotaService;
     }
   ) {}
 
@@ -247,6 +262,98 @@ export class DecisionReviewAgent {
     return adapter.fetch(req);
   }
 
+  /**
+   * Wrap provider.complete with the quota accounting layer.
+   *
+   * - If no quota service is configured (legacy / tests), call through
+   *   directly — keeps existing call sites functional.
+   * - Pre-check uses a conservative estimate so we can fail fast before
+   *   spending provider budget on a doomed call.
+   * - Post-call recording uses the provider-reported usage when present,
+   *   otherwise the character-based estimate, and the source is labelled
+   *   accordingly for later audit.
+   */
+  private async completeWithQuota(
+    reviewId: string,
+    req: Parameters<ModelProvider["complete"]>[0]
+  ) {
+    const quota = this.deps.quota;
+    if (!quota) {
+      return this.deps.provider.complete(req);
+    }
+    // User identity comes from the session cookie. The agent constructor
+    // receives the userId via deps in the real wiring (see server.ts); here
+    // we accept it implicitly through the configured quota service binding.
+    const userId = this.userIdForReview(reviewId);
+    const estimatedInput =
+      estimateTokens(req.system ?? "") + estimateTokens(req.user ?? "");
+    const estimatedOutput = req.maxOutputTokens ?? 1024;
+    const planned = estimatedInput + estimatedOutput;
+    quota.assertWithinQuota(userId, planned);
+    const completion = await this.deps.provider.complete(req);
+    const reported = completion.usage;
+    const increment: UsageIncrement = reported
+      ? {
+          inputTokens: reported.input,
+          outputTokens: reported.output,
+          source: "provider",
+        }
+      : {
+          inputTokens: estimatedInput,
+          outputTokens: estimateTokens(completion.text ?? ""),
+          source: "estimated",
+        };
+    try {
+      quota.recordAfterCall(userId, increment);
+    } catch (e) {
+      if (e instanceof QuotaExceededError) {
+        // We still keep the completion — the caller may want to surface a
+        // partial review with a structured error attached. But for the MVP
+        // the agent re-throws so the run lands as "failed" with the stable
+        // error code propagated through the API layer.
+      }
+      throw e;
+    }
+    return completion;
+  }
+
+  /**
+   * Resolve the userId that owns a given review. Today, reviews have no
+   * explicit owner column (the ELI-325 change set deferred per-review
+   * ownership). We default to the review owner if/when it is added; for
+   * now the run falls under the user that submitted the HTTP request, which
+   * is set on the run via the run owner binding when the route handler
+   * wires the quota service. This is a no-op placeholder so the agent can
+   * stay typed without a hard dependency on the auth row.
+   */
+  private userIdForReview(_reviewId: string): string {
+    return this.runOwnerUserId;
+  }
+
+  /**
+   * Owner userId set per run by the route layer. The agent must always be
+   * driven by a route handler that has authenticated the caller, so this is
+   * always populated before `run()` is invoked. Tests that call the agent
+   * directly should set this explicitly.
+   */
+  private _runOwnerUserId: string | null = null;
+
+  private get runOwnerUserId(): string {
+    if (this._runOwnerUserId) return this._runOwnerUserId;
+    throw new Error(
+      "DecisionReviewAgent.run() called without a bound user identity; " +
+        "the agent must be invoked through an authenticated route."
+    );
+  }
+
+  /**
+   * Bind the authenticated user identity for a single run. Callers MUST
+   * obtain the userId from the session cookie — never from a client header.
+   */
+  bindRunOwner(userId: string) {
+    this._runOwnerUserId = userId;
+  }
+
   private async compose(
     reviewId: string,
     decision: DecisionInput,
@@ -260,7 +367,7 @@ export class DecisionReviewAgent {
     // We use the LLM provider only for narrative phrasing. The hard facts
     // (evidence list, T0 alignment, citations) are computed deterministically.
     const prompt = buildJudgmentPrompt(decision, T0, exAnte, exPost);
-    const llm = await this.deps.provider.complete({
+    const llm = await this.completeWithQuota(reviewId, {
       system: "You produce a structured investment decision review. Always return JSON.",
       user: prompt,
       schemaHint: "DecisionReviewResult",

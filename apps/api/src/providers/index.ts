@@ -42,6 +42,17 @@ export interface ModelProvider {
   complete(req: LLMCompletionRequest): Promise<LLMCompletion>;
 }
 
+/**
+ * Estimate token count from raw characters using the conservative 4-chars-per-
+ * token heuristic. Used as a fallback when the provider does not report usage
+ * (the mock provider in particular). Marked `estimated` so the quota layer can
+ * label the source for later audit.
+ */
+export function estimateTokens(text: string): number {
+  if (!text) return 0;
+  return Math.ceil(text.length / 4);
+}
+
 let cached: ModelProvider | null = null;
 
 export function getModelProvider(cfg: AppConfig): ModelProvider {

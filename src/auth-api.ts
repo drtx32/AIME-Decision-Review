@@ -1,5 +1,5 @@
 /**
- * Frontend API adapter for auth + admin user management.
+ * Frontend API adapter for auth + admin user management + settings.
  *
  * All requests use credentials so the HttpOnly session cookie flows
  * naturally through the browser. Errors carry the parsed JSON body when
@@ -123,5 +123,44 @@ export const adminUsers = {
       `/admin/users/${encodeURIComponent(userId)}/enable`,
       { method: "POST" }
     );
+  },
+};
+
+export interface QuotaSnapshot {
+  userId: string;
+  usageDate: string;
+  used: number;
+  remaining: number;
+  quota: number;
+  disabled: boolean;
+}
+
+export interface ModelProviderInfo {
+  id: string;
+  modelName: string;
+  configured: boolean;
+  baseHost: string | null;
+}
+
+export interface AggregateUserUsage {
+  userId: string;
+  username: string;
+  role: "admin" | "user";
+  usedToday: number;
+  quota: number;
+}
+
+export interface ModelSettings {
+  provider: ModelProviderInfo;
+  quota: { configured: number; source: string; note: string };
+  usage: { self: QuotaSnapshot; aggregate: AggregateUserUsage[] };
+}
+
+export const settings = {
+  async quota(): Promise<{ quota: QuotaSnapshot }> {
+    return await request<{ quota: QuotaSnapshot }>("/settings/quota");
+  },
+  async model(): Promise<ModelSettings> {
+    return await request<ModelSettings>("/settings/model");
   },
 };

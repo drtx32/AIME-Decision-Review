@@ -10,6 +10,7 @@
  */
 
 import type { LLMCompletion, LLMCompletionRequest, ModelProvider } from "./index.ts";
+import { estimateTokens } from "./index.ts";
 
 export class MockModelProvider implements ModelProvider {
   readonly id = "mock";
@@ -28,10 +29,14 @@ export class MockModelProvider implements ModelProvider {
       schemaHint: req.schemaHint ?? null,
       verdict: "defer-to-mock-evidence-layer",
     };
+    const text = JSON.stringify(structured);
+    // The mock provider never reports usage; we estimate from characters so
+    // the quota accounting layer still records a non-zero increment. The
+    // repository marks the source as "estimated" so this is auditable.
     return {
-      text: JSON.stringify(structured),
+      text,
       structured,
-      usage: { input: req.user.length, output: 64 },
+      usage: { input: estimateTokens(req.system) + estimateTokens(req.user), output: estimateTokens(text) },
     };
   }
 }

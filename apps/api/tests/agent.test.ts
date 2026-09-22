@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { makeTestServer, type TestServer } from "./helpers.ts";
 import { DecisionReviewAgent } from "../src/agents/decision-review.ts";
+import { hashPassword } from "../src/auth/passwords.ts";
 import type { DecisionInput } from "../src/types/index.ts";
 
 const baseDecision: DecisionInput = {
@@ -15,9 +16,21 @@ const baseDecision: DecisionInput = {
 
 describe("Decision Review Agent — vertical slice scenarios", () => {
   let ctx: TestServer;
+  let testUserId: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     ctx = makeTestServer();
+    // Seed an agent identity the agent can charge quota against. Direct
+    // agent.run() callers must bind a user explicitly — the route layer
+    // does this from the session cookie, tests do it from the seeded user.
+    const hash = await hashPassword("agent-test-pass-12345");
+    const row = ctx.userRepo.createUser({
+      username: "agent-test-user",
+      passwordHash: hash,
+      role: "user",
+      mustChangePassword: false,
+    });
+    testUserId = row.id;
   });
   afterEach(() => ctx.cleanup());
 
@@ -26,6 +39,7 @@ describe("Decision Review Agent — vertical slice scenarios", () => {
     ctx.repo.createRun(id, baseDecision, baseDecision.executedAt);
 
     const agent = new DecisionReviewAgent(ctx.deps);
+    agent.bindRunOwner(testUserId);
     const outcome = await agent.run(id, baseDecision);
 
     const statuses = outcome.result.toolStatuses.map((s) => s.status);
@@ -63,6 +77,7 @@ describe("Decision Review Agent — vertical slice scenarios", () => {
     const id = `rev_${crypto.randomUUID()}`;
     ctx.repo.createRun(id, baseDecision, baseDecision.executedAt);
     const agent = new DecisionReviewAgent(ctx.deps);
+    agent.bindRunOwner(testUserId);
 
     const outcome = await agent.run(id, baseDecision, { simulateEmpty: true });
 
@@ -80,6 +95,7 @@ describe("Decision Review Agent — vertical slice scenarios", () => {
     const id = `rev_${crypto.randomUUID()}`;
     ctx.repo.createRun(id, baseDecision, baseDecision.executedAt);
     const agent = new DecisionReviewAgent(ctx.deps);
+    agent.bindRunOwner(testUserId);
 
     const outcome = await agent.run(id, baseDecision, { simulateTransientFailure: true });
 
@@ -103,6 +119,7 @@ describe("Decision Review Agent — vertical slice scenarios", () => {
     };
     ctx.repo.createRun(id, decision, decision.executedAt);
     const agent = new DecisionReviewAgent(ctx.deps);
+    agent.bindRunOwner(testUserId);
 
     const outcome = await agent.run(id, decision);
     const labels = outcome.result.biases.map((b) => b.label);

@@ -1,5 +1,5 @@
 /**
- * Hono routes — /api/reviews/* + /api/auth/* + /api/admin/* + /health.
+ * Hono routes — /api/reviews/* + /api/auth/* + /api/admin/* + /api/settings/* + /health.
  *
  * All non-auth, non-health endpoints require an authenticated session.
  * mustChangePassword users are blocked from review endpoints and admin
@@ -15,9 +15,10 @@ import type { UserRepository } from "../auth/repository.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
 import { DecisionReviewAgent } from "../agents/decision-review.ts";
 import type { ModelProvider } from "../providers/index.ts";
-import { attachUser, requireAuth, gateMustChangePassword, rejectClientUserIdHeader, type AuthEnv } from "../auth/middleware.ts";
+import { attachUser, requireAuth, gateMustChangePassword, rejectClientUserIdHeader, requireAdmin, type AuthEnv } from "../auth/middleware.ts";
 import { buildAuthRoutes } from "../auth/routes.ts";
 import { buildAdminRoutes } from "../auth/admin.ts";
+import { QuotaExceededError, type QuotaRepository, type QuotaService } from "../quota/repository.ts";
 
 export interface RouteDeps {
   config: AppConfig;
@@ -25,6 +26,8 @@ export interface RouteDeps {
   userRepo: UserRepository;
   registry: McpRegistry;
   provider: ModelProvider;
+  quota: QuotaService;
+  quotaRepo: QuotaRepository;
   /** Test hook — bypass background execution so specs stay deterministic. */
   runSync?: boolean;
 }
@@ -61,6 +64,9 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   app.use("/api/reviews/*", requireAuth(deps.userRepo), gateMustChangePassword());
 
   app.post("/api/reviews", async (c) => {
+    const user = c.get("user");
+    if (!user) return c.json({ error: "unauthenticated" }, 401);
+
     const body = await c.req.json().catch(() => null);
     const parsed = DecisionInputSchema.safeParse(body);
     if (!parsed.success) {
@@ -85,6 +91,24 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
         422
       );
     }
+
+    // Pre-flight quota check. We only block here if the user's bucket is
+    // already exhausted; otherwise the agent will re-check inside its
+    // bounded estimate before each LLM call. This avoids burning provider
+    // budget when the user has clearly run out.
+    const snapshot = deps.quota.snapshot(user.id);
+    if (snapshot.disabled) {
+      return c.json(
+        {
+          error: "DAILY_TOKEN_QUOTA_EXCEEDED",
+          message:
+            "Daily token quota is disabled (PLATFORM_DAILY_TOKEN_QUOTA=0). Ask the platform admin to enable it.",
+          quota: snapshot,
+        },
+        429
+      );
+    }
+
     const id = `rev_${randomUUID()}`;
     const T0 = decision.executedAt;
     deps.repo.createRun(id, decision, T0);
@@ -94,12 +118,31 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
       registry: deps.registry,
       provider: deps.provider,
       config: deps.config,
+      quota: deps.quota,
     });
+    // Bind the authenticated user identity to this run. Identity is
+    // derived from the session cookie (set by attachUser), never from a
+    // client-supplied x-user-id header (rejected by rejectClientUserIdHeader).
+    agent.bindRunOwner(user.id);
 
     if (deps.runSync) {
       try {
         await agent.run(id, decision);
       } catch (e) {
+        if (e instanceof QuotaExceededError) {
+          deps.repo.updateStatus(id, "failed", {
+            errorMessage: `${e.code}: ${e.message}`,
+            finishedAt: new Date().toISOString(),
+          });
+          return c.json(
+            {
+              error: e.code,
+              message: e.message,
+              quota: deps.quota.snapshot(user.id),
+            },
+            429
+          );
+        }
         deps.repo.updateStatus(id, "failed", {
           errorMessage: e instanceof Error ? e.message : String(e),
           finishedAt: new Date().toISOString(),
@@ -108,6 +151,13 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     } else {
       // Fire-and-forget; clients poll /api/reviews/:id for progress.
       agent.run(id, decision).catch((e) => {
+        if (e instanceof QuotaExceededError) {
+          deps.repo.updateStatus(id, "failed", {
+            errorMessage: `${e.code}: ${e.message}`,
+            finishedAt: new Date().toISOString(),
+          });
+          return;
+        }
         deps.repo.updateStatus(id, "failed", {
           errorMessage: e instanceof Error ? e.message : String(e),
           finishedAt: new Date().toISOString(),
@@ -179,7 +229,78 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   // Admin endpoints — guarded inside buildAdminRoutes.
   app.route("/api/admin", admin);
 
+  // Settings endpoints — require an authenticated, non-mustChangePassword user.
+  app.use(
+    "/api/settings/*",
+    requireAuth(deps.userRepo),
+    gateMustChangePassword()
+  );
+
+  // Per-user quota snapshot — visible to every authenticated user.
+  app.get("/api/settings/quota", (c) => {
+    const user = c.get("user");
+    if (!user) return c.json({ error: "unauthenticated" }, 401);
+    return c.json({ quota: deps.quota.snapshot(user.id) });
+  });
+
+  // Model & Usage — admin only. Shows provider status (no API key), the
+  // configured quota, the admin's own usage, and an aggregate per-user
+  // usage table for today.
+  app.get(
+    "/api/settings/model",
+    requireAdmin(deps.userRepo),
+    (c) => {
+      const user = c.get("user");
+      if (!user) return c.json({ error: "unauthenticated" }, 401);
+      const providerInfo = {
+        id: deps.provider.id,
+        modelName: deps.provider.modelName,
+        configured: deps.config.llm.provider !== "mock" || Boolean(deps.config.llm.baseUrl),
+        // Sanitize the base URL so secrets embedded in the path (very rare
+        // but possible) cannot leak. Only the host is exposed.
+        baseHost: safeBaseHost(deps.config.llm.baseUrl),
+      };
+      const quota = deps.quota.snapshot(user.id);
+      const aggregate = deps.quota.listUserUsage((id) => {
+        const row = deps.userRepo.findById(id);
+        if (!row) return null;
+        return { username: row.username, role: row.role };
+      });
+      return c.json({
+        provider: providerInfo,
+        quota: {
+          configured: deps.config.platformDailyTokenQuota,
+          source: "PLATFORM_DAILY_TOKEN_QUOTA",
+          note:
+            deps.config.platformDailyTokenQuota === 0
+              ? "Free tier disabled; users cannot run reviews."
+              : "Free tier active; per-user daily limit.",
+        },
+        usage: {
+          self: quota,
+          aggregate,
+        },
+      });
+    }
+  );
+
   return app;
+}
+
+/**
+ * Extract just the host (and optional port) from a base URL. Never return
+ * the full URL because it can carry credentials in the userinfo segment
+ * (https://user:key@host/v1). Returning only the host keeps the UI
+ * informative while preventing accidental key leak.
+ */
+function safeBaseHost(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const u = new URL(raw);
+    return u.host;
+  } catch {
+    return null;
+  }
 }
 
 const NON_COMPLIANT_PATTERNS: Array<{ re: RegExp; label: string }> = [

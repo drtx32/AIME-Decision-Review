@@ -15,6 +15,13 @@ export interface AppConfig {
     password: string;
   };
 
+  /**
+   * Per-user daily token allowance served by the shared platform LLM.
+   * 0 means the free tier is disabled (every LLM call is rejected with
+   * DAILY_TOKEN_QUOTA_EXCEEDED). Source: PLATFORM_DAILY_TOKEN_QUOTA env.
+   */
+  platformDailyTokenQuota: number;
+
   llm: {
     provider: "openai-compatible" | "mock";
     model: string;
@@ -72,6 +79,21 @@ const ALL_IFIND_SERVERS: readonly IFindServerKey[] = [
   "futures",
 ] as const;
 
+const DEFAULT_PLATFORM_DAILY_TOKEN_QUOTA = 500_000;
+
+function parsePlatformDailyTokenQuota(raw: string | undefined): number {
+  if (raw === undefined || raw === null || raw === "") {
+    return DEFAULT_PLATFORM_DAILY_TOKEN_QUOTA;
+  }
+  const n = Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n) || n < 0) {
+    throw new Error(
+      `PLATFORM_DAILY_TOKEN_QUOTA must be an integer >= 0 (got ${raw})`
+    );
+  }
+  return n;
+}
+
 export function loadConfig(env: Record<string, string | undefined> = process.env): AppConfig {
   const providerRaw = (env.LLM_PROVIDER ?? "mock").toLowerCase();
   const provider: AppConfig["llm"]["provider"] =
@@ -101,6 +123,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       username: initialAdminUsername,
       password: initialAdminPassword,
     },
+    platformDailyTokenQuota: parsePlatformDailyTokenQuota(env.PLATFORM_DAILY_TOKEN_QUOTA),
     llm: {
       provider,
       model: env.LLM_MODEL ?? "mvp-mock-model",

@@ -21,6 +21,7 @@ export function makeTestConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       username: "admin",
       password: "admin@123",
     },
+    platformDailyTokenQuota: 500_000,
     llm: {
       provider: "mock",
       model: "mvp-mock",
@@ -49,10 +50,12 @@ export function makeTestServer(): TestServer {
     deps,
     repo,
     userRepo,
+    quotaRepo: deps.quotaRepo,
     cfg,
     cleanup: () => {
       repo.close();
       userRepo.close();
+      deps.quotaRepo.close();
       try {
         rmSync(cfg.sqlitePath, { force: true });
       } catch {
@@ -67,6 +70,7 @@ export interface TestServer {
   deps: ReturnType<typeof buildServer>["deps"];
   repo: ReturnType<typeof buildServer>["repo"];
   userRepo: ReturnType<typeof buildServer>["userRepo"];
+  quotaRepo: ReturnType<typeof buildServer>["deps"]["quotaRepo"];
   cfg: AppConfig;
   cleanup: () => void;
 }

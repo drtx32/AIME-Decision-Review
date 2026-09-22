@@ -28,3 +28,23 @@
 .userRow em{font-style:normal;font:10px 'DM Mono';color:#b5544a;border:1px solid #f3c8c0;border-radius:30px;padding:2px 8px;background:#fce9e5}
 .userActions{display:flex;gap:8px}
 @media(max-width:800px){.headerRight .ghost{padding:7px 9px;font-size:11px}.authCard{padding:0}.adminGrid{grid-template-columns:1fr}.userRow{flex-wrap:wrap;gap:10px}.userActions{width:100%;justify-content:flex-end}}
+
+/* --- Settings screen (ELI-332) --------------------------------- */
+.settings .resulttop{margin-top:0}
+.settingsGrid{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:10px}
+.settingsGrid>.card.form,.settingsGrid>.adminList{padding:24px 26px}
+.settingsGrid>.adminList{padding:0}
+.settings .kv{display:grid;grid-template-columns:90px 1fr;gap:10px;align-items:center;border-bottom:1px solid #edf1ed;padding:10px 0;font:12px Manrope;color:#3a5842}
+.settings .kv:last-of-type{border-bottom:0}
+.settings .kv span{font:10px 'DM Mono';color:#7d9083;text-transform:uppercase;letter-spacing:.06em}
+.settings .kv b{font-weight:600;color:#1b2b22;word-break:break-all}
+.quotaBar{height:10px;background:#edf2ed;border-radius:9px;overflow:hidden;margin:14px 0 6px}
+.quotaBar.slim{height:6px;margin:0;flex:1}
+.quotaBar i{display:block;height:100%;background:linear-gradient(90deg,#7db180,#a8d3a0)}
+.quotaMeta{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:10px}
+.quotaMeta>div{background:#fbfcfa;border:1px solid #e6ede6;border-radius:8px;padding:10px 12px;text-align:center}
+.quotaMeta span{display:block;font:10px 'DM Mono';color:#7d9083;text-transform:uppercase;letter-spacing:.06em}
+.quotaMeta b{display:block;font:600 18px Manrope;color:#1b2b22;margin-top:4px}
+.quotaMeta small{display:block;font:10px Manrope;color:#98a59c;margin-top:2px}
+.settings .muted{margin-top:14px}
+@media(max-width:800px){.settingsGrid{grid-template-columns:1fr}.quotaMeta{grid-template-columns:1fr}}

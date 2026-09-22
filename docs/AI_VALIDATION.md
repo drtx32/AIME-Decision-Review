@@ -305,3 +305,107 @@ to `main`.
 - Added the backend `.dockerignore` from the ELI-321 handoff and added the
   repository-wide multi-component architecture/Compose planning rule to
   `AGENTS.md`.
+
+## Auth: Bootstrap Admin + Managed Users — 2026-09-22 (Oracle CC)
+
+**AI/tool used**
+- Oracle CC (Claude Opus 4.8) on branch `agent/oracle-cc/4988b142bf66`
+- Bun 1.4.x + Hono 4 + Bun.password (argon2id) + Zod
+
+**Task**
+- ELI-325: implement minimal built-in authentication with admin-managed
+  users: no public registration, argon2id passwords, HttpOnly cookie
+  session, idempotent bootstrap admin from
+  `INITIAL_ADMIN_USERNAME` / `INITIAL_ADMIN_PASSWORD`, forced first-login
+  password change, admin-only user CRUD with one-time temporary
+  passwords, self-disable / self-delete protection, frontend login +
+  forced change + admin user-management screens.
+
+**Output**
+- Backend (`apps/api/src/auth/`): `types.ts`, `passwords.ts` (argon2id
+  via `Bun.password`; 16-char base64url temp passwords; 32-byte base64url
+  session tokens), `repository.ts` (users + sessions tables; idempotent
+  `ensureBootstrapAdmin`), `middleware.ts` (`attachUser`, `requireAuth`,
+  `requireAdmin`, `gateMustChangePassword`, cookie helpers with Secure
+  flag in production), `routes.ts` (`/api/auth/{login,logout,me,
+  change-password}`), `admin.ts` (`/api/admin/users` list/create/
+  reset/disable/enable/delete with self + last-admin guards).
+- Entry point (`apps/api/src/index.ts`) runs
+  `userRepo.ensureBootstrapAdmin(...)` before wiring routes; logs only
+  the username (never the password) when an admin is created.
+- Config (`apps/api/src/config.ts`) loads `INITIAL_ADMIN_USERNAME` /
+  `INITIAL_ADMIN_PASSWORD` with documented fallbacks and a Secure-cookie
+  `isProduction` flag.
+- Frontend (`src/auth-api.ts`, `src/App.tsx`, `src/styles.css`): thin
+  client using `credentials: include`; App.tsx state machine
+  `login → change-password → home / result / admin`; admin-only user
+  management screen (create / reset / disable / enable) with no signup
+  UI; header shows username + role badge + logout.
+- `docker-compose.yml` passes `INITIAL_ADMIN_USERNAME` /
+  `INITIAL_ADMIN_PASSWORD` with documented defaults into the API service
+  only (never into the web image). `.env.example` documents the new
+  server-only variables.
+
+**Validation**
+- `bun install --frozen-lockfile` → clean.
+- `bun run typecheck` → 0 errors.
+- `bun test` → **50/50 pass**, 229 expect() calls across 4 files:
+  - `apps/api/tests/auth.test.ts` — 39 tests covering bootstrap
+    idempotency, env override (INITIAL_ADMIN_USERNAME / PASSWORD),
+    login / logout / me, must_change_password gate (cannot hit
+    /api/reviews or /api/admin), role protection (admin / user / anon),
+    create-user returns one-time temp password + forces mustChange,
+    reset-password issues new temp + revokes sessions, self-disable /
+    self-delete blocked, last-admin guard, session invalidation on
+    change-password, secret hygiene (argon2id hashes only, no plaintext
+    echoed in responses, no `admin@123` literal in the frontend bundle),
+    **identity-contract guard: client-supplied `x-user-id` / `X-User-Id`
+    headers are rejected on every protected route; user identity is
+    always derived from the ELI-325 session cookie (the contract PR #7 /
+    ELI-328 must satisfy when merged).**
+  - Existing review-API tests updated to authenticate via cookie and
+    remain green.
+- `npm run build` → clean (`vite build`); bundle contains **zero**
+  literal `admin@123` (verified by `grep`).
+- Secret scan on `apps/api/src` + `dist/`: no populated API keys, MCP
+  tokens, Authorization headers, cookies, or bearer tokens. The only
+  occurrence of the string `admin@123` in source is the documented
+  server-side default fallback in `apps/api/src/config.ts` (and an
+  accompanying comment) — it never appears in the frontend bundle.
+
+**Human corrections**
+- Kept frontend and backend changes inside their respective boundaries
+  (`apps/api/src/auth/`, `src/auth-api.ts`, `src/App.tsx`,
+  `src/styles.css`); only `.env.example` and `docker-compose.yml` at the
+  repo root were touched.
+- Removed an earlier frontend auto-fill of the bootstrap password in
+  the change-password screen so the bundle contains no literal
+  `admin@123` — operator enters the password they were given at
+  provisioning time.
+
+**Residual risk / unresolved**
+- Frontend bundle is mock-mode aware but the login flow requires the
+  production `/api` proxy; `npm run dev` outside Compose still needs a
+  `/api` mock or proxy to exercise login end-to-end.
+- The default bootstrap password is intentionally public per the issue
+  acceptance; `must_change_password=1` and the disabled-default-account
+  guard are the safety net.
+- Initial Compose deployment on a host with a pre-existing `api-data`
+  volume created by the earlier root-user image may still need a
+  one-time ownership migration (`/var/lib/aime`); this is the existing
+  ELI-321 caveat and is unchanged by ELI-325.
+
+**Branch / PR**
+- Branch `agent/oracle-cc/4988b142bf66` — 2 commits ahead of `main`,
+  ahead of `origin/main` (after the `Ops: canonical production path`
+  PR #6 merge).
+- Head SHA: `547ebb8dd2fb0b608955bcec0aeb524157682c3b` (force-with-lease
+  updated with the `x-user-id` identity-contract guard + 5 regression
+  tests + `docs/AI_VALIDATION.md` update).
+- PR #9 opened by the user as Draft; `mergeable_state` was `mergeable=false`
+  on the previous head and will be re-checked by GitHub after this
+  force-push.
+- PR open / update blocked locally because the workspace `gh` PAT does
+  not carry `pull_requests` scope (`403 Resource not accessible by
+  personal access token` on `repos/.../pulls`); branch is pushed and
+  ready for the supervisor or a token with the right scope to update.

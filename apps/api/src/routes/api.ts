@@ -1,5 +1,9 @@
 /**
- * Hono routes — /api/reviews/* + /health.
+ * Hono routes — /api/reviews/* + /api/auth/* + /api/admin/* + /health.
+ *
+ * All non-auth, non-health endpoints require an authenticated session.
+ * mustChangePassword users are blocked from review endpoints and admin
+ * endpoints — they may only hit /api/auth/*.
  */
 
 import { Hono } from "hono";
@@ -7,21 +11,39 @@ import { randomUUID } from "node:crypto";
 import { DecisionInputSchema } from "../types/index.ts";
 import type { AppConfig } from "../config.ts";
 import type { ReviewRepository } from "../db/sqlite.ts";
+import type { UserRepository } from "../auth/repository.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
 import { DecisionReviewAgent } from "../agents/decision-review.ts";
 import type { ModelProvider } from "../providers/index.ts";
+import { attachUser, requireAuth, gateMustChangePassword, rejectClientUserIdHeader, type AuthEnv } from "../auth/middleware.ts";
+import { buildAuthRoutes } from "../auth/routes.ts";
+import { buildAdminRoutes } from "../auth/admin.ts";
 
 export interface RouteDeps {
   config: AppConfig;
   repo: ReviewRepository;
+  userRepo: UserRepository;
   registry: McpRegistry;
   provider: ModelProvider;
   /** Test hook — bypass background execution so specs stay deterministic. */
   runSync?: boolean;
 }
 
-export function buildApi(deps: RouteDeps): Hono {
-  const app = new Hono();
+type AppEnv = { Variables: AuthEnv["Variables"] };
+
+export function buildApi(deps: RouteDeps): Hono<AppEnv> {
+  const app = new Hono<AppEnv>();
+  const config = deps.config;
+  const auth = buildAuthRoutes(deps.userRepo, config.isProduction);
+  const admin = buildAdminRoutes(deps.userRepo);
+
+  app.use("*", attachUser(deps.userRepo));
+
+  // Identity-contract guard — must run BEFORE requireAuth so a forged
+  // x-user-id header is rejected even if a future route forgets the auth
+  // gate. Runs after attachUser so it doesn't interfere with /health or
+  // /api/auth/login response paths.
+  app.use("/api/*", rejectClientUserIdHeader());
 
   app.get("/health", (c) => {
     return c.json({
@@ -31,6 +53,12 @@ export function buildApi(deps: RouteDeps): Hono {
       time: new Date().toISOString(),
     });
   });
+
+  // Public auth endpoints (login + change-password self-service) live here.
+  app.route("/api/auth", auth);
+
+  // Review endpoints — require an authenticated, non-mustChangePassword user.
+  app.use("/api/reviews/*", requireAuth(deps.userRepo), gateMustChangePassword());
 
   app.post("/api/reviews", async (c) => {
     const body = await c.req.json().catch(() => null);
@@ -147,6 +175,9 @@ export function buildApi(deps: RouteDeps): Hono {
     }
     return c.json({ id, status: run.status, result });
   });
+
+  // Admin endpoints — guarded inside buildAdminRoutes.
+  app.route("/api/admin", admin);
 
   return app;
 }

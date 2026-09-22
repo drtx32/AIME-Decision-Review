@@ -1,12 +1,14 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
-import { makeTestServer, type TestServer } from "./helpers.ts";
+import { makeTestServer, loginAndCookie, type TestServer } from "./helpers.ts";
 import type { DecisionReviewResult } from "../src/types/index.ts";
 
 describe("Review API contract", () => {
   let ctx: TestServer;
+  let cookie: string;
 
-  beforeEach(() => {
+  beforeEach(async () => {
     ctx = makeTestServer();
+    cookie = await loginAndCookie(ctx.app, ctx.userRepo, "tester", "secret-pass-12345");
   });
   afterEach(() => ctx.cleanup());
 
@@ -28,7 +30,7 @@ describe("Review API contract", () => {
   test("POST /api/reviews rejects invalid payload", async () => {
     const res = await ctx.app.request("/api/reviews", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", cookie },
       body: JSON.stringify({ symbol: "" }),
     });
     expect(res.status).toBe(400);
@@ -39,7 +41,7 @@ describe("Review API contract", () => {
   test("POST /api/reviews rejects non-compliant (T11) deterministic-prediction language", async () => {
     const res = await ctx.app.request("/api/reviews", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", cookie },
       body: JSON.stringify({
         symbol: "600519",
         market: "CN",
@@ -57,7 +59,7 @@ describe("Review API contract", () => {
   test("POST /api/reviews → GET /result returns structured review (vertical slice)", async () => {
     const created = await ctx.app.request("/api/reviews", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", cookie },
       body: JSON.stringify({
         symbol: "600519",
         market: "CN",
@@ -75,7 +77,7 @@ describe("Review API contract", () => {
 
     let status = "created";
     for (let i = 0; i < 30 && status !== "completed" && status !== "partial" && status !== "failed"; i++) {
-      const r = await ctx.app.request(`/api/reviews/${id}`);
+      const r = await ctx.app.request(`/api/reviews/${id}`, { headers: { cookie } });
       const body = (await r.json()) as { status: string };
       status = body.status;
       if (status !== "completed" && status !== "partial" && status !== "failed") {
@@ -83,7 +85,7 @@ describe("Review API contract", () => {
       }
     }
 
-    const resultRes = await ctx.app.request(`/api/reviews/${id}/result`);
+    const resultRes = await ctx.app.request(`/api/reviews/${id}/result`, { headers: { cookie } });
     expect(resultRes.status).toBe(200);
     const resultBody = (await resultRes.json()) as { result: DecisionReviewResult };
     const result = resultBody.result;
@@ -104,7 +106,7 @@ describe("Review API contract", () => {
     expect(Array.isArray(result.toolStatuses)).toBe(true);
     expect(result.toolStatuses.length).toBeGreaterThan(0);
 
-    const eventsRes = await ctx.app.request(`/api/reviews/${id}/events`);
+    const eventsRes = await ctx.app.request(`/api/reviews/${id}/events`, { headers: { cookie } });
     const eventsBody = (await eventsRes.json()) as {
       events: Array<{ kind: string }>;
     };

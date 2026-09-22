@@ -254,17 +254,25 @@ export class LazyResilientProvider implements ModelProvider {
  * returns a `mock`-backed LazyResilientProvider flagged as
  * `requestedMode: "openai-compatible"` with `state: "unconfigured"`, so
  * /health can show "provider_configured: false" without crashing the API.
+ *
+ * No process-level singleton: each call builds a fresh provider for the
+ * supplied cfg. This is required for test isolation — bun:test runs all
+ * spec files in one process, so a cached singleton would let an earlier
+ * test (e.g. `agent.test.ts` with `provider: "mock"`) leak its provider
+ * into a later test (`resilience.test.ts` with `provider:
+ * "openai-compatible"`), causing the no-LLM /health case to falsely
+ * report `provider_configured: true`. Construction is cheap (the OpenAI
+ * client is built lazily on first `complete()`), so the cost of
+ * rebuilding is negligible compared to the isolation bug it fixes.
  */
 export function getModelProvider(cfg: AppConfig): ModelProvider {
-  if (cached) return cached;
   const requested = cfg.llm.provider; // "mock" | "openai-compatible"
   if (requested === "mock") {
-    cached = new LazyResilientProvider({
+    return new LazyResilientProvider({
       id: "mock",
       modelName: cfg.llm.model,
       build: () => new MockModelProvider(cfg.llm.model),
     });
-    return cached;
   }
 
   // Real provider requested. Check both credentials are present before we
@@ -272,7 +280,7 @@ export function getModelProvider(cfg: AppConfig): ModelProvider {
   if (!cfg.llm.baseUrl || !cfg.llm.apiKey) {
     // Mark as unconfigured; degrade to mock so the dev / demo server stays
     // up. The availability snapshot tells the operator what's happening.
-    cached = new LazyResilientProvider({
+    const p = new LazyResilientProvider({
       id: "openai-compatible",
       modelName: cfg.llm.model,
       build: () => new MockModelProvider(cfg.llm.model),
@@ -280,7 +288,7 @@ export function getModelProvider(cfg: AppConfig): ModelProvider {
     // Force availability to unconfigured by storing a typed error.
     // We do this without calling .complete() so /health sees the right
     // state without making a network call.
-    (cached as unknown as { lastError: ProviderError }).lastError =
+    (p as unknown as { lastError: ProviderError }).lastError =
       makeProviderError("MODEL_NOT_CONFIGURED", {
         correlationId: randomUUID(),
         sanitizedMessage:
@@ -288,10 +296,10 @@ export function getModelProvider(cfg: AppConfig): ModelProvider {
         providerId: "openai-compatible",
         providerStatus: "missing_credentials",
       });
-    return cached;
+    return p;
   }
 
-  cached = new LazyResilientProvider({
+  return new LazyResilientProvider({
     id: "openai-compatible",
     modelName: cfg.llm.model,
     build: () =>
@@ -301,14 +309,15 @@ export function getModelProvider(cfg: AppConfig): ModelProvider {
         apiKey: cfg.llm.apiKey as string,
       }),
   });
-  return cached;
 }
 
-let cached: LazyResilientProvider | null = null;
-
-/** Test hook — reset the cached provider between specs. */
+/**
+ * Test hook — kept for API stability; this module no longer caches the
+ * provider across calls, so the function is a no-op. Existing callers
+ * that invoke it continue to work without modification.
+ */
 export function _resetModelProviderForTest() {
-  cached = null;
+  // No-op: see getModelProvider() comment above for rationale.
 }
 
 /** Inspect the cached provider's availability (or the mock default). */

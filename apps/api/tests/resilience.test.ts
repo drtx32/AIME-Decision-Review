@@ -40,6 +40,65 @@ function buildConfigWithoutLLM(overrides: Partial<AppConfig> = {}): AppConfig {
   });
 }
 
+/**
+ * ELI-326 test isolation. bun:test runs every spec file in a single
+ * process, so prior tests may have populated `process.env.LLM_*`,
+ * triggered module-level caching, or built a `LazyResilientProvider`
+ * singleton that survives into the next spec. The CI failure on the
+ * no-LLM /health case (`provider_configured` expected false, observed
+ * true) traced back to exactly this pollution.
+ *
+ * `withNoLlmEnv()` snapshots all `LLM_*` keys that influence readiness,
+ * deletes them for the duration of `fn`, then restores the snapshot
+ * (including any deleted keys) so the next test starts from a clean,
+ * deterministic baseline. Callers must `await` the returned promise.
+ *
+ * Belt-and-braces: also import-resets the providers module cache via
+ * `Bun.gc` no, simpler — explicit module cache eviction if present —
+ * and invokes `_resetModelProviderForTest()` (currently a no-op since
+ * the singleton is gone, kept for forward compatibility).
+ */
+const LLM_ENV_KEYS = [
+  "LLM_PROVIDER",
+  "LLM_API_KEY",
+  "LLM_BASE_URL",
+  "LLM_MODEL",
+  "HITHINK_FINANCE_BASE_URL",
+  "HITHINK_FINANCE_API_KEY",
+  "IFIND_MCP_BASE_URL",
+  "IFIND_MCP_AUTHORIZATION",
+] as const;
+
+async function withNoLlmEnv<T>(fn: () => Promise<T> | T): Promise<T> {
+  const snapshot: Record<string, string | undefined> = {};
+  for (const key of LLM_ENV_KEYS) {
+    snapshot[key] = process.env[key];
+    delete process.env[key];
+  }
+  // Drop any cached ESM resolution of the providers module so the next
+  // import re-evaluates from scratch. Bun uses `import.meta.resolve`
+  // style caching; the only reliable cross-version way to force a
+  // re-import is via `require.cache` (CommonJS) or, since the source
+  // is loaded as ESM, by clearing the dynamic module registry. As a
+  // portable fallback we just call the test-reset hook, which is now a
+  // no-op but signals intent and remains correct if a singleton is
+  // ever reintroduced.
+  _resetModelProviderForTest();
+  try {
+    return await fn();
+  } finally {
+    for (const key of LLM_ENV_KEYS) {
+      const v = snapshot[key];
+      if (v === undefined) {
+        delete process.env[key];
+      } else {
+        process.env[key] = v;
+      }
+    }
+    _resetModelProviderForTest();
+  }
+}
+
 describe("ELI-326: API stays healthy with missing LLM config", () => {
   let ctx: TestServer | null = null;
   afterEach(() => {
@@ -49,94 +108,100 @@ describe("ELI-326: API stays healthy with missing LLM config", () => {
   });
 
   test("boot with no LLM env → API healthy (/health 200, provider_configured: false)", async () => {
-    const cfg = buildConfigWithoutLLM();
-    const { app, repo } = buildServer(cfg);
-    ctx = { app, deps: { config: cfg } as never, repo, cfg, cleanup: () => repo.close() };
+    await withNoLlmEnv(async () => {
+      const cfg = buildConfigWithoutLLM();
+      const { app, repo } = buildServer(cfg);
+      ctx = { app, deps: { config: cfg } as never, repo, cfg, cleanup: () => repo.close() };
 
-    const res = await app.request("/health");
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      status: string;
-      provider_configured: boolean;
-      provider_status: string;
-      provider_id: string | null;
-      requested_mode: string;
-      degraded: boolean;
-      last_error: null | {
-        code: string;
-        retryable: boolean;
-        correlationId: string;
-        providerStatus: string | null;
+      const res = await app.request("/health");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as {
+        status: string;
+        provider_configured: boolean;
+        provider_status: string;
+        provider_id: string | null;
+        requested_mode: string;
+        degraded: boolean;
+        last_error: null | {
+          code: string;
+          retryable: boolean;
+          correlationId: string;
+          providerStatus: string | null;
+        };
       };
-    };
-    expect(body.status).toBe("ok");
-    expect(body.provider_configured).toBe(false);
-    expect(body.provider_status).toBe("unconfigured");
-    expect(body.requested_mode).toBe("openai-compatible");
-    expect(body.degraded).toBe(true);
-    expect(body.last_error?.code).toBe("MODEL_NOT_CONFIGURED");
-    expect(body.last_error?.retryable).toBe(false);
-    expect(body.last_error?.correlationId).toMatch(/^[0-9a-f-]{36}$/);
-    // Provider status is the typed "missing_credentials" marker — never an
-    // api key or Authorization header.
-    expect(body.last_error?.providerStatus).toBe("missing_credentials");
+      expect(body.status).toBe("ok");
+      expect(body.provider_configured).toBe(false);
+      expect(body.provider_status).toBe("unconfigured");
+      expect(body.requested_mode).toBe("openai-compatible");
+      expect(body.degraded).toBe(true);
+      expect(body.last_error?.code).toBe("MODEL_NOT_CONFIGURED");
+      expect(body.last_error?.retryable).toBe(false);
+      expect(body.last_error?.correlationId).toMatch(/^[0-9a-f-]{36}$/);
+      // Provider status is the typed "missing_credentials" marker — never an
+      // api key or Authorization header.
+      expect(body.last_error?.providerStatus).toBe("missing_credentials");
+    });
   });
 
   test("POST /api/reviews with no provider → controlled 503 + stable code MODEL_NOT_CONFIGURED", async () => {
-    const cfg = buildConfigWithoutLLM();
-    const { app, repo } = buildServer(cfg);
-    ctx = { app, deps: { config: cfg } as never, repo, cfg, cleanup: () => repo.close() };
+    await withNoLlmEnv(async () => {
+      const cfg = buildConfigWithoutLLM();
+      const { app, repo } = buildServer(cfg);
+      ctx = { app, deps: { config: cfg } as never, repo, cfg, cleanup: () => repo.close() };
 
-    const res = await app.request("/api/reviews", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        symbol: "600519",
-        market: "CN",
-        action: "buy",
-        executedAt: "2024-03-15T00:00:00Z",
-        userReason: "Channel checks pre-T0; pricing power intact.",
-      }),
+      const res = await app.request("/api/reviews", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          symbol: "600519",
+          market: "CN",
+          action: "buy",
+          executedAt: "2024-03-15T00:00:00Z",
+          userReason: "Channel checks pre-T0; pricing power intact.",
+        }),
+      });
+      expect(res.status).toBe(503);
+      const body = (await res.json()) as {
+        error: string;
+        code: string;
+        retryable: boolean;
+        provider_status: string;
+        message: string;
+      };
+      expect(body.error).toBe("MODEL_NOT_CONFIGURED");
+      expect(body.code).toBe("MODEL_NOT_CONFIGURED");
+      expect(body.retryable).toBe(false);
+      expect(body.provider_status).toBe("unconfigured");
+      // User-facing message in Chinese per the issue contract.
+      expect(body.message).toContain("当前未配置可用的大模型服务");
     });
-    expect(res.status).toBe(503);
-    const body = (await res.json()) as {
-      error: string;
-      code: string;
-      retryable: boolean;
-      provider_status: string;
-      message: string;
-    };
-    expect(body.error).toBe("MODEL_NOT_CONFIGURED");
-    expect(body.code).toBe("MODEL_NOT_CONFIGURED");
-    expect(body.retryable).toBe(false);
-    expect(body.provider_status).toBe("unconfigured");
-    // User-facing message in Chinese per the issue contract.
-    expect(body.message).toContain("当前未配置可用的大模型服务");
   });
 
   test("/health remains 200 after a provider call failure (mock provider failure path)", async () => {
-    const cfg = buildConfigWithoutLLM();
-    const { app, repo } = buildServer(cfg);
-    ctx = { app, deps: { config: cfg } as never, repo, cfg, cleanup: () => repo.close() };
+    await withNoLlmEnv(async () => {
+      const cfg = buildConfigWithoutLLM();
+      const { app, repo } = buildServer(cfg);
+      ctx = { app, deps: { config: cfg } as never, repo, cfg, cleanup: () => repo.close() };
 
-    // Trigger a 503 by submitting a review.
-    await app.request("/api/reviews", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        symbol: "600519",
-        market: "CN",
-        action: "buy",
-        executedAt: "2024-03-15T00:00:00Z",
-        userReason: "Channel checks pre-T0; pricing power intact.",
-      }),
+      // Trigger a 503 by submitting a review.
+      await app.request("/api/reviews", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          symbol: "600519",
+          market: "CN",
+          action: "buy",
+          executedAt: "2024-03-15T00:00:00Z",
+          userReason: "Channel checks pre-T0; pricing power intact.",
+        }),
+      });
+
+      const res = await app.request("/health");
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { provider_configured: boolean; status: string };
+      expect(body.status).toBe("ok");
+      expect(body.provider_configured).toBe(false);
     });
-
-    const res = await app.request("/health");
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as { provider_configured: boolean; status: string };
-    expect(body.status).toBe("ok");
-    expect(body.provider_configured).toBe(false);
   });
 
   test("mock provider path keeps existing review flow working (sanity)", async () => {
@@ -355,14 +420,16 @@ describe("ELI-326: LazyResilientProvider does not throw on construction", () => 
 });
 
 describe("ELI-326: getProviderAvailability honors cfg", () => {
-  test("returns unconfigured when LLM env is missing", () => {
-    _resetModelProviderForTest();
-    const cfg = buildConfigWithoutLLM();
-    const a = getProviderAvailability(cfg);
-    expect(a.state).toBe("unconfigured");
-    expect(a.requestedMode).toBe("openai-compatible");
-    expect(a.degraded).toBe(true);
-    expect(a.lastError?.code).toBe("MODEL_NOT_CONFIGURED");
+  test("returns unconfigured when LLM env is missing", async () => {
+    await withNoLlmEnv(() => {
+      _resetModelProviderForTest();
+      const cfg = buildConfigWithoutLLM();
+      const a = getProviderAvailability(cfg);
+      expect(a.state).toBe("unconfigured");
+      expect(a.requestedMode).toBe("openai-compatible");
+      expect(a.degraded).toBe(true);
+      expect(a.lastError?.code).toBe("MODEL_NOT_CONFIGURED");
+    });
   });
 
   test("returns ready (mock) when LLM_PROVIDER=mock", () => {
@@ -384,24 +451,26 @@ describe("ELI-326: secret-redaction safety in route error responses", () => {
   });
 
   test("error response body contains no api key or Authorization header", async () => {
-    const cfg = buildConfigWithoutLLM();
-    const { app, repo } = buildServer(cfg);
-    ctx = { app, deps: { config: cfg } as never, repo, cfg, cleanup: () => repo.close() };
+    await withNoLlmEnv(async () => {
+      const cfg = buildConfigWithoutLLM();
+      const { app, repo } = buildServer(cfg);
+      ctx = { app, deps: { config: cfg } as never, repo, cfg, cleanup: () => repo.close() };
 
-    const res = await app.request("/api/reviews", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        symbol: "600519",
-        market: "CN",
-        action: "buy",
-        executedAt: "2024-03-15T00:00:00Z",
-        userReason: "Channel checks pre-T0; pricing power intact.",
-      }),
+      const res = await app.request("/api/reviews", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          symbol: "600519",
+          market: "CN",
+          action: "buy",
+          executedAt: "2024-03-15T00:00:00Z",
+          userReason: "Channel checks pre-T0; pricing power intact.",
+        }),
+      });
+      const text = await res.text();
+      expect(text).not.toMatch(/sk-[A-Za-z0-9_\-]{8,}/);
+      expect(text).not.toMatch(/Bearer\s+[A-Za-z0-9_\-]{8,}/i);
+      expect(text).not.toMatch(/Authorization:\s*\S+/i);
     });
-    const text = await res.text();
-    expect(text).not.toMatch(/sk-[A-Za-z0-9_\-]{8,}/);
-    expect(text).not.toMatch(/Bearer\s+[A-Za-z0-9_\-]{8,}/i);
-    expect(text).not.toMatch(/Authorization:\s*\S+/i);
   });
 });

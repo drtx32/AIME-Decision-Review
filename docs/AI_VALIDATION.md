@@ -64,3 +64,29 @@ This file records how AI tools are used in the project, what they generated, how
 **Residual risk / unresolved**
 - Real MCP capabilities still need live verification per server.
 - LLM provider compatibility and production deployment need integration testing.
+
+## Frontend Web Shell — 2026-09-22
+
+**AI/tool used**
+- Codex for React/Vite/TypeScript UI implementation and mock adapter design.
+
+**Task**
+- Implement the frontend-only Decision Review vertical slice while preserving the T0 ex-ante/ex-post boundary and keeping backend credentials server-side.
+
+**Output**
+- Home → Running → Result flow with a mock adapter.
+- T0 evidence split, separate Decision Quality / Outcome, attribution labels, lessons, checklist, and evidence references.
+- Configurable non-sensitive `VITE_API_BASE_URL` placeholder; no API keys or authorization data.
+
+**Validation**
+- `npm install && npm run build` passed (TypeScript check plus Vite production build).
+- Manually reviewed the mock flow structure against `docs/SPEC.md` sections 18, 20, and 22 and `docs/TEST_PLAN.md` cases T01, T02, T09, T14, and T15.
+- Bun was not installed in the execution environment, so `bun install` / `bun run dev` could not be executed here.
+
+**Human corrections**
+- Kept the implementation frontend-only and mock-backed; no changes to `apps/api/`.
+- Rebuilt the feature branch from `origin/main` and appended this record rather than overwriting canonical repository docs.
+
+**Residual risk / unresolved**
+- Real API/SSE adapter and browser-level visual checks remain for integration testing.
+- GitHub PR creation may require a token with pull-request permissions.

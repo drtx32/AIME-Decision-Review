@@ -1,0 +1,20 @@
+# Local environment / secrets — never commit
+.env
+.env.*
+!.env.example
+
+# Local SQLite database / caches
+data/*.db
+data/*.db-journal
+data/*.db-wal
+data/*.db-shm
+data/cache/
+
+# Bun
+node_modules/
+bun.lockb
+
+# Build output
+dist/
+build/
+*.log

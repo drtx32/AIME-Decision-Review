@@ -1,17 +1,28 @@
-import {useEffect, useState} from 'react';import {ArrowRight,Check,ChevronRight,LogOut,RotateCcw,ShieldCheck,Sparkles,UserCog,Users} from 'lucide-react';
-import {mock,type Input,type Result} from './api';
+import {useEffect, useState} from 'react';import {AlertTriangle,ArrowRight,Check,ChevronRight,LogOut,RotateCcw,ShieldCheck,Sparkles,UserCog,Users} from 'lucide-react';
+import {mock,ProviderUnavailableError,fetchProviderStatus,type Input,type Result} from './api';
 import {auth,adminUsers,ApiError,type PublicUser} from './auth-api';
 type Screen='login'|'change-password'|'home'|'running'|'result'|'admin';
 const stages=['行情与市场环境','指数与行业基准','新闻与公告','时间对齐与事实检查','生成结构化复盘'];
 const blank:Input={symbol:'',market:'A股',side:'buy',executedAt:'2024-03-18T10:24',price:'',quantity:'',reason:'',notes:''};
+type ProviderBanner={kind:'unconfigured'|'error'|'ready';message:string};
+function bannerFromStatus(s: Awaited<ReturnType<typeof fetchProviderStatus>>):ProviderBanner|null{
+  if(!s)return null;
+  if(s.status==='unconfigured')return {kind:'unconfigured',message:'当前未配置可用的大模型服务，请联系管理员配置模型供应商/API Key 后重试。'};
+  if(s.status==='error')return {kind:'error',message:'当前未配置可用的大模型服务，请联系管理员。'};
+  return null;
+}
 export default function App(){
   const[s,setS]=useState<Screen>('login');
   const[user,setUser]=useState<PublicUser|null>(null);
   const[bootError,setBootError]=useState<string|null>(null);
+  const[banner,setBanner]=useState<ProviderBanner|null>(null);
   // Existing review state — preserved from the pre-auth UI.
   const[v,setV]=useState<Input>(blank);
   const[r,setR]=useState<Result|null>(null);
   const[p,setP]=useState(0);
+  // ELI-326 — provider readiness probe on mount. Drives the admin banner
+  // across every authenticated screen, never blocks the UI.
+  useEffect(()=>{fetchProviderStatus().then(st=>{const b=bannerFromStatus(st);if(b)setBanner(b);}).catch(()=>{});},[]);
   useEffect(()=>{void bootstrap();},[]);
   async function bootstrap(){
     try{
@@ -39,17 +50,45 @@ export default function App(){
     setUser(payload);
     setS('home');
   }
+  // ELI-326 — handle stable provider-unavailable codes from the API
+  // without exposing stack traces; everything else surfaces as a generic
+  // network-error banner.
+  async function submitReview(e:React.FormEvent){
+    e.preventDefault();setBanner(null);setS('running');
+    for(let i=1;i<=5;i++){await new Promise(x=>setTimeout(x,280));setP(i)}
+    try{
+      const x=await mock.createReview(v);
+      setR(await mock.result(x.id));
+      setS('result');
+    }catch(err){
+      if(err instanceof ProviderUnavailableError){
+        setBanner({kind:'unconfigured',message:err.adminMessage});
+      }else{
+        setBanner({kind:'error',message:'网络异常，请稍后重试。'});
+      }
+      setS('home');
+    }
+  }
   if(s==='login')return <div className="app"><Header user={null} onLogout={handleLogout}/><main><LoginScreen bootError={bootError} onSuccess={handleLoginSuccess}/></main></div>;
   if(s==='change-password'&&user)return <div className="app"><Header user={user} onLogout={handleLogout}/><main><ChangePasswordScreen username={user.username} mustChange onSuccess={handlePasswordChanged}/></main></div>;
-  if(s==='admin'&&user)return <div className="app"><Header user={user} onLogout={handleLogout}/><main><AdminScreen onBack={()=>setS('home')}/></main></div>;
-  if(s==='home'&&user)return <div className="app"><Header user={user} onLogout={handleLogout} onOpenAdmin={()=>setS('admin')}/><main><Home v={v} setV={setV} go={async e=>{
-    e.preventDefault();setS('running');
-    for(let i=1;i<=5;i++){await new Promise(x=>setTimeout(x,280));setP(i)}
-    const x=await mock.createReview(v);setR(await mock.result(x.id));setS('result');
-  }}/></main></div>;
+  if(s==='admin'&&user)return <div className="app"><Header user={user} onLogout={handleLogout}/><main>{banner&&<ProviderBannerUI banner={banner}/>}<AdminScreen onBack={()=>setS('home')}/></main></div>;
+  if(s==='home'&&user)return <div className="app"><Header user={user} onLogout={handleLogout} onOpenAdmin={()=>setS('admin')}/><main>{banner&&<ProviderBannerUI banner={banner}/>}<Home v={v} setV={setV} go={submitReview}/></main></div>;
   if(s==='running'&&user)return <div className="app"><Header user={user} onLogout={handleLogout}/><main><Running p={p}/></main></div>;
-  if(s==='result'&&user&&r)return <div className="app"><Header user={user} onLogout={handleLogout} onOpenAdmin={()=>setS('admin')}/><main><Result r={r} reset={()=>{setS('home');setR(null);setP(0)}}/></main></div>;
+  if(s==='result'&&user&&r)return <div className="app"><Header user={user} onLogout={handleLogout} onOpenAdmin={()=>setS('admin')}/><main>{banner&&<ProviderBannerUI banner={banner}/>}<Result r={r} reset={()=>{setS('home');setR(null);setP(0)}}/></main></div>;
   return null;
+}
+
+function ProviderBannerUI({banner}:{banner:ProviderBanner}){
+  // Stable user-facing message in Chinese per ELI-326. Never expose stack
+  // traces or provider-internal error bodies.
+  const title=banner.kind==='unconfigured'?'当前未配置可用的大模型服务':'当前模型服务暂时不可用';
+  return <div className={`providerbanner providerbanner-${banner.kind}`} role="status" aria-live="polite">
+    <AlertTriangle size={16} aria-hidden="true"/>
+    <div>
+      <strong>{title}</strong>
+      <span>{banner.message}</span>
+    </div>
+  </div>;
 }
 function Header({user,onLogout,onOpenAdmin}:{user:PublicUser|null;onLogout:()=>void;onOpenAdmin?:()=>void}){
   return <header><b><i>A</i>AIME <small>DECISION REVIEW</small></b>

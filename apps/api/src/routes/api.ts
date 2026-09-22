@@ -4,6 +4,18 @@
  * All non-auth, non-health endpoints require an authenticated session.
  * mustChangePassword users are blocked from review endpoints and admin
  * endpoints — they may only hit /api/auth/*.
+ *
+ * ELI-326 resilience:
+ *   - /health stays 200 even when the LLM provider is missing or broken,
+ *     and surfaces `provider_configured` + `provider_status` instead.
+ *   - POST /api/reviews does a pre-flight on provider availability. If the
+ *     provider is unconfigured the request is rejected with HTTP 503 +
+ *     stable code `MODEL_NOT_CONFIGURED` before any DB write or run is
+ *     created. If the provider is configured but the live call fails, the
+ *     request returns 503/502 with a stable code and a sanitized message.
+ *   - Provider failures never crash the process. The agent catches typed
+ *     ProviderError, marks the run as failed, and persists a sanitized
+ *     error message — secrets never reach the trace or response.
  */
 
 import { Hono } from "hono";
@@ -15,6 +27,8 @@ import type { UserRepository } from "../auth/repository.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
 import { DecisionReviewAgent } from "../agents/decision-review.ts";
 import type { ModelProvider } from "../providers/index.ts";
+import { getProviderAvailability } from "../providers/index.ts";
+import type { ProviderError } from "../providers/errors.ts";
 import { attachUser, requireAuth, gateMustChangePassword, rejectClientUserIdHeader, type AuthEnv } from "../auth/middleware.ts";
 import { buildAuthRoutes } from "../auth/routes.ts";
 import { buildAdminRoutes } from "../auth/admin.ts";
@@ -46,11 +60,35 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   app.use("/api/*", rejectClientUserIdHeader());
 
   app.get("/health", (c) => {
+    const availability = getProviderAvailabilityFromDeps(deps);
+    // Health is a coarse liveness/readiness check: do NOT fail the
+    // container when LLM config is missing. The frontend uses
+    // provider_status to render the admin-contact banner.
     return c.json({
       status: "ok",
-      provider: deps.provider.id,
+      // Backwards-compatible field — older clients still read this.
+      provider: availability.providerId ?? "none",
+      // ELI-326 readiness surface — never includes secrets.
+      provider_configured: availability.state === "ready",
+      provider_status: availability.state,
+      provider_id: availability.providerId,
+      provider_model: availability.model,
+      requested_mode: availability.requestedMode,
+      degraded: availability.degraded,
       configuredServers: deps.registry.configuredKeys(),
       time: new Date().toISOString(),
+      // Surface only sanitized fields. No api key, no Authorization header,
+      // no raw provider error body.
+      last_error: availability.lastError
+        ? {
+            code: availability.lastError.code,
+            kind: availability.lastError.kind,
+            retryable: availability.lastError.retryable,
+            correlationId: availability.lastError.correlationId,
+            providerStatus: availability.lastError.providerStatus,
+            message: availability.lastError.sanitizedMessage,
+          }
+        : null,
     });
   });
 
@@ -70,6 +108,22 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
       );
     }
     const decision = parsed.data;
+
+    // Provider pre-flight: refuse early when no real provider is
+    // configured. This is the ELI-326 contract — the API must stay
+    // healthy, but review creation must surface a stable 503 instead of
+    // silently running the mock vertical slice in production.
+    const availability = getProviderAvailabilityFromDeps(deps);
+    if (availability.state === "unconfigured") {
+      return c.json(providerUnavailableBody(availability, "MODEL_NOT_CONFIGURED"), 503);
+    }
+    if (availability.state === "error") {
+      const last = availability.lastError;
+      if (last && last.code === "MODEL_AUTH_FAILED") {
+        return c.json(providerUnavailableBody(availability, last.code), last.httpStatus);
+      }
+    }
+
     // TEST_PLAN T11 — reject requests asking for deterministic predictions or
     // guaranteed-return / direct trade-instruction language. The product
     // reviews historical decisions; it does not produce forward signals.
@@ -101,7 +155,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
         await agent.run(id, decision);
       } catch (e) {
         deps.repo.updateStatus(id, "failed", {
-          errorMessage: e instanceof Error ? e.message : String(e),
+          errorMessage: sanitizeProviderErrorMessage(e),
           finishedAt: new Date().toISOString(),
         });
       }
@@ -109,7 +163,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
       // Fire-and-forget; clients poll /api/reviews/:id for progress.
       agent.run(id, decision).catch((e) => {
         deps.repo.updateStatus(id, "failed", {
-          errorMessage: e instanceof Error ? e.message : String(e),
+          errorMessage: sanitizeProviderErrorMessage(e),
           finishedAt: new Date().toISOString(),
         });
       });
@@ -180,6 +234,61 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   app.route("/api/admin", admin);
 
   return app;
+}
+
+/**
+ * Read the provider's availability via the static helper. The route deps
+ * always carry a fully-constructed provider, but we re-derive availability
+ * so /health and POST share one definition of state.
+ */
+function getProviderAvailabilityFromDeps(deps: RouteDeps) {
+  return getProviderAvailability(deps.config);
+}
+
+function providerUnavailableBody(
+  availability: ReturnType<typeof getProviderAvailability>,
+  code: ProviderError["code"]
+) {
+  const last = availability.lastError;
+  return {
+    error: code,
+    code,
+    retryable: last?.retryable ?? false,
+    provider_status: availability.state,
+    provider_id: availability.providerId,
+    requested_mode: availability.requestedMode,
+    correlationId: last?.correlationId ?? null,
+    // Stable user-facing message in Chinese per ELI-326. The frontend
+    // surfaces this verbatim. Frontends must NOT display stack traces or
+    // provider-internal error bodies on this code.
+    message:
+      "当前未配置可用的大模型服务，请联系管理员配置模型供应商/API Key 后重试。",
+  };
+}
+
+/**
+ * Convert any ProviderError / unknown failure into a safe string for the
+ * `errorMessage` column. We deliberately do NOT serialize the whole
+ * ProviderError — only the code + sanitized message + correlation id. No
+ * secrets, no Authorization headers, no raw fetch body.
+ */
+function sanitizeProviderErrorMessage(e: unknown): string {
+  if (e && typeof e === "object" && "code" in e && "sanitizedMessage" in e) {
+    const pe = e as ProviderError;
+    return `${pe.code}: ${pe.sanitizedMessage} (correlationId=${pe.correlationId})`;
+  }
+  if (e instanceof Error) {
+    // Best-effort fallback: strip anything that looks like a bearer token.
+    const msg = e.message ?? String(e);
+    return `provider_failed: ${redactSecrets(msg)}`;
+  }
+  return "provider_failed: unknown error";
+}
+
+const SECRET_LIKE = /(?:sk-[A-Za-z0-9_\-]{8,}|Bearer\s+[A-Za-z0-9_\-]{8,}|Authorization:\s*[^\s,;]+)/gi;
+
+function redactSecrets(s: string): string {
+  return s.replace(SECRET_LIKE, "[REDACTED]");
 }
 
 const NON_COMPLIANT_PATTERNS: Array<{ re: RegExp; label: string }> = [

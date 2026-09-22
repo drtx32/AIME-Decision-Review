@@ -25,7 +25,6 @@ concurrency:
 jobs:
   notify-multica:
     runs-on: ubuntu-latest
-    if: ${{ secrets.MULTICA_AIME_SUPERVISOR_WEBHOOK_URL != '' }}
     steps:
       - name: Build supervisor event payload
         id: payload

@@ -1,0 +1,12 @@
+/* Desktop shell pass, aligned to PulseRelay's fixed 230px sidebar discipline. */
+@media (min-width: 1051px) {
+  #app { grid-template-columns: 230px minmax(0, 1fr) 360px; }
+  #app.panel-collapsed { grid-template-columns: 230px minmax(0, 1fr) 0; }
+  #app.panel-collapsed .context-panel { min-width: 0; width: 0; padding: 0; border: 0; overflow: hidden; opacity: 0; pointer-events: none; }
+  .context-panel { min-width: 0; width: 360px; }
+  .context-actions { display: flex; align-items: center; gap: 8px; }
+  .collapse-panel { border: 0; background: transparent; color: #7c9082; font: 500 9px 'DM Mono'; letter-spacing: .06em; text-transform: uppercase; padding: 5px 6px; }
+  .collapse-panel:hover { color: #315e3a; background: #e8f0e6; border-radius: 4px; }
+  .main-shell { min-width: 0; min-height: 0; overflow: hidden; }
+  .conversation-stream { min-height: 0; }
+}

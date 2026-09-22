@@ -19,6 +19,7 @@ export default function App() {
   const [tab, setTab] = useState<PanelTab>('decisions');
   const [mobileSidebar, setMobileSidebar] = useState(false);
   const [mobilePanel, setMobilePanel] = useState(false);
+  const [panelCollapsed, setPanelCollapsed] = useState(false);
 
   const applySnapshot = (next: SessionSnapshot) => { setSnapshot(next); setMessages(next.messages); setDecisions(next.decisions); setMemories(next.memories); };
   useEffect(() => { reviewApi.listSessions().then(setSessions).catch(() => undefined); }, []);
@@ -29,7 +30,7 @@ export default function App() {
   const submit = async (event: React.FormEvent) => {
     event.preventDefault(); const content = draft.trim(); if (!content || phase === 'running') return; setDraft(''); setError('');
     try {
-      if (!sessionId) { const created = await reviewApi.createSession(content); setSessionId(created.sessionId); setMessages(created.messages); setDecisions(created.decisions); setMemories(created.memories); setPhase('confirm'); if (created.local) setError('当前为本地壳模式；确认并运行需要已配置的服务端模型。'); return; }
+      if (!sessionId) { const created = await reviewApi.createSession(content); setSessionId(created.sessionId); setMessages(created.messages); setDecisions(created.decisions); setMemories(created.memories); setSessions(await reviewApi.listSessions()); setPhase('confirm'); if (created.local) setError('当前为本地壳模式；确认并运行需要已配置的服务端模型。'); return; }
       const message = await reviewApi.sendMessage(sessionId, content); setMessages((items) => [...items, message]);
     } catch (e) { setError(e instanceof Error ? e.message : '消息发送失败。'); }
   };
@@ -41,7 +42,7 @@ export default function App() {
   };
 
   const result = snapshot ? resultView(snapshot) : null;
-  return <div id="app">
+  return <div id="app" className={panelCollapsed ? 'panel-collapsed' : ''}>
     <button className="mobile-toggle" onClick={() => setMobileSidebar(!mobileSidebar)}><Menu size={18}/></button>
     <aside className={mobileSidebar ? 'sidebar open' : 'sidebar'}>
       <div className="brand"><span className="brand-dot">A</span><span>AIME<small>Decision Review</small></span></div>
@@ -57,7 +58,7 @@ export default function App() {
       {error && <div className="error-banner"><CircleAlert size={15}/><span>{error}</span><button onClick={() => setError('')}><X size={14}/></button></div>}
       {phase === 'confirm' && decisions.length > 0 && <DecisionConfirm decisions={decisions} onConfirm={confirm} onChange={(id, patch) => { setDecisions((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item)); if (sessionId) void reviewApi.updateDecision(sessionId, id, patch); }}/>}
     </main>
-    <aside className={mobilePanel ? 'context-panel open' : 'context-panel'}><div className="context-head"><span><FileText size={14}/> SESSION CONTEXT</span><button className="panel-close" onClick={() => setMobilePanel(false)}><X size={15}/></button></div><div className="context-tabs">{(['decisions','timeline','evidence','findings','learning'] as PanelTab[]).map((item) => <button className={tab === item ? 'active' : ''} key={item} onClick={() => setTab(item)}>{item}</button>)}</div><ContextPanel tab={tab} decisions={decisions} messages={messages} memories={memories} result={result}/></aside>
+    <aside className={mobilePanel ? 'context-panel open' : 'context-panel'}><div className="context-head"><span><FileText size={14}/> SESSION CONTEXT</span><div className="context-actions"><button className="collapse-panel" onClick={() => setPanelCollapsed(!panelCollapsed)}>{panelCollapsed ? '展开' : '收起'}</button><button className="panel-close" onClick={() => setMobilePanel(false)}><X size={15}/></button></div></div><div className="context-tabs">{(['decisions','timeline','evidence','findings','learning'] as PanelTab[]).map((item) => <button className={tab === item ? 'active' : ''} key={item} onClick={() => setTab(item)}>{item}</button>)}</div><ContextPanel tab={tab} decisions={decisions} messages={messages} memories={memories} result={result}/></aside>
   </div>;
 }
 

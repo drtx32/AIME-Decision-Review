@@ -38,6 +38,24 @@ describe("Review API contract", () => {
     expect(body.error).toBe("invalid_input");
   });
 
+  test("production with no configured model keeps health up but rejects review creation", async () => {
+    ctx.cfg.runtime = "production";
+    const health = await ctx.app.request("/health");
+    expect(health.status).toBe(200);
+    const healthBody = await health.json() as { status: string; provider_configured: boolean; provider_status: string };
+    expect(healthBody.status).toBe("ok");
+    expect(healthBody.provider_configured).toBe(false);
+    expect(healthBody.provider_status).toBe("unconfigured");
+
+    const review = await ctx.app.request("/api/reviews", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ symbol: "600519", market: "CN", action: "buy", executedAt: "2024-03-15T00:00:00Z", userReason: "channel checks" }),
+    });
+    expect(review.status).toBe(503);
+    expect(await review.json()).toEqual({ error: "MODEL_NOT_CONFIGURED", message: "当前未配置可用的大模型服务，请联系管理员。" });
+  });
+
   test("POST /api/reviews rejects non-compliant (T11) deterministic-prediction language", async () => {
     const res = await ctx.app.request("/api/reviews", {
       method: "POST",

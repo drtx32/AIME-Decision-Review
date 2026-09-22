@@ -4,6 +4,7 @@ services:
       context: ./apps/api
       dockerfile: Dockerfile
     environment:
+      NODE_ENV: ${NODE_ENV:-production}
       PORT: "3000"
       SQLITE_PATH: ${SQLITE_PATH:-/var/lib/aime/decision-review.db}
       LOG_LEVEL: ${LOG_LEVEL:-info}

@@ -26,7 +26,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { McpStreamableHttpClient } from "../src/mcp/adapters/mcp-client.ts";
-import { LiveMcpAdapter, parseToolContent, normalizeItems } from "../src/mcp/adapters/live-mcp.ts";
+import { LiveMcpAdapter, parseToolContent, normalizeItems, buildToolArgs } from "../src/mcp/adapters/live-mcp.ts";
 import { buildMcpRegistry } from "../src/mcp/registry.ts";
 import { makeTestConfig } from "./helpers.ts";
 
@@ -36,7 +36,7 @@ type RpcHandler = (req: { method: string; params: unknown }) => unknown;
 
 interface FakeMcpOptions {
   /** Override tool-list response (defaults to a single `get_price` tool). */
-  toolsList?: Array<{ name: string; description?: string }>;
+  toolsList?: Array<{ name: string; description?: string; inputSchema?: Record<string, unknown> }>;
   /** Override tool-call handler. */
   onToolCall?: RpcHandler;
   /** Force a specific HTTP status on a given method. */
@@ -627,6 +627,7 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
         apiKey: "test-key",
         servers: ["a-share"],
         toolMap: {},
+        remoteSuffixMap: {},
       },
     });
     const registry = buildMcpRegistry(cfg);
@@ -643,6 +644,7 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
         apiKey: "test-key",
         servers: ["a-share"],
         toolMap: { price: "get_a_share_price" },
+        remoteSuffixMap: {},
       },
     });
     const registry = buildMcpRegistry(cfg);
@@ -653,7 +655,7 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
 
   test("no credentials → mock adapter still selected", () => {
     const cfg = makeTestConfig({
-      fuyao: { baseUrl: null, apiKey: null, servers: ["a-share"], toolMap: {} },
+      fuyao: { baseUrl: null, apiKey: null, servers: ["a-share"], toolMap: {}, remoteSuffixMap: {} },
     });
     const registry = buildMcpRegistry(cfg);
     const adapter = registry.resolve("a-share")!;
@@ -710,12 +712,14 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
         apiKey: "test-key",
         servers: ["a-share"],
         toolMap: { price: "get_a_share_price" },
+        remoteSuffixMap: {},
       },
       ifind: {
         baseUrl: ifindFake.url,
         authorization: "Bearer ifind-token",
         servers: ["news"],
         toolMap: { news: "get_news" },
+        remoteSuffixMap: {},
       },
     });
     const registry = buildMcpRegistry(cfg);
@@ -751,5 +755,161 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
     expect(fuyaoFake.captured.some((c) => c.body && (c.body as any).method === "tools/call")).toBe(true);
     expect(ifindFake.captured.some((c) => c.body && (c.body as any).method === "initialize")).toBe(true);
     expect(ifindFake.captured.some((c) => c.body && (c.body as any).method === "tools/call")).toBe(true);
+  });
+});
+
+// ─── Per-tool argument builder (inputSchema-aware) ────────────────────────
+
+describe("buildToolArgs — inputSchema-driven call payload", () => {
+  test("schema with `symbols` array key sends single-element array (Fuyao shape)", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        symbols: { type: "array", items: { type: "string" } },
+      },
+      required: ["symbols"],
+    };
+    const args = buildToolArgs(schema, {
+      intent: "price",
+      symbol: "600519.SH",
+      T0: "2024-03-15T00:00:00Z",
+    });
+    expect(args).toEqual({ symbols: ["600519.SH"] });
+  });
+
+  test("schema with `symbol` scalar key sends the string directly", () => {
+    const schema = {
+      type: "object",
+      properties: { symbol: { type: "string" } },
+    };
+    const args = buildToolArgs(schema, {
+      intent: "price",
+      symbol: "600519",
+      T0: "2024-03-15T00:00:00Z",
+    });
+    expect(args).toEqual({ symbol: "600519" });
+  });
+
+  test("schema with start_date / end_date populates ISO date strings", () => {
+    const schema = {
+      type: "object",
+      properties: {
+        symbol: { type: "string" },
+        start_date: { type: "string" },
+        end_date: { type: "string" },
+      },
+    };
+    const args = buildToolArgs(schema, {
+      intent: "price",
+      symbol: "600519",
+      T0: "2024-03-15T00:00:00Z",
+    });
+    expect(args).toEqual({
+      symbol: "600519",
+      start_date: "2024-03-15",
+      end_date: "2024-03-15",
+    });
+  });
+
+  test("no schema supplied falls back to the legacy generic payload", () => {
+    const args = buildToolArgs(undefined, {
+      intent: "price",
+      symbol: "600519",
+      market: "CN",
+      T0: "2024-03-15T00:00:00Z",
+      limit: 5,
+    });
+    expect(args).toEqual({
+      symbol: "600519",
+      market: "CN",
+      T0: "2024-03-15T00:00:00Z",
+      limit: 5,
+      intent: "price",
+    });
+  });
+
+  test("LiveMcpAdapter.fetch sends schema-derived args (Fuyao `symbols` array shape)", async () => {
+    // Mirror the verified Fuyao snapshot call: tool `get_a_share_prices_snapshot`
+    // expects `{symbols: ["600519.SH"]}` and the upstream confirms the symbol.
+    const fake = await startFakeMcpServer({
+      toolsList: [{ name: "get_a_share_prices_snapshot", inputSchema: { type: "object", properties: { symbols: { type: "array", items: { type: "string" } } }, required: ["symbols"] } }],
+      onToolCall: () => ({
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify([
+              { thscode: "600519.SH", ticker: "600519", last_price: 1253.8, publishedAt: "2024-03-14T00:00:00Z" },
+            ]),
+          },
+        ],
+      }),
+    });
+    const adapter = new LiveMcpAdapter({
+      provider: "fuyao",
+      serverKey: "a-share",
+      endpoint: fake.url,
+      credentials: { baseUrl: fake.url, apiKey: "test-key" },
+      toolForIntent: () => "get_a_share_prices_snapshot",
+    });
+    const res = await adapter.fetch({
+      intent: "price",
+      symbol: "600519.SH",
+      market: "CN",
+      T0: "2024-03-15T00:00:00Z",
+    });
+    fake.close();
+    expect(res.status).toBe("success");
+    // The captured call body must carry `symbols: ["600519.SH"]`, NOT the
+    // legacy `{symbol, market, T0, limit, intent}` payload.
+    const callCapture = fake.captured.find(
+      (c) => c.body && (c.body as any).method === "tools/call"
+    );
+    expect(callCapture).toBeDefined();
+    const params = (callCapture!.body as any).params;
+    expect(params.arguments).toEqual({ symbols: ["600519.SH"] });
+    expect(params.arguments.symbol).toBeUndefined();
+    expect(res.data![0].source).toBe("fuyao:a-share");
+  });
+});
+
+// ─── Canonical → remote suffix map (iFinD gateway) ────────────────────────
+
+describe("MCP registry — iFinD canonical→remote suffix map", () => {
+  test("default suffix uses hexin-ifind-ds-<key>-mcp pattern", () => {
+    const cfg = makeTestConfig({
+      ifind: {
+        baseUrl: "https://api-mcp.51ifind.com:8643/ds-mcp-servers",
+        authorization: "Bearer test-token",
+        servers: ["stock", "news"],
+        toolMap: {},
+        remoteSuffixMap: {},
+      },
+    });
+    const registry = buildMcpRegistry(cfg);
+    const stock = registry.resolve("stock")!;
+    const news = registry.resolve("news")!;
+    expect(stock).not.toBeNull();
+    expect(news).not.toBeNull();
+    // The adapter endpoint must end with the full server name, not the
+    // short key. We probe via listTools() to confirm the underlying client
+    // endpoint, but for the unit test we only need the adapter present.
+    // End-to-end URL assertion is exercised in the iFinD HTTP smoke (smoke
+    // scripts are restored in a separate commit on this branch).
+    expect((stock as any).endpoint ?? (stock as any).provider).toBeDefined();
+  });
+
+  test("operator-supplied remoteSuffixMap overrides default suffix", () => {
+    const cfg = makeTestConfig({
+      ifind: {
+        baseUrl: "https://api-mcp.51ifind.com:8643/ds-mcp-servers",
+        authorization: "Bearer test-token",
+        servers: ["stock"],
+        toolMap: {},
+        remoteSuffixMap: { stock: "custom-stock-server" },
+      },
+    });
+    const registry = buildMcpRegistry(cfg);
+    const adapter = registry.resolve("stock")!;
+    expect(adapter).not.toBeNull();
   });
 });

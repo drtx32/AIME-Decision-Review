@@ -3,8 +3,9 @@
  * we never log them and never persist them.
  */
 
+import type { AdapterIntent } from "./mcp/adapters/types.ts";
+
 export interface AppConfig {
-  runtime: "development" | "production";
   port: number;
   sqlitePath: string;
   logLevel: "debug" | "info" | "warn" | "error";
@@ -13,19 +14,12 @@ export interface AppConfig {
 
   initialAdmin: {
     username: string;
-    /**
-     * Bootstrap admin password. `null` means the env var was not set —
-     * the bootstrap admin path will refuse to start with a clear error
-     * so a misconfigured deployment fails fast instead of running with
-     * a public default. The runtime never logs this value.
-     */
-    password: string | null;
+    password: string;
   };
 
   llm: {
     provider: "openai-compatible" | "mock";
     model: string;
-    extractorModel: string;
     baseUrl: string | null;
     apiKey: string | null;
   };
@@ -34,7 +28,16 @@ export interface AppConfig {
     baseUrl: string | null;
     apiKey: string | null;
     servers: FuyaoServerKey[];
+    /** Operator-supplied intent → MCP tool name map (e.g. "price:get_security_price"). */
     toolMap: Partial<Record<AdapterIntent, string>>;
+    /**
+     * Operator-supplied canonical → remote-name suffix map. iFinD's gateway
+     * uses the full server name (e.g. `hexin-ifind-ds-stock-mcp`); Fuyao
+     * uses the short key. When the operator overrides, the value is appended
+     * to `baseUrl` instead of the short key. Format:
+     * `HITHINK_FINANCE_REMOTE_SUFFIX_MAP=stock:hexin-ifind-ds-stock-mcp,...`
+     */
+    remoteSuffixMap: Partial<Record<FuyaoServerKey, string>>;
   };
 
   ifind: {
@@ -42,21 +45,15 @@ export interface AppConfig {
     authorization: string | null;
     servers: IFindServerKey[];
     toolMap: Partial<Record<AdapterIntent, string>>;
+    /**
+     * See `fuyao.remoteSuffixMap`. The default map uses
+     * `hexin-ifind-ds-<key>-mcp` for every configured iFinD server key.
+     */
+    remoteSuffixMap: Partial<Record<IFindServerKey, string>>;
   };
 }
 
-function parseToolMap(raw: string | undefined): Partial<Record<AdapterIntent, string>> {
-  const out: Partial<Record<AdapterIntent, string>> = {};
-  if (!raw) return out;
-  for (const pair of raw.split(",")) {
-    const [intent, toolName] = pair.split(":").map((part) => part.trim());
-    if (intent && toolName) out[intent as AdapterIntent] = toolName;
-  }
-  return out;
-}
-
 import type { FuyaoServerKey, IFindServerKey } from "./types/index.ts";
-import type { AdapterIntent } from "./mcp/adapters/types.ts";
 
 function parseEnumList<T extends string>(
   raw: string | undefined,
@@ -68,6 +65,37 @@ function parseEnumList<T extends string>(
     .split(",")
     .map((s) => s.trim())
     .filter((s): s is T => (allowed as readonly string[]).includes(s));
+}
+
+/** Parse "intent:toolName,intent2:toolName2" into a Partial<Record>. */
+function parseToolMap(
+  raw: string | undefined
+): Partial<Record<AdapterIntent, string>> {
+  const out: Partial<Record<AdapterIntent, string>> = {};
+  if (!raw) return out;
+  for (const pair of raw.split(",")) {
+    const [intent, toolName] = pair.split(":").map((s) => s.trim());
+    if (!intent || !toolName) continue;
+    out[intent as AdapterIntent] = toolName;
+  }
+  return out;
+}
+
+/** Parse "key:suffix,key:suffix" into a Partial<Record>. Used for the
+ *  canonical → remote-name suffix map (iFinD / Fuyao). */
+function parseSuffixMap<K extends string>(
+  raw: string | undefined,
+  allowed: readonly K[]
+): Partial<Record<K, string>> {
+  const out: Partial<Record<K, string>> = {};
+  if (!raw) return out;
+  for (const pair of raw.split(",")) {
+    const [key, suffix] = pair.split(":").map((s) => s.trim());
+    if (!key || !suffix) continue;
+    if (!(allowed as readonly string[]).includes(key)) continue;
+    out[key as K] = suffix;
+  }
+  return out;
 }
 
 const ALL_FUYAO_SERVERS: readonly FuyaoServerKey[] = [
@@ -98,18 +126,14 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const provider: AppConfig["llm"]["provider"] =
     providerRaw === "mock" || providerRaw === "" ? "mock" : "openai-compatible";
 
-  // INITIAL_ADMIN_USERNAME and INITIAL_ADMIN_PASSWORD carry the *bootstrap*
-  // admin credentials. They MUST be supplied via server env / GitHub
-  // Secrets — there is intentionally no repository fallback, so a fresh
-  // deployment without configured credentials fails fast at startup
-  // instead of silently running with a public default.
-  //
-  // Username defaults to "admin" (a public label, not a credential);
-  // password has no default and is required.
+  // INITIAL_ADMIN_USERNAME / INITIAL_ADMIN_PASSWORD carry the *bootstrap*
+  // admin credentials. They are only used on a fresh DB and never logged.
+  // Default username "admin" / password "admin@123" is the documented
+  // fallback; Compose passes through real values when present.
   const initialAdminUsername = (env.INITIAL_ADMIN_USERNAME ?? "admin").trim() || "admin";
   const initialAdminPassword = env.INITIAL_ADMIN_PASSWORD?.length
     ? env.INITIAL_ADMIN_PASSWORD
-    : null;
+    : "admin@123";
 
   const nodeEnv = (env.NODE_ENV ?? "development").toLowerCase();
   const isProduction =
@@ -118,7 +142,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     (env.PORT === "3000" && nodeEnv !== "test");
 
   return {
-    runtime: env.NODE_ENV === "production" ? "production" : "development",
     port: Number(env.PORT ?? 3000),
     sqlitePath: env.SQLITE_PATH ?? "./data/decision-review.db",
     logLevel: (env.LOG_LEVEL as AppConfig["logLevel"]) ?? "info",
@@ -130,7 +153,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     llm: {
       provider,
       model: env.LLM_MODEL ?? "mvp-mock-model",
-      extractorModel: env.LLM_EXTRACTOR_MODEL?.trim() || env.LLM_MODEL || "mvp-mock-model",
       baseUrl: env.LLM_BASE_URL?.trim() || null,
       apiKey: env.LLM_API_KEY?.trim() || null,
     },
@@ -143,6 +165,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         [...ALL_FUYAO_SERVERS]
       ),
       toolMap: parseToolMap(env.HITHINK_FINANCE_TOOL_MAP),
+      remoteSuffixMap: parseSuffixMap(
+        env.HITHINK_FINANCE_REMOTE_SUFFIX_MAP,
+        ALL_FUYAO_SERVERS
+      ),
     },
     ifind: {
       baseUrl: env.IFIND_MCP_BASE_URL?.trim() || null,
@@ -153,6 +179,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         [...ALL_IFIND_SERVERS]
       ),
       toolMap: parseToolMap(env.IFIND_MCP_TOOL_MAP),
+      remoteSuffixMap: parseSuffixMap(
+        env.IFIND_MCP_REMOTE_SUFFIX_MAP,
+        ALL_IFIND_SERVERS
+      ),
     },
   };
 }

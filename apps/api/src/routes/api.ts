@@ -38,6 +38,18 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   const auth = buildAuthRoutes(deps.userRepo, config.isProduction);
   const admin = buildAdminRoutes(deps.userRepo);
   const modelUnavailable = "当前未配置可用的大模型服务，请联系管理员。";
+  // Provider availability is the single readiness contract. In particular,
+  // real-provider mode with missing credentials must never be treated as a
+  // mock-backed configured provider by route pre-flight or /health.
+  const providerAvailability = () => deps.provider.availability?.() ?? {
+    state: deps.provider.configured ? "ready" : "unconfigured",
+    providerId: deps.provider.id,
+    model: deps.provider.modelName,
+    lastError: null,
+    requestedMode: "mock" as const,
+    degraded: !deps.provider.configured,
+  };
+  const providerReady = () => providerAvailability().state === "ready";
 
   app.use("*", attachUser(deps.userRepo));
 
@@ -48,11 +60,16 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   app.use("/api/*", rejectClientUserIdHeader());
 
   app.get("/health", (c) => {
+    const availability = providerAvailability();
     return c.json({
       status: "ok",
       provider: deps.provider.id,
-      provider_configured: deps.provider.configured,
-      provider_status: deps.provider.configured ? "ready" : "unconfigured",
+      provider_configured: availability.state === "ready",
+      provider_status: availability.state,
+      provider_id: availability.providerId,
+      requested_mode: availability.requestedMode,
+      degraded: availability.degraded,
+      last_error: availability.lastError,
       configuredServers: deps.registry.configuredKeys(),
       time: new Date().toISOString(),
     });
@@ -75,7 +92,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     const body = await c.req.json().catch(() => null) as { message?: string; scope?: string; clientNow?: string; timezone?: string } | null;
     const message = body?.message?.trim();
     if (!message) return c.json({ error: "invalid_input", message: "请输入一段历史决策描述。" }, 400);
-    if (!deps.provider.configured) return c.json({ error: "MODEL_NOT_CONFIGURED", message: modelUnavailable }, 503);
+    if (!providerReady()) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: providerAvailability().state, message: modelUnavailable }, 503);
     let decisions;
     try {
       decisions = await new DecisionExtractorAgent(deps.provider, deps.config.llm.extractorModel).extract(message, { clientNow: body?.clientNow || new Date().toISOString(), timezone: body?.timezone || "UTC" });
@@ -104,7 +121,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   app.post("/api/sessions/:id/confirm", async (c) => {
     const user = c.get("user")!; const id = c.req.param("id");
     if (!deps.repo.getSession(id, user.id)) return c.json({ error: "not_found" }, 404);
-    if (!deps.provider.configured) return c.json({ error: "MODEL_NOT_CONFIGURED", message: modelUnavailable }, 503);
+    if (!providerReady()) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: providerAvailability().state, message: modelUnavailable }, 503);
     const decisions = deps.repo.listSessionDecisions(id, user.id);
     if (!decisions.length) return c.json({ error: "invalid_input", message: "没有可复盘的决策。" }, 400);
     // An evidence-grounded approximate T0 may proceed after the user clears
@@ -141,7 +158,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   app.post("/api/sessions/:id/messages", async (c) => {
     const user = c.get("user")!; const id = c.req.param("id");
     if (!deps.repo.getSession(id, user.id)) return c.json({ error: "not_found" }, 404);
-    if (!deps.provider.configured) return c.json({ error: "MODEL_NOT_CONFIGURED", message: modelUnavailable }, 503);
+    if (!providerReady()) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: providerAvailability().state, message: modelUnavailable }, 503);
     const content = ((await c.req.json().catch(() => null)) as { content?: string } | null)?.content?.trim(); if (!content) return c.json({ error: "invalid_input", message: "请输入追问内容。" }, 400);
     const userMessage = deps.repo.addMessage(id, user.id, "user", content); const decisions = deps.repo.listSessionDecisions(id, user.id); const memories = deps.repo.listMemories(user.id); const results = decisions.filter((d) => d.reviewId).map((d) => deps.repo.getResult(d.reviewId!));
     const completion = await deps.provider.complete({ system: "你是 AIME 投资决策复盘助手。只基于当前用户 session 的 decisions、T0 前后证据、findings 与 learning memory 回答；不要给出新的买卖指令。", user: JSON.stringify({ question: content, decisions, results, memories }), temperature: 0.2, maxOutputTokens: 900 });
@@ -176,7 +193,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
         422
       );
     }
-    if (!deps.provider.configured) return c.json({ error: "MODEL_NOT_CONFIGURED", message: modelUnavailable }, 503);
+    if (!providerReady()) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: providerAvailability().state, message: modelUnavailable }, 503);
     const id = `rev_${randomUUID()}`;
     const T0 = decision.executedAt;
     deps.repo.createRun(id, decision, T0);

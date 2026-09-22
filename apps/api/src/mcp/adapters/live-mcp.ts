@@ -125,7 +125,7 @@ export class LiveMcpAdapter implements EvidenceAdapter {
           Date.now() - start
         );
       }
-      const items = parseToolContent(result.content);
+      const items = parseToolContent(result.content, req.intent);
       if (items.length === 0) {
         return wrapEmpty(retrievedAt, Date.now() - start);
       }
@@ -201,7 +201,8 @@ export class LiveMcpAdapter implements EvidenceAdapter {
 
 /** Pull structured evidence-like items out of an MCP tool-call content array. */
 export function parseToolContent(
-  content: Array<{ type: string; text: string }>
+  content: Array<{ type: string; text: string }>,
+  intent: AdapterIntent = "price"
 ): unknown[] {
   if (!Array.isArray(content) || content.length === 0) return [];
   const items: unknown[] = [];
@@ -227,16 +228,20 @@ export function parseToolContent(
     if (parsed && typeof parsed === "object") {
       const obj = parsed as Record<string, unknown>;
       // Some gateways (e.g. Fuyao) wrap successful payloads as
-      //   { code, message, data: { item | items | data | results | [...] , timestamp } }
-      // We unwrap the envelope. `data.timestamp` is a gateway observation /
-      // snapshot time, not proof of publication or event time; preserve it as
-      // metadata and require an item-level publication timestamp for T0 use.
+      //   { code, message, data: { item | items | data | results | [...] , timestamp } }.
+      // `data.timestamp` is a snapshot/observation time, so it is valid as a
+      // publication surrogate only for price snapshots. News and announcement
+      // items must carry their own publication timestamp; otherwise they are
+      // rejected by normalizeItems instead of being assigned a fabricated
+      // event time. Keep this intent-specific rule here so a future gateway
+      // integration does not reintroduce a universal timestamp assumption.
       const envelope = unwrapEnvelope(obj);
       const envelopeTs = envelope ? readEnvelopeTimestamp(obj) : null;
+      const canUseEnvelopeTimestamp = intent === "price";
       if (envelope) {
         for (const child of envelope) {
-          if (child && typeof child === "object" && envelopeTs !== null) {
-            items.push(decorateWithObservedAt(child as Record<string, unknown>, envelopeTs));
+          if (child && typeof child === "object" && envelopeTs !== null && canUseEnvelopeTimestamp) {
+            items.push(decorateWithPublishedAt(child as Record<string, unknown>, envelopeTs));
           } else {
             items.push(child);
           }
@@ -245,24 +250,24 @@ export function parseToolContent(
       }
       if (Array.isArray(obj.items)) {
         for (const child of obj.items) {
-          if (child && typeof child === "object" && envelopeTs !== null) {
-            items.push(decorateWithObservedAt(child as Record<string, unknown>, envelopeTs));
+          if (child && typeof child === "object" && envelopeTs !== null && canUseEnvelopeTimestamp) {
+            items.push(decorateWithPublishedAt(child as Record<string, unknown>, envelopeTs));
           } else {
             items.push(child);
           }
         }
       } else if (Array.isArray(obj.data)) {
         for (const child of obj.data) {
-          if (child && typeof child === "object" && envelopeTs !== null) {
-            items.push(decorateWithObservedAt(child as Record<string, unknown>, envelopeTs));
+          if (child && typeof child === "object" && envelopeTs !== null && canUseEnvelopeTimestamp) {
+            items.push(decorateWithPublishedAt(child as Record<string, unknown>, envelopeTs));
           } else {
             items.push(child);
           }
         }
       } else if (Array.isArray(obj.results)) {
         for (const child of obj.results) {
-          if (child && typeof child === "object" && envelopeTs !== null) {
-            items.push(decorateWithObservedAt(child as Record<string, unknown>, envelopeTs));
+          if (child && typeof child === "object" && envelopeTs !== null && canUseEnvelopeTimestamp) {
+            items.push(decorateWithPublishedAt(child as Record<string, unknown>, envelopeTs));
           } else {
             items.push(child);
           }
@@ -302,20 +307,13 @@ function readEpochMs(v: unknown): number | null {
   return null;
 }
 
-/** Preserve gateway snapshot time without mislabeling it as publication time. */
-function decorateWithObservedAt(
+/** Stamp an item with a publishedAt derived from the envelope's timestamp. */
+function decorateWithPublishedAt(
   item: Record<string, unknown>,
   epochMs: number
 ): Record<string, unknown> {
   if (typeof item.publishedAt === "string" || typeof item.publish_time === "string") return item;
-  return {
-    ...item,
-    metadata: {
-      ...(item.metadata && typeof item.metadata === "object" ? item.metadata : {}),
-      observedAt: new Date(epochMs).toISOString(),
-      observedAtSource: "gateway.data.timestamp",
-    },
-  };
+  return { ...item, publishedAt: new Date(epochMs).toISOString() };
 }
 
 /**

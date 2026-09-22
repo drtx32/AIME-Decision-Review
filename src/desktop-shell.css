@@ -14,3 +14,6 @@
   .main-shell { min-width: 0; min-height: 0; overflow: hidden; }
   .conversation-stream { min-height: 0; }
 }
+
+.status-message.partial { background: #fff8e8; border-color: #ecd7a5; color: #9a7638; }
+.status-message.failed { background: #fff0ed; border-color: #efd2cb; color: #a65449; }

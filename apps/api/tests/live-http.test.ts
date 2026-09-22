@@ -451,6 +451,55 @@ describe("LiveMcpAdapter — registry-driven intent → tool", () => {
     expect(parseToolContent([{ type: "text", text: JSON.stringify({ a: 1 }) }])).toEqual([{ a: 1 }]);
   });
 
+  test("parseToolContent unwraps {code,message,data:{item,timestamp}} gateway envelope and stamps per-item publishedAt from envelope", () => {
+    // Real Fuyao `a-share` price-snapshot response shape.
+    const text = JSON.stringify({
+      code: 0,
+      message: "success",
+      request_id: "abc-123",
+      data: {
+        timestamp: 1790091665000,
+        total: 2,
+        item: [
+          { thscode: "600519.SH", ticker: "600519", last_price: 1253.8, volume: 2457294 },
+          { thscode: "000001.SZ", ticker: "000001", last_price: 11.71, volume: 75945732 },
+        ],
+      },
+    });
+    const out = parseToolContent([{ type: "text", text }]);
+    expect(out).toHaveLength(2);
+    // Each child should carry a publishedAt derived from the envelope timestamp.
+    expect((out[0] as Record<string, unknown>).publishedAt).toBe(new Date(1790091665000).toISOString());
+    expect((out[1] as Record<string, unknown>).publishedAt).toBe(new Date(1790091665000).toISOString());
+  });
+
+  test("normalizeItems: derives title + content from upstream fields when missing (Fuyao price-snapshot shape)", () => {
+    const norm = normalizeItems(
+      [
+        {
+          thscode: "600519.SH",
+          ticker: "600519",
+          last_price: 1253.8,
+          open_price: 1252.15,
+          high_price: 1265.88,
+          low_price: 1248.1,
+          prev_price: 1252.57,
+          volume: 2457294,
+          turnover: 3088526100,
+          publishedAt: "2026-09-22T07:41:05.000Z",
+        },
+      ],
+      "2026-09-22T15:40:52.049Z",
+      "fuyao",
+      "a-share"
+    );
+    expect(norm).toHaveLength(1);
+    expect(norm[0].title).toBe("a-share 600519.SH");
+    expect(norm[0].content).toMatch(/thscode=600519\.SH/);
+    expect(norm[0].content).toMatch(/last_price=1253\.8/);
+    expect(norm[0].source).toBe("fuyao:a-share");
+  });
+
   test("normalizeItems: alternate timestamp fields + missing fields", () => {
     const norm = normalizeItems(
       [

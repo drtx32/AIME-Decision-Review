@@ -212,20 +212,93 @@ export function parseToolContent(
     }
     if (Array.isArray(parsed)) {
       items.push(...parsed);
-    } else if (parsed && typeof parsed === "object") {
+      continue;
+    }
+    if (parsed && typeof parsed === "object") {
       const obj = parsed as Record<string, unknown>;
+      // Some gateways (e.g. Fuyao) wrap successful payloads as
+      //   { code, message, data: { item | items | data | results | [...] , timestamp } }
+      // We unwrap the envelope, propagate any upstream `data.timestamp` (ms
+      // epoch) as each item's `publishedAt` source so T0 hard wall remains
+      // intact (the timestamp comes from upstream, not from `retrievedAt`).
+      const envelope = unwrapEnvelope(obj);
+      const envelopeTs = envelope ? readEnvelopeTimestamp(obj) : null;
+      if (envelope) {
+        for (const child of envelope) {
+          if (child && typeof child === "object" && envelopeTs !== null) {
+            items.push(decorateWithPublishedAt(child as Record<string, unknown>, envelopeTs));
+          } else {
+            items.push(child);
+          }
+        }
+        continue;
+      }
       if (Array.isArray(obj.items)) {
-        items.push(...obj.items);
+        for (const child of obj.items) {
+          if (child && typeof child === "object" && envelopeTs !== null) {
+            items.push(decorateWithPublishedAt(child as Record<string, unknown>, envelopeTs));
+          } else {
+            items.push(child);
+          }
+        }
       } else if (Array.isArray(obj.data)) {
-        items.push(...obj.data);
+        for (const child of obj.data) {
+          if (child && typeof child === "object" && envelopeTs !== null) {
+            items.push(decorateWithPublishedAt(child as Record<string, unknown>, envelopeTs));
+          } else {
+            items.push(child);
+          }
+        }
       } else if (Array.isArray(obj.results)) {
-        items.push(...obj.results);
+        for (const child of obj.results) {
+          if (child && typeof child === "object" && envelopeTs !== null) {
+            items.push(decorateWithPublishedAt(child as Record<string, unknown>, envelopeTs));
+          } else {
+            items.push(child);
+          }
+        }
       } else {
         items.push(obj);
       }
     }
   }
   return items;
+}
+
+/** Recognize a `{code, message, data: <payload>}` gateway envelope. */
+function unwrapEnvelope(obj: Record<string, unknown>): unknown[] | null {
+  const data = obj.data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  const d = data as Record<string, unknown>;
+  for (const key of ["item", "items", "data", "results"]) {
+    if (Array.isArray(d[key])) return d[key] as unknown[];
+  }
+  return null;
+}
+
+/** Read the envelope's `data.timestamp` (ms epoch) as a Number, or null. */
+function readEnvelopeTimestamp(obj: Record<string, unknown>): number | null {
+  const data = obj.data;
+  if (!data || typeof data !== "object" || Array.isArray(data)) return null;
+  return readEpochMs((data as Record<string, unknown>).timestamp);
+}
+
+/** Read a numeric epoch-ms field as ms, or null if not a valid time. */
+function readEpochMs(v: unknown): number | null {
+  if (typeof v === "number" && Number.isFinite(v) && v > 0) {
+    // Heuristic: > 10^12 means ms; otherwise treat as seconds.
+    return v > 1e12 ? v : v * 1000;
+  }
+  return null;
+}
+
+/** Stamp an item with a publishedAt derived from the envelope's timestamp. */
+function decorateWithPublishedAt(
+  item: Record<string, unknown>,
+  epochMs: number
+): Record<string, unknown> {
+  if (typeof item.publishedAt === "string" || typeof item.publish_time === "string") return item;
+  return { ...item, publishedAt: new Date(epochMs).toISOString() };
 }
 
 /**
@@ -257,7 +330,7 @@ export function normalizeItems(
         ? item.title
         : typeof item.name === "string"
           ? item.name
-          : null;
+          : deriveTitle(item, serverKey);
     const content =
       typeof item.content === "string"
         ? item.content
@@ -265,7 +338,7 @@ export function normalizeItems(
           ? item.summary
         : typeof item.text === "string"
           ? item.text
-          : title;
+          : deriveContent(item);
     if (!publishedAt || !title || !content) continue;
     const ms = Date.parse(publishedAt);
     if (Number.isNaN(ms)) continue;
@@ -315,6 +388,59 @@ export function normalizeItems(
     });
   }
   return out;
+}
+
+/**
+ * Build a deterministic Evidence `title` from upstream item fields. Only uses
+ * the symbol / ticker / server key — never the URL, never the credentials.
+ */
+function deriveTitle(item: Record<string, unknown>, serverKey: string): string | null {
+  for (const key of ["thscode", "ticker", "symbol", "code"]) {
+    const v = item[key];
+    if (typeof v === "string" && v.trim()) return `${serverKey} ${v.trim()}`;
+  }
+  return null;
+}
+
+/**
+ * Build a deterministic `content` string from the upstream item's structured
+ * fields. The content is a compact key=value list so a reviewer can see what
+ * the upstream actually returned, without inflating the structured record
+ * with every possible field.
+ */
+function deriveContent(item: Record<string, unknown>): string | null {
+  const preferred = [
+    "thscode",
+    "ticker",
+    "last_price",
+    "open_price",
+    "high_price",
+    "low_price",
+    "prev_price",
+    "price_change",
+    "price_change_ratio_pct",
+    "volume",
+    "turnover",
+    "title",
+    "headline",
+    "name",
+    "summary",
+  ];
+  const parts: string[] = [];
+  for (const k of preferred) {
+    const v = item[k];
+    if (v === undefined || v === null) continue;
+    parts.push(`${k}=${typeof v === "string" ? v : JSON.stringify(v)}`);
+  }
+  if (parts.length === 0) {
+    try {
+      const s = JSON.stringify(item);
+      return s.length > 400 ? s.slice(0, 400) + "…" : s;
+    } catch {
+      return null;
+    }
+  }
+  return parts.join("; ");
 }
 
 function inferType(serverKey: string, provider: "fuyao" | "ifind"): Evidence["type"] {

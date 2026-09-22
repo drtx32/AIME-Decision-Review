@@ -16,8 +16,14 @@
  *   bun run apps/api/scripts/mcp-smoke.ts                           # fake
  *   HITHINK_FINANCE_BASE_URL=https://fuyao.aicubes.cn/mcp \
  *     HITHINK_FINANCE_API_KEY=fy-... \
- *     HITHINK_FINANCE_TOOL='price:get_security_price' \
  *     bun run apps/api/scripts/mcp-smoke.ts --provider=fuyao --server=a-share
+ *
+ * Flags:
+ *   --provider=fuyao|ifind
+ *   --server=<key>           e.g. a-share / meta / stock / news
+ *   --tool=<name>            tool name to call (default: first from tools/list)
+ *   --list-only              stop after tools/list (do not call)
+ *   --args=<json>            JSON object for tools/call params (default: {})
  */
 
 import { McpStreamableHttpClient } from "../src/mcp/adapters/mcp-client.ts";
@@ -200,11 +206,50 @@ async function main(): Promise<void> {
 
   const startList = Date.now();
   const tools = await client.listTools();
-  emit("tools.list", true, { count: tools.length, duration_ms: Date.now() - startList });
+  emit("tools.list", true, {
+    count: tools.length,
+    duration_ms: Date.now() - startList,
+    names: tools.map((t) => t.name),
+  });
+
+  const listOnly = args["list-only"] === "1" || args["list-only"] === "true";
+  if (listOnly || tools.length === 0) {
+    const diag = client.dumpDiagnostics();
+    emit("diagnostics", true, diag);
+    await client.close();
+    emit("done", true, { ts: new Date().toISOString(), list_only: true });
+    return;
+  }
+
+  // Pick the tool to call. Default to the first tool discovered; allow override.
+  const requested = args.tool;
+  const chosen = requested && tools.some((t) => t.name === requested)
+    ? tools.find((t) => t.name === requested)!
+    : tools[0];
+  if (requested && !tools.some((t) => t.name === requested)) {
+    emit("tool.not_found", false, { requested, available: tools.map((t) => t.name) });
+    process.exit(1);
+  }
+
+  // Build tool args. Default: empty. Honor --args=<json> if present.
+  let toolArgs: Record<string, unknown> = {};
+  if (args.args) {
+    try {
+      toolArgs = JSON.parse(args.args) as Record<string, unknown>;
+    } catch (e) {
+      emit("error", false, { message: `bad --args JSON: ${(e as Error).message}` });
+      process.exit(1);
+    }
+  } else if (mode === "fake-upstream") {
+    // Fake upstream ignores args; pass a representative shape so the trace is
+    // self-documenting.
+    toolArgs = { symbol: "600519" };
+  }
 
   const startCall = Date.now();
-  const result = await client.callTool("smoke_tool", { symbol: "600519" });
+  const result = await client.callTool(chosen.name, toolArgs);
   emit("tools.call", true, {
+    tool: chosen.name,
     duration_ms: Date.now() - startCall,
     content_parts: result.content.length,
     is_error: result.isError ?? false,

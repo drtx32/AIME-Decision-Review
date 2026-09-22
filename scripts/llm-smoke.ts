@@ -7,8 +7,8 @@
  *     records the inbound Authorization header, then POSTs
  *     `{baseUrl}/chat/completions` against it. Proves the bearer path.
  *   - with real LLM_BASE_URL set: posts straight at the production gateway.
- *     The credential is never logged — only its scheme, length, and first 6
- *     characters.
+ *     The credential is never logged. The trace only records the host, status,
+ *     and latency — NOT the credential's scheme, length, or prefix.
  *
  * The script intentionally avoids `import openai` so it runs from repo root
  * without resolving workspace dependencies. The production path is exercised
@@ -157,8 +157,8 @@ async function runReal(
     body_preview: truncated,
   });
   emit("real.upstream.headers", true, {
-    authorization: mask(`Bearer ${apiKey}`),
-    note: "Token is masked; presence, scheme and length are non-secret metadata.",
+    authorization: { present: true, scheme: "Bearer" },
+    note: "Token length/prefix withheld by ELI-318 contract; only scheme + presence are observable.",
   });
 }
 

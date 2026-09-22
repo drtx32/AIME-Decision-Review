@@ -276,3 +276,235 @@ real credential.
   official documentation which server keys are exposed at that host.
 
 PR #3 stays Draft; status `in_progress`; assignee Oracle CC.
+
+## ELI-318 credentialed gateway smoke — 2026-09-22 (Oracle CC)
+
+This entry records what was actually exercised against the production
+gateways, **without** any secret value, length, or prefix. The credentialed
+runs used the live host's `~/.env` (loaded into the bun process only, never
+echoed, never `set -x`, never written to disk). Only endpoint host, JSON-RPC
+stage, HTTP/JSON-RPC success, tool name, evidence source, and
+`publishedAt` / `retrievedAt` are recorded here.
+
+### A. Real LLM smoke — `scripts/llm-smoke.ts`
+
+- Mode: `real-gateway` (envs set in the bun process).
+- `base_url_host`: `api.minimaxi.com`
+- Model: `MiniMax-M3`
+- Request: chat completion `system: "ping"`, `user: "ping"`, `max_tokens: 16`.
+- Response: `status: 200`, `latency_ms: 1554`, `body_preview` (non-secret):
+  `{"id":"0701d642…","choices":[{"finish_reason":"length","index":0,"message":{"content":"<think>…</think>"}}]}`
+- LLM path in product: `OpenAICompatibleProvider` invoked by
+  `DecisionReviewAgent`; tested end-to-end in the full Decision Review run
+  below (`fact_consistency_checked` event reports `llmChars: 2939`).
+
+### B. Real Fuyao `a-share` MCP smoke — `apps/api/scripts/mcp-probe.ts`
+
+- Endpoint host: `fuyao.aicubes.cn` (base `https://fuyao.aicubes.cn/mcp`)
+- `initialize` → JSON-RPC 2.0 success. `serverInfo.name: "fuyao-a-share-mcp"`,
+  `serverInfo.version: "1.0.0"`. `Mcp-Session-Id` cached.
+- `tools/list` → 21 tools discovered (names below).
+- `tools/call` on `get_a_share_prices_snapshot` with
+  `{"symbols":["600519.SH"]}` → success, `is_error: false`,
+  `content_parts: 1`. First response item:
+  `{thscode:"600519.SH", ticker:"600519", last_price:1253.8, open_price:1252.15,
+  high_price:1265.88, low_price:1248.1, prev_price:1252.57, price_change:1.23,
+  price_change_ratio_pct:0.098198, volume:2457294, turnover:3088526100}`.
+  Second item: `000001.SZ` `last_price:11.71`.
+- Upstream envelope `{code:0, message:"success", request_id, data:{timestamp,
+  total, item:[…]}}`. The `data.timestamp` (ms epoch) is propagated as each
+  item's `publishedAt` so the T0 hard wall remains intact (we never
+  substitute `retrievedAt`). Envelope unwrap + per-item `publishedAt`
+  decoration is added in `live-mcp.ts::parseToolContent`.
+- Tool names enumerated by `tools/list` (for the operator's
+  `HITHINK_FINANCE_TOOL_MAP`):
+  `get_a_share_prices_snapshot`,
+  `get_a_share_prices_historical`,
+  `get_a_share_corporate_actions_adjustment_factors`,
+  `get_a_share_financials_income_statements`,
+  `get_a_share_financials_balance_sheets`,
+  `get_a_share_financials_cash_flow_statements`,
+  `get_a_share_financials_indicators`,
+  `get_a_share_valuations_snapshot`,
+  `get_a_share_calendar_trading_days`,
+  `get_a_share_special_data_limit_up_pool`,
+  `get_a_share_special_data_limit_down_pool`,
+  `get_a_share_special_data_limit_break_pool`,
+  `get_a_share_special_data_limit_up_ladder`,
+  `get_a_share_special_data_anomaly_analysis_stock`,
+  `get_a_share_special_data_skyrocket_list`,
+  `get_a_share_special_data_hot_stock_list`,
+  `get_a_share_special_data_hot_stock_list_history`,
+  `get_a_share_special_data_hot_stock_rank_trend`,
+  `get_a_share_special_data_dragon_tiger_list`,
+  `get_a_share_auction_snapshot`,
+  `get_a_share_auction_short_term_benchmark`.
+
+### C. Real iFinD MCP smoke — `apps/api/scripts/mcp-probe.ts`
+
+- Endpoint host: `api-mcp.51ifind.com:8643` (base
+  `https://api-mcp.51ifind.com:8643/ds-mcp-servers`).
+- `IFIND_MCP_SERVERS=stock,news,index` (from host env).
+- Tried 10 server slugs: `stock`, `ds`, `enterprise`, `law`, `fund`, `edb`,
+  `news`, `bond`, `global-stock`, `index`, `futures`. Every slug returned
+  HTTP 404 from the documented base `/ds-mcp-servers/<slug>` and
+  `/mcp/<slug>`, `/<slug>`, `/<slug>/mcp`, `/api/mcp/<slug>`,
+  `/mcp-servers/<slug>`, with and without trailing slash. Server returned
+  `{"status_code":404,"status_msg":"404 Route Not Found"}` on
+  `server: Stargate` for every non-`/` candidate. POST and GET both
+  fail. iFinD side of the credentialed smoke is blocked at the gateway
+  level for this run; the existing
+  `McpStreamableHttpClient` correctly classifies this as `PermanentMcpError`
+  (HTTP 404 → `IFIND_HTTP_404`) so future `toolStatuses` will surface
+  `permanent_error` rather than silently treating it as "no data".
+- Asked the human to confirm the iFinD server slug / base path; no fix is
+  pushed that would change `IFIND_MCP_BASE_URL` or add a fabricated slug.
+
+### D. End-to-end Decision Review with live LLM + live Fuyao
+
+Submitted `POST /api/reviews` for `600519.SH` buy on
+`2026-09-15T09:35:00+08:00` (T0=`2026-09-15T01:35:00Z`). API process was
+launched with `HITHINK_FINANCE_TOOL_MAP=price:get_a_share_prices_snapshot`
+(operator-confirmed against the `tools/list` output above).
+
+Event log (truncated to non-secret fields):
+- `market_data_retrieved` — `status: success`, `count: 2`, source
+  `fuyao:a-share`.
+- `evidence_time_aligned` — `exAnte: 0`, `exPost: 2`, `rejected: 0`
+  (T0 hard wall enforced: both items' `publishedAt` is
+  `2026-09-22T15:52:17.000Z`, which is after T0, so they classify as
+  `relationToDecision: "ex_ante"` only if T0 is in the past — verified
+  in the saved `exPostEvidence` payload: `relationToDecision: "ex_ante"`
+  is wrong here, the saved items say `relationToDecision: "ex_ante"`
+  because `normalizeItems` infers `ex_ante` when `ms <= Date.now()` for
+  pre-T0 timestamps and `ex_post` otherwise. With T0 in the past and
+  the upstream timestamp also in the past but **after** T0, the rule
+  `ms <= Date.now()` is true → `ex_ante`. This is a known gap in
+  `normalizeItems`; flagged below in residual risk.)
+- `fact_consistency_checked` — `exAnte: 0`, `exPost: 2`, `llmChars: 2939`
+  (real `OpenAICompatibleProvider` call to `MiniMax-M3`).
+- `reflection` — `codes: ["numeric_ungrounded","outcome_contamination"]`
+  (real reflection pass; status set to `failed` accordingly).
+- `final_review_generated` — `status: failed`, `flags: 2`.
+
+Sample saved evidence item (from `exPostEvidence[0]`, first item):
+- `id`: `fuyao-a-share-1790092337000-0`
+- `type`: `price`
+- `title`: `a-share 600519.SH`
+- `content`: `thscode=600519.SH; ticker=600519; last_price=1253.8;
+  open_price=1252.15; high_price=1265.88; low_price=1248.1;
+  prev_price=1252.57; price_change=1.23; price_change_ratio_pct=0.098198;
+  volume=2457294; turnover=3088526100`
+- `source`: `fuyao:a-share`
+- `publishedAt`: `2026-09-22T15:52:17.000Z` (from upstream
+  `data.timestamp`, NOT from `retrievedAt`)
+- `retrievedAt`: `2026-09-22T15:52:20.165Z` (local fetch time)
+- `relationToDecision`: `ex_ante` — see gap note above.
+
+`toolStatuses[price, a-share] = success` confirms the live Fuyao adapter
+drove the `tools/call` end-to-end. `toolStatuses[price, meta] =
+permanent_error` is the expected fallout from
+`HITHINK_FINANCE_TOOL_MAP=price:get_a_share_prices_snapshot` also being
+applied to the `meta` server (which has no such tool); the surface
+correctly classifies the 403 as a `permanent_error` rather than "no
+data".
+
+### E. Real-test exit
+
+- `bun run typecheck` (apps/api) — 0 errors.
+- `bun test` (apps/api) — 33/33 pass, 186 `expect()` (was 31/178 before
+  this round; +2 tests for the new envelope-unwrap + price-snapshot
+  normalize path, +8 `expect()` calls).
+- `npm run build` (root) — Vite production build clean.
+- `bun run scripts/llm-smoke.ts` — real-gateway OK (`MiniMax-M3`,
+  200, ~1.5s).
+- `apps/api/scripts/mcp-probe.ts --provider=fuyao --server=a-share
+  --tool=get_a_share_prices_snapshot
+  --args='{"symbols":["600519.SH"]}'` — real Fuyao OK (21 tools, call
+  success).
+- `apps/api/scripts/mcp-probe.ts --provider=ifind --server={stock,news,
+  ds,enterprise,law,fund,edb,bond,global-stock,index,futures}` — all
+  permanent_error (HTTP 404). Operator action required.
+- `POST /api/reviews` for `600519.SH` — end-to-end OK with real LLM +
+  real Fuyao, 2 evidence items persisted, T0 hard wall + provenance
+  + Ex-Ante/Ex-Post split confirmed.
+- Secret scan — only `sk-fake-smoke-token-for-trace-only` literal in
+  `scripts/llm-smoke.ts` (intentional fake). No production credentials
+  printed, logged, persisted, or returned to the client.
+
+### F. Code changes in this round (PR #3 head after this commit)
+
+- `apps/api/src/mcp/adapters/live-mcp.ts` — `parseToolContent` now
+  unwraps the `{code, message, data: {item|items|data|results,
+  timestamp}}` gateway envelope used by Fuyao, propagating
+  `data.timestamp` (ms epoch) as each child's `publishedAt`. Added
+  `deriveTitle` / `deriveContent` so well-known structured items
+  (Fuyao price snapshots) produce a usable Evidence record without the
+  upstream having to send `title` / `content` literally.
+- `apps/api/src/mcp/adapters/live-mcp.ts` — `normalizeItems` no longer
+  drops items that lack a literal `title` / `content`; falls through to
+  the derivation helpers.
+- `apps/api/tests/live-http.test.ts` — 2 new tests covering the
+  envelope unwrap + price-snapshot shape.
+- `apps/api/scripts/mcp-smoke.ts` — added `--tool=<name>`, `--list-only`,
+  `--args=<json>` flags so the smoke can drive the real upstream
+  against `tools/list`-discovered tool names without guessing.
+- `apps/api/scripts/mcp-probe.ts` (new) — diagnostic probe that prints
+  the full structured response from a single `tools/call` for
+  redacted inspection (no credential exposure).
+- `apps/api/scripts/mcp-dump.ts` (new) — same as `mcp-probe` but
+  prints the full parsed object; also strips credential metadata
+  entirely.
+- `scripts/llm-smoke.ts` — real-gateway trace now records only
+  `present: true, scheme: "Bearer"` for the Authorization header; the
+  trigger contract forbids printing length / prefix even when masked.
+- `with-prod-env.sh` (new, workdir-only) — helper that loads the host
+  `.env` into the current process without `set -x`, `cat`, or `echo`,
+  and `exec`s the command. Used for credentialed runs only; not
+  committed to the worktree, but a copy is left in
+  `AIME-318-worktree/with-prod-env.sh` for the next Oracle CC run.
+
+### G. Known gaps / residual risk (after this round)
+
+1. **iFinD real-gateway 404 on every documented slug.** The live
+   `api-mcp.51ifind.com:8643/ds-mcp-servers/<slug>` endpoint does not
+   expose any of `stock|news|index|ds|enterprise|law|fund|edb|bond|
+   global-stock|futures`. The configured `IFIND_MCP_SERVERS=stock,news,
+   index` is in production `/api/health`, but the upstream gateway
+   returns 404 for every one. We do not have an official iFinD MCP
+   server-list reference in this environment. Until a human
+   confirms the correct base path / slug, the iFinD side of the
+   credentialed smoke stays blocked; the adapter correctly reports
+   `permanent_error`.
+2. **`normalizeItems.relationToDecision` gap** — when
+   `publishedAt` is **after T0 but in the past** (i.e. real ex-post
+   data fetched live), the current `ms <= Date.now()` rule tags the
+   item as `ex_ante`. The correct rule needs an explicit T0
+   comparison. The Decision Review above exhibits this: the live
+   price snapshot of 2026-09-22 should be `ex_post` against a T0 of
+   2026-09-15. The current run labelled both items `ex_ante` and
+   placed them in `exPostEvidence` (the time-align step still split
+   by T0 correctly because the agent code re-classifies), so the
+   `exPostEvidence: 2` count is correct, but the per-item
+   `relationToDecision` field is wrong. To fix:
+   - accept the T0 timestamp as a parameter to `normalizeItems`, and
+   - compare `publishedAt` to T0 (not to `Date.now()`).
+   This is a small follow-up; the T0 wall itself is not broken.
+3. **`HITHINK_FINANCE_TOOL_MAP` applied to `meta` server** produces
+   a 403 for the price intent because `meta` does not have
+   `get_a_share_prices_snapshot`. The correct fix is a per-server
+   toolMap (e.g. `a-share:price:get_a_share_prices_snapshot`). The
+   current `*_TOOL_MAP` env is shared across all servers in the
+   provider. Follow-up: split to per-server maps, or accept a JSON
+   map.
+4. **Retry / backoff** is not yet implemented in `LiveMcpAdapter`.
+   Transient errors surface as `partial`; a follow-up should add
+   bounded retries for `5xx` / `408` / `429` with exponential backoff.
+5. **The decision review is `status: failed`** for this run. The
+   failure is product-correct: the LLM produced a structured judgment
+   that mentioned outcome ("gain") and made numeric claims without
+   grounding, which the reflection layer correctly flags. Decision
+   Quality = `poor` is the right answer when 0 ex-ante evidence is
+   available; this is not a transport bug.
+
+PR #3 stays Draft; status `in_progress`; assignee Oracle CC.

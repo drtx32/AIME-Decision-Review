@@ -5,3 +5,5 @@ dist
 !.env.example
 *.tsbuildinfo
 .multica
+
+with-prod-env.sh

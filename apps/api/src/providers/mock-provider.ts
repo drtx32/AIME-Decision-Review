@@ -9,7 +9,7 @@
  * surface during the mock vertical slice.
  */
 
-import type { LLMCompletion, LLMCompletionRequest, ModelProvider } from "./index.ts";
+import type { LLMCompletion, LLMCompletionRequest, ModelProvider, ProviderAvailability } from "./index.ts";
 
 export class MockModelProvider implements ModelProvider {
   readonly id = "mock";
@@ -32,6 +32,17 @@ export class MockModelProvider implements ModelProvider {
       text: JSON.stringify(structured),
       structured,
       usage: { input: req.user.length, output: 64 },
+    };
+  }
+
+  availability(): ProviderAvailability {
+    return {
+      state: "ready",
+      providerId: this.id,
+      model: this.modelName,
+      lastError: null,
+      requestedMode: "mock",
+      degraded: false,
     };
   }
 }

@@ -16,6 +16,8 @@ import {
 } from "../src/providers/errors.ts";
 import {
   LazyResilientProvider,
+  MissingCredentialsProvider,
+  getModelProvider,
   getProviderAvailability,
   _resetModelProviderForTest,
 } from "../src/providers/index.ts";
@@ -97,6 +99,31 @@ async function withNoLlmEnv<T>(fn: () => Promise<T> | T): Promise<T> {
     }
     _resetModelProviderForTest();
   }
+}
+
+/**
+ * Build a minimal `ModelProvider` stub for `LazyResilientProvider` tests.
+ * The wrapper only calls `complete()`, but `ModelProvider.availability()`
+ * is part of the contract since ELI-326, so the stub satisfies the
+ * interface without affecting the tested code path.
+ */
+function makeFakeProvider(
+  id: string,
+  complete: ModelProvider["complete"]
+): ModelProvider {
+  return {
+    id,
+    modelName: id,
+    complete,
+    availability: () => ({
+      state: "ready",
+      providerId: id,
+      model: id,
+      lastError: null,
+      requestedMode: id === "mock" ? "mock" : "openai-compatible",
+      degraded: false,
+    }),
+  };
 }
 
 describe("ELI-326: API stays healthy with missing LLM config", () => {
@@ -317,14 +344,10 @@ describe("ELI-326: LazyResilientProvider does not throw on construction", () => 
   });
 
   test("complete() surfaces typed ProviderError on inner failure", async () => {
-    const flaky: ModelProvider = {
-      id: "fake-flaky",
-      modelName: "fake",
-      async complete() {
-        const e = Object.assign(new Error("rate limited"), { status: 429 });
-        throw e;
-      },
-    };
+    const flaky = makeFakeProvider("fake-flaky", async () => {
+      const e = Object.assign(new Error("rate limited"), { status: 429 });
+      throw e;
+    });
     const p = new LazyResilientProvider({
       id: "fake-flaky",
       modelName: "fake",
@@ -344,15 +367,11 @@ describe("ELI-326: LazyResilientProvider does not throw on construction", () => 
 
   test("complete() retries once on retryable errors then surfaces the typed error", async () => {
     let attempts = 0;
-    const flaky: ModelProvider = {
-      id: "fake-flaky",
-      modelName: "fake",
-      async complete() {
-        attempts++;
-        const e = Object.assign(new Error("server error 503"), { status: 503 });
-        throw e;
-      },
-    };
+    const flaky = makeFakeProvider("fake-flaky", async () => {
+      attempts++;
+      const e = Object.assign(new Error("server error 503"), { status: 503 });
+      throw e;
+    });
     const p = new LazyResilientProvider({
       id: "fake-flaky",
       modelName: "fake",
@@ -372,14 +391,10 @@ describe("ELI-326: LazyResilientProvider does not throw on construction", () => 
 
   test("complete() does not retry on non-retryable (401)", async () => {
     let attempts = 0;
-    const flaky: ModelProvider = {
-      id: "fake-flaky",
-      modelName: "fake",
-      async complete() {
-        attempts++;
-        throw Object.assign(new Error("401"), { status: 401 });
-      },
-    };
+    const flaky = makeFakeProvider("fake-flaky", async () => {
+      attempts++;
+      throw Object.assign(new Error("401"), { status: 401 });
+    });
     const p = new LazyResilientProvider({
       id: "fake-flaky",
       modelName: "fake",
@@ -397,14 +412,10 @@ describe("ELI-326: LazyResilientProvider does not throw on construction", () => 
   });
 
   test("complete() times out when inner hangs longer than requestTimeoutMs", async () => {
-    const slow: ModelProvider = {
-      id: "fake-slow",
-      modelName: "fake",
-      async complete() {
-        await new Promise((r) => setTimeout(r, 200));
-        return { text: "ok" };
-      },
-    };
+    const slow = makeFakeProvider("fake-slow", async () => {
+      await new Promise((r) => setTimeout(r, 200));
+      return { text: "ok" };
+    });
     const p = new LazyResilientProvider({
       id: "fake-slow",
       modelName: "fake",
@@ -474,6 +485,130 @@ describe("ELI-326: secret-redaction safety in route error responses", () => {
       expect(text).not.toMatch(/sk-[A-Za-z0-9_\-]{8,}/);
       expect(text).not.toMatch(/Bearer\s+[A-Za-z0-9_\-]{8,}/i);
       expect(text).not.toMatch(/Authorization:\s*\S+/i);
+    });
+  });
+});
+
+/**
+ * ELI-326 regression — supervisor review on head `a4296e3` flagged that
+ * `getModelProvider({provider: "openai-compatible", creds: null})` returned
+ * a `LazyResilientProvider` whose `build()` secretly returned a
+ * `MockModelProvider`, while a private-field cast faked
+ * `availability().state = "unconfigured"`. That meant:
+ *   - the route pre-flight correctly returned 503 (it only reads
+ *     availability, not completion);
+ *   - BUT any direct caller of `provider.complete()` — the agent, future
+ *     extractor / follow-up modules, ad-hoc callers, or any code path
+ *     that does not pre-flight — would silently receive a mock completion
+ *     while the operator expected a real provider.
+ *
+ * These tests pin the new contract:
+ *   1. The provider returned for a real provider with missing creds is a
+ *      `MissingCredentialsProvider` (not a `LazyResilientProvider`).
+ *   2. Its `complete()` rejects with typed `MODEL_NOT_CONFIGURED` and never
+ *      returns a `mock: true` structured payload.
+ *   3. `availability().state === "unconfigured"` and `degraded: true`
+ *      still surface honestly.
+ *   4. Explicit `LLM_PROVIDER=mock` still produces a real mock completion
+ *      (the documented dev/demo path).
+ */
+describe("ELI-326: real provider + missing creds has NO silent mock fallback", () => {
+  test("getModelProvider returns MissingCredentialsProvider when real provider requested without creds", async () => {
+    await withNoLlmEnv(() => {
+      const cfg = buildConfigWithoutLLM();
+      const provider = getModelProvider(cfg);
+      expect(provider).toBeInstanceOf(MissingCredentialsProvider);
+      // Crucially NOT a LazyResilientProvider with a mock build seam.
+      expect(provider).not.toBeInstanceOf(LazyResilientProvider);
+      expect(provider.id).toBe("openai-compatible");
+    });
+  });
+
+  test("direct complete() throws typed MODEL_NOT_CONFIGURED and never returns mock output", async () => {
+    await withNoLlmEnv(async () => {
+      const cfg = buildConfigWithoutLLM();
+      const provider = getModelProvider(cfg);
+      let caught: ProviderError | null = null;
+      try {
+        await provider.complete({
+          system: "You are a decision reviewer.",
+          user: "ignored because creds are missing",
+        });
+      } catch (e) {
+        caught = e as ProviderError;
+      }
+      expect(caught).not.toBeNull();
+      // Stable code is the canonical contract.
+      expect(caught?.code).toBe("MODEL_NOT_CONFIGURED");
+      expect(caught?.kind).toBe("configuration");
+      expect(caught?.httpStatus).toBe(503);
+      expect(caught?.retryable).toBe(false);
+      expect(caught?.providerId).toBe("openai-compatible");
+      expect(caught?.providerStatus).toBe("missing_credentials");
+      expect(caught?.sanitizedMessage).not.toMatch(/sk-/i);
+      expect(caught?.sanitizedMessage).not.toMatch(/Bearer/i);
+      // No mock marker ever escapes.
+      const text = JSON.stringify(caught);
+      expect(text).not.toMatch(/"mock"\s*:\s*true/);
+    });
+  });
+
+  test("availability on MissingCredentialsProvider reports unconfigured (not ready)", async () => {
+    await withNoLlmEnv(() => {
+      const cfg = buildConfigWithoutLLM();
+      const a = getModelProvider(cfg).availability();
+      expect(a.state).toBe("unconfigured");
+      expect(a.requestedMode).toBe("openai-compatible");
+      // `degraded: true` now means "unavailable", not "running on mock".
+      expect(a.degraded).toBe(true);
+      expect(a.lastError?.code).toBe("MODEL_NOT_CONFIGURED");
+    });
+  });
+
+  test("explicit LLM_PROVIDER=mock still produces a real mock completion", async () => {
+    await withNoLlmEnv(() => {
+      const cfg = makeTestConfig();
+      const provider = getModelProvider(cfg);
+      expect(provider.id).toBe("mock");
+      // Mock path is preserved end-to-end — the operator opted in.
+      return provider
+        .complete({ system: "s", user: "u" })
+        .then((completion) => {
+          expect(completion.structured).toBeDefined();
+          expect((completion.structured as { mock?: unknown }).mock).toBe(true);
+        });
+    });
+  });
+
+  test("getProviderAvailability for missing-creds is honest end-to-end (route pre-flight source)", async () => {
+    await withNoLlmEnv(() => {
+      const cfg = buildConfigWithoutLLM();
+      const a = getProviderAvailability(cfg);
+      expect(a.state).toBe("unconfigured");
+      expect(a.lastError?.code).toBe("MODEL_NOT_CONFIGURED");
+      // The provider surfaces the same typed error reference on every
+      // call so `/health`, the route pre-flight, and any direct caller
+      // observe a single, deterministic failure record.
+      const providerAvailability = getModelProvider(cfg).availability();
+      expect(providerAvailability.state).toBe(a.state);
+      expect(providerAvailability.providerId).toBe(a.providerId);
+      expect(providerAvailability.model).toBe(a.model);
+      expect(providerAvailability.requestedMode).toBe(a.requestedMode);
+      expect(providerAvailability.degraded).toBe(a.degraded);
+      expect(providerAvailability.lastError?.code).toBe(a.lastError?.code);
+      expect(providerAvailability.lastError?.kind).toBe(a.lastError?.kind);
+      expect(providerAvailability.lastError?.httpStatus).toBe(
+        a.lastError?.httpStatus
+      );
+      expect(providerAvailability.lastError?.retryable).toBe(
+        a.lastError?.retryable
+      );
+      expect(providerAvailability.lastError?.providerStatus).toBe(
+        a.lastError?.providerStatus
+      );
+      expect(providerAvailability.lastError?.sanitizedMessage).toBe(
+        a.lastError?.sanitizedMessage
+      );
     });
   });
 });

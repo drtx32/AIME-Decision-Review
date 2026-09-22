@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
 import { loginAndCookie, makeTestServer, seedUser, type TestServer } from "./helpers.ts";
 import type { ModelProvider } from "../src/providers/index.ts";
+import { MissingCredentialsProvider } from "../src/providers/index.ts";
 
 const extraction = {
   decisions: [
@@ -39,10 +40,11 @@ describe("Conversation session contract", () => {
   });
 
   test("no model cannot create a session or fake decisions", async () => {
+    ctx.deps.provider = new MissingCredentialsProvider({ id: "openai-compatible", modelName: "missing-model" });
     const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "alice", "alice-pass");
     const response = await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ message: "买入 600519" }) });
     expect(response.status).toBe(503);
-    expect(await response.json()).toEqual({ error: "MODEL_NOT_CONFIGURED", message: "当前未配置可用的大模型服务，请联系管理员。" });
+    expect(await response.json()).toMatchObject({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", message: "当前未配置可用的大模型服务，请联系管理员。", provider_status: "unconfigured", retryable: false });
     expect(ctx.repo.listSessions("alice")).toHaveLength(0);
   });
 

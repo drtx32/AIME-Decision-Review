@@ -8,7 +8,12 @@
  */
 
 import OpenAI from "openai";
-import type { LLMCompletion, LLMCompletionRequest, ModelProvider } from "./index.ts";
+import type {
+  LLMCompletion,
+  LLMCompletionRequest,
+  ModelProvider,
+  ProviderAvailability,
+} from "./index.ts";
 
 export interface OpenAICompatibleOptions {
   modelName: string;
@@ -18,7 +23,6 @@ export interface OpenAICompatibleOptions {
 
 export class OpenAICompatibleProvider implements ModelProvider {
   readonly id = "openai-compatible";
-  readonly configured = true;
   readonly modelName: string;
   private client: OpenAI;
 
@@ -32,7 +36,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
   async complete(req: LLMCompletionRequest): Promise<LLMCompletion> {
     const response = await this.client.chat.completions.create({
-      model: req.modelName ?? this.modelName,
+      model: this.modelName,
       temperature: req.temperature ?? 0.2,
       max_tokens: req.maxOutputTokens ?? 1024,
       messages: [
@@ -51,6 +55,21 @@ export class OpenAICompatibleProvider implements ModelProvider {
             output: response.usage.completion_tokens ?? 0,
           }
         : undefined,
+    };
+  }
+
+  availability(): ProviderAvailability {
+    // The provider is constructed only when both `apiKey` and `baseUrl`
+    // were supplied, so the wrapper can declare a `ready` baseline. Any
+    // transient failure is captured by `LazyResilientProvider` on top and
+    // surfaced through its own `availability()`.
+    return {
+      state: "ready",
+      providerId: this.id,
+      model: this.modelName,
+      lastError: null,
+      requestedMode: "openai-compatible",
+      degraded: false,
     };
   }
 }

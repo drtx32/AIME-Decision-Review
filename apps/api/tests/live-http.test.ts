@@ -639,6 +639,7 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
         apiKey: "test-key",
         servers: ["a-share"],
         toolMap: {},
+        remoteSuffixMap: {},
       },
     });
     const registry = buildMcpRegistry(cfg);
@@ -655,6 +656,7 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
         apiKey: "test-key",
         servers: ["a-share"],
         toolMap: { price: "get_a_share_price" },
+        remoteSuffixMap: {},
       },
     });
     const registry = buildMcpRegistry(cfg);
@@ -665,7 +667,7 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
 
   test("no credentials → mock adapter still selected", () => {
     const cfg = makeTestConfig({
-      fuyao: { baseUrl: null, apiKey: null, servers: ["a-share"], toolMap: {} },
+      fuyao: { baseUrl: null, apiKey: null, servers: ["a-share"], toolMap: {}, remoteSuffixMap: {} },
     });
     const registry = buildMcpRegistry(cfg);
     const adapter = registry.resolve("a-share")!;
@@ -722,12 +724,14 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
         apiKey: "test-key",
         servers: ["a-share"],
         toolMap: { price: "get_a_share_price" },
+        remoteSuffixMap: {},
       },
       ifind: {
         baseUrl: ifindFake.url,
         authorization: "Bearer ifind-token",
         servers: ["news"],
         toolMap: { news: "get_news" },
+        remoteSuffixMap: {},
       },
     });
     const registry = buildMcpRegistry(cfg);

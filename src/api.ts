@@ -1,0 +1,4 @@
+export type Input={symbol:string;market:string;side:'buy'|'sell';executedAt:string;price:string;quantity:string;reason:string;notes:string};
+export type Result={id:string;input:Input;summary:string;ante:string[];post:string[]};
+const demo:Result={id:'demo-600519',input:{symbol:'600519',market:'A股',side:'buy',executedAt:'2024-03-18T10:24',price:'1680',quantity:'100',reason:'渠道库存改善，预期批价企稳后业绩恢复。',notes:'计划持有 6–12 个月。'},summary:'这是一笔基于基本面拐点预期的买入。核心判断方向部分成立，但仓位与失效条件未被明确写入决策。',ante:['2024-03-15：公司披露经营数据，渠道库存处于可控区间。','2024-03-18 09:30：股价低于 60 日均线，估值处于近三年 42% 分位。','决策时可知：北向资金连续 3 日净流出，属于需要跟踪的反向信号。'],post:['2024-04-08：批价继续下探，渠道反馈弱于预期。','2024-05-10：一季报收入同比下降，市场预期进一步下修。','2024-06-28：股价较 T0 下跌 18.4%，这是结果信息，不应倒灌到事前判断。']};
+export const mock={async createReview(input:Input){await new Promise(r=>setTimeout(r,350));return{id:demo.id,input:{...demo.input,...input}}},async result(id:string){await new Promise(r=>setTimeout(r,200));return{...demo,id}}};

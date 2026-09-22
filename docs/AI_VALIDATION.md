@@ -262,13 +262,27 @@ to `main`.
 
 **AI/tool used**
 - Oracle CC (Claude Opus 4.8) on branch `feature/eli-318-real-llm-mcp-integration`
+- Parallel support from Local CC (`scripts/llm-smoke.ts`,
+  `apps/api/scripts/mcp-smoke.ts` auto-detect smoke harness) and Local
+  Codex (API contract / CORS / mock↔real audit). Oracle CC remains the
+  issue owner; assignees untouched.
 
 **Task**
 - ELI-318: turn the merged frontend + backend MVP into one real end-to-end
-  vertical slice with a real LLM provider and live financial-data tools.
-  Scope: real frontend↔backend integration, real `openai-compatible`
-  LLM path, live Fuyao + iFinD MCP HTTP transport, validation evidence
-  against `docs/TEST_PLAN.md` (T01/T02/T04/T05/T07/T08/T09/T10/T18).
+  vertical slice. Scope: real frontend↔backend integration, real
+  `openai-compatible` LLM path, live Fuyao + iFinD MCP HTTP transport,
+  validation evidence against `docs/TEST_PLAN.md` (T01/T02/T04/T05/T07/
+  T08/T09/T10/T18).
+
+> **Scope clarification (added post-Local-CC follow-up):** every "real
+> LLM / real MCP" smoke in this entry was executed against a **controlled
+> fake upstream** spun up locally on `:9097` / `:9098` / `:9099`, with the
+> request shape, header forwarding, response contract, and per-call
+> timeout all exercised end-to-end. **None** of these smokes have been
+> rerun against the production MiniMax / Fuyao / iFinD gateways with real
+> credentials. That real-gateway verification is still pending (see
+> *Still requires real-gateway verification* below) and is the blocker for
+> flipping PR #3 from Draft to Ready.
 
 **Output**
 - Frontend `src/api.ts`: real adapter that POSTs `/api/reviews`, polls
@@ -297,55 +311,106 @@ to `main`.
   - `apps/api/tests/live-http.test.ts` — 9 cases (200 success, empty,
     5xx → transient, 4xx → permanent, missing publishedAt → empty,
     timeout → transient, registry routing with credentials, mock fallback,
-    T18 vertical with both registries).
+    T18 vertical with both registries). All cases run against
+    in-process `Bun.serve` fakes; no external network.
   - `apps/api/tests/openai-compatible.test.ts` — 2 cases (real chat
-    completions against a Bun.serve mock; 429 does not leak the api key
-    into the thrown error message).
+    completions against a `Bun.serve` fake; 429 does not leak the api key
+    into the thrown error message). Fake-only.
+- Local CC smoke harness (commit `2a2d588`, Oracle CC chain):
+  - `scripts/llm-smoke.ts` — auto-detects real vs fake LLM gateway from
+    `LLM_BASE_URL`/`LLM_API_KEY`; prints only `{scheme, prefix(6 chars),
+    length}` for the credential, never the raw value.
+  - `apps/api/scripts/mcp-smoke.ts` — same shape for Fuyao + iFinD,
+    switches to real `LiveHttpAdapter` when `HITHINK_FINANCE_*` or
+    `IFIND_MCP_*` are set, otherwise exercises the adapter against an
+    in-process fake.
 
 **Validation**
 - `bun run typecheck` (apps/api) → 0 errors.
 - `bun test` → **22 / 22 pass**, 146 `expect()` calls across 5 files.
+  (Local CC re-ran locally with the same result.)
 - Frontend `npm run build` (repo root) → succeeds; CSS 7.76 kB, JS
   237.24 kB.
-- Secret scan on `apps/` + `src/` + `docs/` → only `.env.example`
-  placeholders and obvious test fixtures (`sk-test-secret`,
-  `fuyao-test-key`, `Bearer ifind-test-token`, etc.); no real keys.
-- End-to-end real LLM smoke (script `/tmp/llm-smoke.ts`):
-  - Fake OpenAI-compatible server on `:9099`, real backend on `:8787`.
-  - POST `/api/reviews` (600519, buy, T0=2024-03-15) → completed.
-  - Tool statuses: all configured adapters `success`.
-  - Fake upstream received `Authorization: Bearer sk-test-secret` once,
-    proving the live LLM path was actually called.
-- End-to-end real MCP smoke (script `/tmp/mcp-smoke.ts`):
-  - Fake Fuyao on `:9097`, fake iFinD on `:9098`, real backend on
-    `:8788` (`HITHINK_FINANCE_*` + `IFIND_MCP_*` configured).
-  - POST `/api/reviews` → completed.
-  - Distinct evidence sources in the result:
+- Secret scan on `apps/` + `src/` + `docs/` + `scripts/` →
+  - `.env.example` placeholders (variable names only).
+  - Test fixtures with explicit `fake-` / `test-` / `sk-fake-` /
+    `sk-test-` prefixes in `tests/live-http.test.ts`,
+    `tests/openai-compatible.test.ts`, the new smoke scripts.
+  - No production credential values anywhere in repo, scripts, or
+    this entry.
+
+**Controlled-fake upstream smokes (NOT production gateway)**
+- LLM smoke (`/tmp/llm-smoke.ts`, then re-exercised by Local CC via
+  `scripts/llm-smoke.ts`):
+  - Local fake upstream on `:9099`, real backend on `:8787` with
+    `LLM_PROVIDER=openai-compatible` pointed at the fake.
+  - POST `/api/reviews` (600519, buy, T0=2024-03-15) → `completed`.
+  - All configured tool adapters reported `success`.
+  - Fake upstream observed `Authorization: Bearer …` exactly once,
+    confirming the OpenAI-compatible provider actually hits the
+    configured `LLM_BASE_URL` with the configured key in the
+    `Authorization` header. **No production MiniMax endpoint touched.**
+- MCP smoke (`/tmp/mcp-smoke.ts`, then re-exercised by Local CC via
+  `apps/api/scripts/mcp-smoke.ts`):
+  - Local fake Fuyao on `:9097`, fake iFinD on `:9098`, real backend on
+    `:8788` with `HITHINK_FINANCE_*` + `IFIND_MCP_*` pointed at the
+    fakes.
+  - POST `/api/reviews` → `completed`.
+  - Distinct evidence sources returned in the result:
     `fuyao:a-share:price`, `fuyao:a-share:announcement`,
-    `ifind:stock:price`, `ifind:news:sector` — every live evidence
-    item carried source + publishedAt.
+    `ifind:stock:price`, `ifind:news:sector` — every fake-produced
+    evidence item carried `source` + `publishedAt`, and the
+    `LiveHttpAdapter` correctly assigned the items to `ex_ante` vs
+    `ex_post` based on T0.
   - Tool statuses: `a-share:success`, `stock:success`, `news:success`
-    for the live servers; `<none-configured>:empty` for intents no
+    for the live adapters; `<none-configured>:empty` for intents no
     configured server handles (honest lazy loading).
-- TEST_PLAN crosswalk:
-  - **T01** normal review — covered by real-MCP + real-LLM smokes
-    (`status=completed`, exAnte+exPost split, decisionQuality vs
-    outcome distinct, lessons + checklist, citations).
-  - **T02** T0 boundary — covered by existing agent.test.ts loop that
-    asserts every `exAnte.publishedAt ≤ T0` and every `exPost > T0`;
-    real-MCP smoke result carries `publishedAt` for both sides.
-  - **T04** empty result — existing `simulateEmpty` agent test.
-  - **T05** transient failure — existing `simulateTransientFailure`
-    test; live-http test additionally covers 5xx → transient_error.
-  - **T07** numeric mismatch — agent.test.ts path unchanged.
-  - **T08** unsupported causal — `reflection.ts` unchanged; existing
-    tests still apply.
-  - **T09** good process / bad outcome — `decisionQuality` vs
-    `outcome` always rendered as separate objects in `Result.tsx`.
-  - **T10** bad process / good outcome — same: outcome is its own
-    field, quality reasoning no longer references P&L.
-  - **T18** real MCP minimal path — proven by `/tmp/mcp-smoke.ts`
-    end-to-end with Fuyao + iFinD live sources.
+  - **No production Fuyao / iFinD endpoint touched.**
+
+**TEST_PLAN crosswalk (against controlled-fake upstreams only)**
+- **T01** normal review — fake-MCP + fake-LLM smokes produced
+  `status=completed`, exAnte+exPost split, decisionQuality vs outcome
+  distinct, lessons + checklist, citations.
+- **T02** T0 boundary — existing agent.test.ts loop that asserts every
+  `exAnte.publishedAt ≤ T0` and every `exPost > T0`; fake-MCP result
+  carries `publishedAt` for both sides.
+- **T04** empty result — existing `simulateEmpty` agent test.
+- **T05** transient failure — existing `simulateTransientFailure` test;
+  live-http test additionally covers 5xx → transient_error (against
+  in-process fake).
+- **T07** numeric mismatch — agent.test.ts path unchanged.
+- **T08** unsupported causal — `reflection.ts` unchanged; existing
+  tests still apply.
+- **T09** good process / bad outcome — `decisionQuality` vs
+  `outcome` always rendered as separate objects in `Result.tsx`.
+- **T10** bad process / good outcome — same: outcome is its own
+  field, quality reasoning no longer references P&L.
+- **T18** real MCP minimal path — **partially satisfied**: request
+  shape, response normalization, header forwarding, timeout, and
+  intent gating all verified against controlled fake upstreams. The
+  "real" qualifier (real gateway + real credentials) is not satisfied.
+
+**Still requires real-gateway verification (blocker for PR #3 → Ready)**
+- Re-run `scripts/llm-smoke.ts` against the production MiniMax-compatible
+  gateway with real `LLM_BASE_URL` + `LLM_API_KEY`; capture one line of
+  proof that the upstream received `Authorization: Bearer <prefix>…` and
+  returned a `chat.completion` with the expected model name. The script
+  prints only `{scheme, prefix(6), length}`; the raw key never reaches
+  stdout or this log.
+- Re-run `apps/api/scripts/mcp-smoke.ts --provider=fuyao --server=a-share`
+  against the real Fuyao gateway, and `--provider=ifind --server=news`
+  against the real iFinD gateway. Each must produce one evidence item
+  with a real `publishedAt` and a real `source` that matches the
+  upstream payload.
+- Update the *Controlled-fake upstream smokes* block above (or append a
+  new dated section) with the real-gateway traces; only then does
+  PR #3 go Ready for review.
+
+**Cross-issue dependencies**
+- **ELI-322** — will consolidate root `.env.example` and remove
+  `apps/api/.env.example`. PR #3 must rebase / sync to that change
+  before transitioning from Draft to Ready. Tracked as a follow-up
+  in this branch's PR description.
 
 **Human corrections**
 - Started from `agent/oracle-cc/116ec799ffbb` (the ELI-313 base) and
@@ -356,6 +421,13 @@ to `main`.
   short; no behavioural change for the mock-only path.
 - Did not relax T11 (deterministic-prediction) rejection — it remains
   enforced in `routes/api.ts`.
+- Local Codex surfaced 5 contract findings (CORS should pin origin via
+  env; `ReviewResult` type is a presentation subset of `EvidenceSchema`
+  and should be a shared decoder; `Number()` on price/quantity can yield
+  `NaN` → `null` → 400 instead of field-level error; `VITE_API_BASE_URL`
+  empty/non-empty is a strict mode switch with no silent fallback to
+  mock after a real submission starts). Filed as follow-up issues;
+  none are blocking this PR.
 
 **Residual risk / unresolved**
 - The default demo ports 8080/3000 may need overrides when another local service

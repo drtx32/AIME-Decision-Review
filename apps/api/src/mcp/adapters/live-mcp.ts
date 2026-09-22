@@ -22,6 +22,12 @@
  * If neither parses, the adapter falls back to `empty` rather than
  * fabricating items — failure to map a real upstream shape must not become
  * a fabricated evidence list.
+ *
+ * The adapter threads the review's T0 into `normalizeItems` so that
+ * `relationToDecision` is derived against T0 (not the wall clock). An
+ * item whose `publishedAt` is strictly after T0 must be labelled `ex_post`
+ * even when the entire review is historical; using `Date.now()` would
+ * mislabel post-T0 items as `ex_ante` and break SPEC §9 (T0 hard wall).
  */
 
 import type { Evidence, McpServerKey, ToolResult } from "../../types/index.ts";
@@ -119,7 +125,7 @@ export class LiveMcpAdapter implements EvidenceAdapter {
       if (items.length === 0) {
         return wrapEmpty(retrievedAt, Date.now() - start);
       }
-      const evidence = normalizeItems(items, retrievedAt, this.provider, this.serverKey);
+      const evidence = normalizeItems(items, retrievedAt, this.provider, this.serverKey, req.T0);
       if (evidence.length === 0) {
         return wrapEmpty(retrievedAt, Date.now() - start);
       }
@@ -309,8 +315,11 @@ export function normalizeItems(
   rawItems: unknown[],
   retrievedAt: string,
   provider: "fuyao" | "ifind",
-  serverKey: McpServerKey
+  serverKey: McpServerKey,
+  T0?: string
 ): Evidence[] {
+  const t0Ms = T0 ? Date.parse(T0) : Number.NaN;
+  const useT0 = T0 !== undefined && !Number.isNaN(t0Ms);
   const out: Evidence[] = [];
   for (const raw of rawItems) {
     if (!raw || typeof raw !== "object") continue;
@@ -358,13 +367,25 @@ export function normalizeItems(
       typeof item.sourceUrl === "string" && item.sourceUrl
         ? item.sourceUrl
         : undefined;
-    const relation =
+    // T0-aware alignment: when the upstream payload lacks an explicit
+    // relationToDecision, we derive it from the decision T0, not from the
+    // current wall clock. Items whose publishedAt is strictly after T0 must
+    // be marked `ex_post` even when the entire review is historical. Falling
+    // back to `Date.now()` would silently label a later-than-T0 historical
+    // item as `ex_ante`, violating SPEC §9 (T0 hard wall).
+    let relation: Evidence["relationToDecision"];
+    if (
       typeof item.relationToDecision === "string" &&
       (item.relationToDecision === "ex_ante" || item.relationToDecision === "ex_post")
-        ? item.relationToDecision
-        : ms <= Date.now()
-          ? "ex_ante"
-          : "ex_post";
+    ) {
+      relation = item.relationToDecision;
+    } else if (useT0) {
+      relation = ms > t0Ms ? "ex_post" : "ex_ante";
+    } else if (ms <= Date.now()) {
+      relation = "ex_ante";
+    } else {
+      relation = "ex_post";
+    }
     const confidence =
       typeof item.confidence === "number" && item.confidence >= 0 && item.confidence <= 1
         ? item.confidence

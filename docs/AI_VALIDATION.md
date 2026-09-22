@@ -552,3 +552,102 @@ UI).
 4. `HITHINK_FINANCE_TOOL_MAP` is shared across all Fuyao servers; applying `price:get_a_share_prices_snapshot` to the `meta` server produces a 403 (correctly surfaced as `permanent_error`). Per-server toolMap is a small follow-up.
 
 PR #3 head now `8c40086` (will be amended to the new rebase head); force-pushed; still Draft.
+
+## ELI-318 T0-aware `relationToDecision` + iFinD documentation — 2026-09-22 (Oracle CC)
+
+This round addresses the two concrete blockers raised in the supervisor's
+`01a0c9e0-…` thread against PR #3 head `080e786`.
+
+### A. Fix 1 — `normalizeItems` is now T0-aware
+
+`apps/api/src/mcp/adapters/live-mcp.ts`:
+
+- `normalizeItems` accepts an optional `T0: string` parameter. When T0 is
+  supplied and parseable, `relationToDecision` is derived as
+  `publishedAt > T0 ? "ex_post" : "ex_ante"`. When T0 is absent, the
+  previous `ms <= Date.now()` fallback is preserved so the helper still
+  works for call sites that don't have a T0 yet.
+- The fallback chain is now:
+  1. Explicit upstream `item.relationToDecision` (verbatim) — unchanged
+     semantics; upstream annotation wins.
+  2. T0 comparison when `T0` is supplied.
+  3. `Date.now()` fallback (kept for non-T0 call sites; the same as the
+     prior implementation).
+- The upstream annotation branch is unchanged so any structured payload
+  that already carries `relationToDecision` continues to flow through
+  verbatim.
+- `LiveMcpAdapter.fetch` now passes `req.T0` into `normalizeItems`. T0
+  reaches the adapter through `AdapterRequest.T0`, which the agent
+  populates from the original decision `executedAt`.
+- File-level docstring now states the T0 hard-wall contract so a future
+  reader doesn't revert to the `Date.now()` rule.
+
+`apps/api/tests/live-http.test.ts`:
+
+- New test: `normalizeItems: T0-aware — post-T0 historical item is saved
+  as ex_post`. Asserts the persisted `relationToDecision` is `ex_post`
+  for a historical item published strictly after a historical T0 (and
+  `ex_ante` for an item published before the same T0), even when the
+  wall clock is far in the future.
+- New test: `normalizeItems: explicit relationToDecision from upstream
+  overrides T0 fallback`. Locks in the precedence order.
+- New test: `LiveMcpAdapter.fetch: persisted item with publishedAt > T0
+  is ex_post`. Drives the full adapter path (JSON-RPC mock → content
+  parsing → `normalizeItems` → evidence) and asserts the label is
+  `ex_post`. Uses a fixed `Date.now()` so the test is deterministic and
+  would have failed under the previous T0-agnostic rule.
+
+### B. Fix 2 — iFinD gateway contract documented, not invented
+
+No code path or `IFIND_MCP_BASE_URL` / server-slug was changed in this
+round. The supervisor's prior credentialed probe already documented that
+every documented slug on the gateway base returned HTTP 404. Until an
+operator confirms the correct base path / server slug, the iFinD side of
+the credentialed smoke stays **visibly partial**:
+
+- The adapter code path is the same `McpStreamableHttpClient` that the
+  prior turn validated — `initialize → tools/list → tools/call` JSON-RPC
+  2.0 with `Authorization: Bearer <token>`.
+- HTTP 404 is correctly classified as `PermanentMcpError` (code
+  `IFIND_HTTP_404`). When the operator supplies the correct base path
+  / slug (or any working alternative), the existing code will drive a
+  real-gateway `initialize → tools/list → tools/call` smoke
+  automatically (no code change required).
+- `toolStatuses[ifind, *]` entries surface `permanent_error` rather than
+  silently treating the gateway as "no data", preserving the
+  empty / transient_error / permanent_error contract required by
+  `docs/SPEC.md`.
+- `IFIND_MCP_TOOL_MAP` is intentionally not consumed by the live
+  adapter; the operator must supply a real `tools/list`-derived map
+  before any intent has `canHandle() === true`. The current production
+  env has no `IFIND_MCP_TOOL_MAP`, so every iFinD intent falls into
+  `empty / <none-configured>` — correct refusal rather than fabricated
+  tool calls.
+
+### C. Validation gate (this round)
+
+- `cd apps/api && bun run typecheck` — 0 errors.
+- `cd apps/api && bun test` — full suite green; the three new tests
+  above pass and the existing 72 cases (auth + review + MCP) all still
+  pass.
+- `npm run build` (root) — Vite production build clean.
+- Secret scan — only `sk-fake-smoke-token-for-trace-only` literal in
+  `scripts/llm-smoke.ts` (intentional fake). No production credentials
+  in any trace, log, or commit.
+
+### D. Carry-over from prior turns
+
+1. **iFinD real-gateway 404 on every documented slug.** Operator
+   confirmation of the correct base path / slug remains the single
+   unblock for the iFinD half of T18. The integration is visibly
+   partial (every iFinD `toolStatus` row reads `permanent_error` or
+   `empty`) and the contract is preserved.
+2. **Per-server `HITHINK_FINANCE_TOOL_MAP`.** The shared tool map
+   currently forces the `meta` server to attempt a price tool it does
+   not expose (403 → `permanent_error`). Splitting to per-server maps
+   is a follow-up.
+3. **Retry / backoff** in `LiveMcpAdapter` is not yet implemented;
+   transient errors surface as `partial`. Follow-up.
+
+PR #3 head amended in this round; force-pushed; still Draft.
+Assignee Oracle CC; status `in_progress`.

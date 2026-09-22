@@ -516,6 +516,105 @@ describe("LiveMcpAdapter — registry-driven intent → tool", () => {
     expect(norm).toHaveLength(4);
     expect(norm.every((e) => e.publishedAt === "2024-03-14T00:00:00.000Z")).toBe(true);
   });
+
+  // Regression: a historical review with T0 in the past used to mislabel
+  // items published *after* T0 as `ex_ante` because the fallback rule was
+  // `publishedAt <= Date.now()`. SPEC §9 requires `ex_post` for any item
+  // whose `publishedAt` is strictly after T0. Threading T0 into normalize
+  // must flip the label even though the wall clock is well past everything.
+  test("normalizeItems: T0-aware — post-T0 historical item is saved as ex_post", () => {
+    const norm = normalizeItems(
+      [
+        {
+          title: "post-T0 close",
+          content: "Closing print after the decision.",
+          source: "fuyao:a-share",
+          publishedAt: "2024-03-16T00:00:00Z", // after T0
+        },
+        {
+          title: "pre-T0 close",
+          content: "Closing print before the decision.",
+          source: "fuyao:a-share",
+          publishedAt: "2024-03-14T00:00:00Z", // before T0
+        },
+      ],
+      "2026-09-22T15:00:00.000Z", // far future retrievedAt — irrelevant to label
+      "fuyao",
+      "a-share",
+      "2024-03-15T00:00:00Z" // T0
+    );
+    expect(norm).toHaveLength(2);
+    const byTitle = Object.fromEntries(norm.map((e) => [e.title, e]));
+    expect(byTitle["post-T0 close"].relationToDecision).toBe("ex_post");
+    expect(byTitle["pre-T0 close"].relationToDecision).toBe("ex_ante");
+  });
+
+  // Regression: explicit upstream `relationToDecision` must still win.
+  test("normalizeItems: explicit relationToDecision from upstream overrides T0 fallback", () => {
+    const norm = normalizeItems(
+      [
+        {
+          title: "post-T0 but upstream marked ex_ante",
+          content: "Upstream annotation.",
+          source: "fuyao:a-share",
+          publishedAt: "2024-03-16T00:00:00Z",
+          relationToDecision: "ex_ante",
+        },
+      ],
+      "2026-09-22T15:00:00.000Z",
+      "fuyao",
+      "a-share",
+      "2024-03-15T00:00:00Z"
+    );
+    expect(norm[0].relationToDecision).toBe("ex_ante");
+  });
+
+  test("LiveMcpAdapter.fetch: persisted item with publishedAt > T0 is ex_post", async () => {
+    // Save and restore Date.now so the T0-relative label is forced.
+    const realNow = Date.now;
+    Date.now = () => Date.parse("2026-09-22T15:00:00.000Z");
+    try {
+      const fake = await startFakeMcpServer({
+        onToolCall: () => ({
+          content: [
+            {
+              type: "text",
+              text: JSON.stringify([
+                {
+                  id: "real-fuyao-post-T0",
+                  type: "price",
+                  title: "Post-T0 print",
+                  content: "Closing print after the historical decision.",
+                  source: "fuyao:a-share:price",
+                  publishedAt: "2024-03-16T00:00:00Z", // post-T0
+                },
+              ]),
+            },
+          ],
+        }),
+      });
+      const adapter = new LiveMcpAdapter({
+        provider: "fuyao",
+        serverKey: "a-share",
+        endpoint: fake.url,
+        credentials: { baseUrl: fake.url, apiKey: "test-key" },
+        toolForIntent: (intent) => (intent === "price" ? "get_price" : null),
+      });
+      const res = await adapter.fetch({
+        intent: "price",
+        symbol: "600519",
+        market: "CN",
+        T0: "2024-03-15T00:00:00Z",
+      });
+      fake.close();
+      expect(res.status).toBe("success");
+      expect(res.data).toHaveLength(1);
+      expect(res.data![0].relationToDecision).toBe("ex_post");
+      expect(res.data![0].publishedAt).toBe("2024-03-16T00:00:00.000Z");
+    } finally {
+      Date.now = realNow;
+    }
+  });
 });
 
 // ─── Registry wiring ────────────────────────────────────────────────────────

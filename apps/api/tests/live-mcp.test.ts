@@ -32,7 +32,7 @@ describe("Live MCP adapter contract", () => {
       methods.push((JSON.parse(String(init?.body)) as { method: string }).method);
     });
     const result = await adapter.fetch({ intent: "price", symbol: "600519", market: "CN", T0: "2025-03-18T00:00:00Z" });
-    expect(methods).toEqual(["initialize", "tools/list", "tools/call"]);
+    expect(methods).toEqual(["initialize", "notifications/initialized", "tools/list", "tools/call"]);
     expect(result.status).toBe("success");
     expect(result.data?.[0].source).toBe("fuyao:a-share");
     expect(result.data?.[0].relationToDecision).toBe("ex_ante");

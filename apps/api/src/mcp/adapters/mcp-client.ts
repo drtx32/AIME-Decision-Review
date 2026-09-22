@@ -3,13 +3,13 @@
  *
  * The AIME Decision Review backend uses this to call Fuyao and iFinD MCP
  * servers over HTTP. Both providers expose MCP endpoints that:
- *   1. Accept POST {jsonrpc:"2.0", id, method, params}
+ *   1. Accept POST {jsonrpc:"2.0", id, method, params} and notifications
  *   2. Reply with {jsonrpc:"2.0", id, result} or {jsonrpc:"2.0", id, error}
  *   3. Speak MCP methods `initialize`, `tools/list`, `tools/call`
  *
  * The lifecycle we drive per server key:
  *
- *   initialize          → {serverInfo, capabilities, protocolVersion}
+ *   initialize          → notifications/initialized (no response)
  *   tools/list          → [{name, description, inputSchema}, …]   (cached)
  *   tools/call          → {content:[{type:"text", text:"..."}], isError?}
  *
@@ -223,6 +223,10 @@ export class McpStreamableHttpClient {
       protocolVersion?: string;
     }>("initialize", params);
     this.serverInfo = result.serverInfo;
+    // MCP requires the client to acknowledge initialization before using
+    // capabilities. This is a JSON-RPC notification: it has no id and the
+    // server normally answers 204/no body.
+    await this.rpc("notifications/initialized", {}, false);
     this.onTrace?.({
       stage: "initialize",
       serverKey: this.serverKey,
@@ -231,14 +235,11 @@ export class McpStreamableHttpClient {
     });
   }
 
-  private async rpc<T>(method: string, params: unknown): Promise<T> {
-    const id = ++this.rpcId;
-    const body = JSON.stringify({
-      jsonrpc: "2.0",
-      id,
-      method,
-      params,
-    });
+  private async rpc<T>(method: string, params: unknown, expectResponse = true): Promise<T> {
+    const id = expectResponse ? ++this.rpcId : undefined;
+    const body = JSON.stringify(expectResponse
+      ? { jsonrpc: "2.0", id, method, params }
+      : { jsonrpc: "2.0", method, params });
     const headers: Record<string, string> = {
       "content-type": "application/json",
       accept: "application/json, text/event-stream",
@@ -294,6 +295,8 @@ export class McpStreamableHttpClient {
       );
     }
 
+    if (!expectResponse && res.status === 204) return undefined as T;
+
     // Handle SSE responses: read first event; many servers return JSON in
     // an SSE stream when Accept includes text/event-stream. For the MVP we
     // accept both application/json and text/event-stream; the test mock
@@ -305,6 +308,7 @@ export class McpStreamableHttpClient {
     } else {
       raw = await res.text();
     }
+    if (!expectResponse && !raw.trim()) return undefined as T;
     let parsed: JsonRpcResponse<T>;
     try {
       parsed = JSON.parse(raw) as JsonRpcResponse<T>;
@@ -313,6 +317,15 @@ export class McpStreamableHttpClient {
         `${this.provider.toUpperCase()}_BAD_BODY`,
         `Upstream ${this.provider} returned non-JSON body for ${method}`
       );
+    }
+    if (!expectResponse) {
+      if (parsed.error) {
+        throw new PermanentMcpError(
+          `${this.provider.toUpperCase()}_RPC_${parsed.error.code}`,
+          `Upstream ${this.provider} JSON-RPC error: ${parsed.error.message}`
+        );
+      }
+      return undefined as T;
     }
     if (parsed.error) {
       // JSON-RPC errors: -32601 (method not found) is permanent; others

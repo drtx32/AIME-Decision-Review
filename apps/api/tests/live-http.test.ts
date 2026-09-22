@@ -48,6 +48,8 @@ interface FakeMcpOptions {
   onRequest?: (info: { method: string; headers: Record<string, string>; body: unknown }) => void;
   /** Hold the response open (used for timeout tests). */
   stall?: boolean;
+  /** Require the MCP initialized notification before tools/list. */
+  requireInitialized?: boolean;
 }
 
 async function startFakeMcpServer(opts: FakeMcpOptions = {}): Promise<{
@@ -56,6 +58,7 @@ async function startFakeMcpServer(opts: FakeMcpOptions = {}): Promise<{
   close: () => void;
 }> {
   const captured: Array<{ method: string; headers: Record<string, string>; body: unknown }> = [];
+  let initialized = false;
   const initialTools = opts.toolsList ?? [{ name: "get_price", description: "Get price" }];
 
   const server = Bun.serve({
@@ -112,9 +115,11 @@ async function startFakeMcpServer(opts: FakeMcpOptions = {}): Promise<{
         );
       }
       if (rpc?.method === "notifications/initialized") {
+        initialized = true;
         return new Response("", { status: 204 });
       }
       if (rpc?.method === "tools/list") {
+        if (opts.requireInitialized && !initialized) return new Response(JSON.stringify({ error: "initialized notification required" }), { status: 400 });
         return new Response(
           JSON.stringify({
             jsonrpc: "2.0",
@@ -160,6 +165,16 @@ function ifindAuthHeaders(auth: string): Record<string, string> {
 // ─── Client-level tests ─────────────────────────────────────────────────────
 
 describe("McpStreamableHttpClient — real MCP protocol", () => {
+  test("sends notifications/initialized before tools/list and handles no response", async () => {
+    const fake = await startFakeMcpServer({ requireInitialized: true });
+    const client = new McpStreamableHttpClient({ endpoint: fake.url, serverKey: "a-share", provider: "fuyao" });
+    await client.listTools();
+    const methods = fake.captured.map((entry) => (entry.body as { method?: string }).method);
+    expect(methods.slice(0, 3)).toEqual(["initialize", "notifications/initialized", "tools/list"]);
+    expect((fake.captured[1].body as { id?: unknown }).id).toBeUndefined();
+    fake.close();
+  });
+
   test("initialize → tools/list → tools/call round-trip", async () => {
     const fake = await startFakeMcpServer({
       toolsList: [

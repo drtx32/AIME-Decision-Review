@@ -116,7 +116,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     const user = c.get("user")!; const id = c.req.param("id");
     const session = deps.repo.getSession(id, user.id); if (!session) return c.json({ error: "not_found" }, 404);
     const decisions = deps.repo.listSessionDecisions(id, user.id);
-    return c.json({ session, decisions, messages: deps.repo.listMessages(id, user.id), memories: deps.repo.listMemories(user.id), results: decisions.filter((d) => d.reviewId).map((d) => ({ decisionId: d.id, reviewId: d.reviewId, result: deps.repo.getResult(d.reviewId!) })) });
+    return c.json({ session, decisions, messages: deps.repo.listMessages(id, user.id), memories: deps.repo.listMemories(user.id), results: decisions.filter((d) => d.reviewId).map((d) => ({ decisionId: d.id, reviewId: d.reviewId, status: deps.repo.getRun(d.reviewId!)?.status ?? "unknown", result: deps.repo.getResult(d.reviewId!) })) });
   });
 
   app.patch("/api/sessions/:id/decisions/:decisionId", async (c) => {

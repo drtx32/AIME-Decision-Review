@@ -65,7 +65,7 @@ export function buildMcpRegistry(cfg: AppConfig): McpRegistry {
         return new LiveMcpAdapter({
           provider: "fuyao",
           serverKey: key,
-          endpoint: joinMcpEndpoint(cfg.fuyao.baseUrl, String(key)),
+          endpoint: joinMcpEndpoint(cfg.fuyao.baseUrl, String(key), "fuyao", cfg.fuyao.remoteSuffixMap as Partial<Record<string, string>>),
           credentials: {
             baseUrl: cfg.fuyao.baseUrl,
             apiKey: cfg.fuyao.apiKey,
@@ -83,7 +83,7 @@ export function buildMcpRegistry(cfg: AppConfig): McpRegistry {
         return new LiveMcpAdapter({
           provider: "ifind",
           serverKey: key,
-          endpoint: joinMcpEndpoint(cfg.ifind.baseUrl, String(key)),
+          endpoint: joinMcpEndpoint(cfg.ifind.baseUrl, String(key), "ifind", cfg.ifind.remoteSuffixMap as Partial<Record<string, string>>),
           credentials: {
             baseUrl: cfg.ifind.baseUrl,
             authorization: cfg.ifind.authorization,
@@ -138,8 +138,9 @@ export function buildMcpRegistry(cfg: AppConfig): McpRegistry {
  *
  * If `baseUrl` already ends with the server key, we use it as-is.
  */
-function joinMcpEndpoint(base: string, serverKey: string): string {
+function joinMcpEndpoint(base: string, serverKey: string, provider: "fuyao" | "ifind", remoteSuffixMap: Partial<Record<string, string>> = {}): string {
   const trimmed = base.replace(/\/$/, "");
-  if (trimmed.endsWith(`/${serverKey}`)) return trimmed;
-  return `${trimmed}/${serverKey}`;
+  const suffix = remoteSuffixMap[serverKey] ?? (provider === "ifind" ? `hexin-ifind-ds-${serverKey}-mcp` : serverKey);
+  if (trimmed.endsWith(`/${suffix}`)) return trimmed;
+  return `${trimmed}/${suffix}`;
 }

@@ -26,7 +26,7 @@
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
 import { McpStreamableHttpClient } from "../src/mcp/adapters/mcp-client.ts";
-import { LiveMcpAdapter, parseToolContent, normalizeItems } from "../src/mcp/adapters/live-mcp.ts";
+import { LiveMcpAdapter, parseToolContent, normalizeItems, buildToolArgs } from "../src/mcp/adapters/live-mcp.ts";
 import { alignEvidence } from "../src/mcp/adapters/types.ts";
 import { buildMcpRegistry } from "../src/mcp/registry.ts";
 import { makeTestConfig } from "./helpers.ts";
@@ -327,6 +327,14 @@ describe("McpStreamableHttpClient — real MCP protocol", () => {
     fake.close();
     expect(err?.name).toBe("TransientMcpError");
     expect((err as any).code).toContain("TIMEOUT");
+  });
+});
+
+describe("schema-driven MCP arguments", () => {
+  test("maps Fuyao symbols and historical dates without generic extras", () => {
+    expect(buildToolArgs({ properties: { symbols: {}, start_date: {}, end_date: {} } }, {
+      intent: "price", symbol: "600519.SH", T0: "2024-03-15T09:30:00Z",
+    })).toEqual({ symbols: ["600519.SH"], start_date: "2024-03-15", end_date: "2024-03-15" });
   });
 });
 

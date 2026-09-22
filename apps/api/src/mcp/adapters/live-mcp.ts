@@ -107,16 +107,8 @@ export class LiveMcpAdapter implements EvidenceAdapter {
     try {
       const client = this.getClient();
       const tools = await client.listTools();
-      if (!tools.some((tool) => tool.name === toolName)) {
-        return wrapEmpty(retrievedAt, Date.now() - start);
-      }
-      const result = await client.callTool(toolName, {
-        symbol: req.symbol,
-        market: req.market ?? "CN",
-        T0: req.T0,
-        limit: req.limit ?? 5,
-        intent: req.intent,
-      });
+      const toolInfo = tools.find((tool) => tool.name === toolName);
+      const result = await client.callTool(toolName, buildToolArgs(toolInfo?.inputSchema, req));
       if (result.isError) {
         return wrapPermanentError(
           `${this.provider.toUpperCase()}_TOOL_ERROR`,
@@ -198,6 +190,26 @@ export class LiveMcpAdapter implements EvidenceAdapter {
 }
 
 // ─── Parsing + normalization helpers (exported for tests) ─────────────────
+
+/** Build only arguments declared by the upstream tool schema. */
+export function buildToolArgs(schema: Record<string, unknown> | undefined, req: AdapterRequest): Record<string, unknown> {
+  const props = schema?.properties && typeof schema.properties === "object" ? schema.properties as Record<string, unknown> : null;
+  if (!props) return { symbol: req.symbol, market: req.market ?? "CN", T0: req.T0, limit: req.limit ?? 5, intent: req.intent };
+  const args: Record<string, unknown> = {};
+  for (const key of ["symbols", "codes", "tickers", "ths_codes"]) if (key in props) { args[key] = [req.symbol]; break; }
+  if (!Object.keys(args).length) for (const key of ["symbol", "thscode", "ticker", "code", "stock_code", "security_id"]) if (key in props) { args[key] = req.symbol; break; }
+  if ("T0" in props) args.T0 = req.T0;
+  if ("start_date" in props) args.start_date = req.T0.slice(0, 10);
+  if ("startDate" in props) args.startDate = req.T0;
+  if ("end_date" in props) args.end_date = req.T0.slice(0, 10);
+  if ("endDate" in props) args.endDate = req.T0;
+  if ("date" in props) args.date = req.T0.slice(0, 10);
+  if ("trade_date" in props) args.trade_date = req.T0.slice(0, 10);
+  if ("market" in props) args.market = req.market ?? "CN";
+  if ("limit" in props) args.limit = req.limit ?? 5;
+  if ("intent" in props) args.intent = req.intent;
+  return args;
+}
 
 /** Pull structured evidence-like items out of an MCP tool-call content array. */
 export function parseToolContent(

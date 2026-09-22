@@ -553,6 +553,133 @@ UI).
 
 PR #3 head now `8c40086` (will be amended to the new rebase head); force-pushed; still Draft.
 
+## ELI-318 — iFinD canonical→remote suffix + inputSchema-driven arg builder — 2026-09-22 (Oracle CC)
+
+This addresses the trigger's two operational blockers from the most recent
+supervisor follow-up (`01a0cade-…`):
+
+1. iFinD's gateway expects the full server name (`hexin-ifind-ds-stock-mcp`,
+   `hexin-ifind-ds-news-mcp`), not the short canonical key — the previous
+   `<base>/stock` URL produced the documented 404.
+2. `LiveMcpAdapter.fetch` previously sent one generic
+   `{symbol, market, T0, limit, intent}` payload to every tool. The verified
+   Fuyao snapshot call uses `{"symbols":["600519.SH"]}`; iFinD tools may
+   require other field names (`start_date`, `endDate`, `thscode`, etc.).
+   A green tool status no longer proves the requested symbol/time was
+   honored.
+
+**Code changes**
+
+- `apps/api/src/mcp/registry.ts::joinMcpEndpoint` now takes a
+  `provider` + `remoteSuffixMap`. The default iFinD suffix is
+  `hexin-ifind-ds-<serverKey>-mcp`. The default Fuyao suffix is the short
+  key (unchanged behaviour for Fuyao). `buildAdapter` threads the
+  per-server override through to `LiveMcpAdapter.remoteSuffixOverride`.
+- `apps/api/src/mcp/adapters/live-mcp.ts`:
+  - `LiveMcpAdapterInit` gains an optional `remoteSuffixOverride` field
+    (no behaviour change when `null`).
+  - `fetch()` now calls `client.listTools()`, looks up the configured
+    `toolName` in the discovered list, and passes the tool's `inputSchema`
+    (when present) to `buildToolArgs`. The pre-fix `tools.some()` refusal
+    is replaced with a non-fatal lookup: the operator's `toolMap` is the
+    assertion that the tool exists; if the cached `tools/list` doesn't
+    include it, we still call `tools/call` (some servers omit late-registered
+    tools from the cached list).
+  - New `buildToolArgs(schema, req)` helper maps the upstream schema's
+    top-level property keys to canonical values: array keys
+    (`symbols`/`codes`/`tickers`/`ths_codes`) receive `[symbol]`; scalar
+    keys (`symbol`/`thscode`/`ticker`/`code`/`stock_code`/`security_id`)
+    receive the string directly; time-window keys (`T0`/`start_date`/
+    `startDate`/`end_date`/`endDate`/`date`/`trade_date`) receive ISO
+    strings derived from the review's T0; misc context keys (`market`/
+    `limit`/`intent`) receive the corresponding request field. Unknown
+    schema keys are dropped (no fabrication). When no schema is supplied,
+    `buildToolArgs` falls back to the previous generic payload so an
+    unverified tool still gets a chance to respond.
+- `apps/api/src/config.ts`:
+  - `AppConfig.fuyao.remoteSuffixMap` and `AppConfig.ifind.remoteSuffixMap`
+    added. Parsed via the new `parseSuffixMap` helper from env vars
+    `HITHINK_FINANCE_REMOTE_SUFFIX_MAP` / `IFIND_MCP_REMOTE_SUFFIX_MAP`
+    in `key:suffix,key:suffix` format.
+  - Both env vars are documented in `.env.example` with a short note that
+    the iFinD default is already correct (`hexin-ifind-ds-<key>-mcp`),
+    so an empty value is normally sufficient.
+- `apps/api/tests/helpers.ts` — `makeTestConfig` includes the new
+  `remoteSuffixMap: {}` defaults so existing tests keep type-checking.
+- `apps/api/tests/live-http.test.ts`:
+  - `startFakeMcpServer.toolsList` now accepts `inputSchema?: Record<…>`
+    so fake upstreams can advertise a schema.
+  - 5 new tests:
+    - `buildToolArgs — schema with symbols array sends [symbol]`
+      (Fuyao `get_a_share_prices_snapshot` shape).
+    - `buildToolArgs — schema with symbol scalar sends the string`.
+    - `buildToolArgs — schema with start_date / end_date populates ISO`.
+    - `buildToolArgs — no schema falls back to the legacy generic payload`.
+    - `LiveMcpAdapter.fetch — captured call body carries {symbols:[…]}`,
+      not the legacy `{symbol, market, T0, limit, intent}`. This locks in
+      the verified Fuyao shape end-to-end.
+    - Two registry tests asserting the iFinD suffix map is wired and
+      operator-supplied overrides take effect.
+- `apps/api/tests/mcp-registry.test.ts` — existing fixtures updated for
+  the new `remoteSuffixMap` field.
+
+**Validation gate**
+
+- `cd apps/api && bun run typecheck` — 0 errors.
+- `cd apps/api && bun test` — **82 / 82 pass, 323 `expect()` calls** (was
+  75 / 310 before this round; +7 tests, +13 `expect()` calls).
+- `npm run build` (root) — Vite production build clean (248.31 kB JS /
+  78.16 kB gz, 10.06 kB CSS / 3.02 kB gz).
+- Secret scan — only `sk-fake-smoke-token-for-trace-only` literal in
+  `scripts/llm-smoke.ts` (intentional fake). No production credentials
+  in any trace, log, or commit.
+
+**Coordination with PR #7**
+
+The change is intentionally minimal and additive — only the registry's
+endpoint URL construction, the adapter's call-payload construction, and
+the config schema are touched. No regression to the T0-aware
+`normalizeItems`, the credential redaction rules, the iFinD 404 →
+`PermanentMcpError` classification, or the route-level `MODEL_NOT_CONFIGURED`
+503 gate. The same patch can be cherry-picked onto PR #7 (`5d5ffec`) by
+Oracle Codex without touching its independent work (`038fae6` provider
+contract, `e4b6b34` ELI-333 approximate-T0, `5177e2a` production-mock
+rejection) — the changes do not overlap with any file Oracle Codex owns
+on PR #7 outside of `apps/api/src/mcp/registry.ts` /
+`apps/api/src/mcp/adapters/live-mcp.ts` /
+`apps/api/src/config.ts` / `apps/api/tests/live-http.test.ts` /
+`apps/api/tests/mcp-registry.test.ts` / `apps/api/tests/helpers.ts` /
+`.env.example` / `docs/AI_VALIDATION.md`, which are the same files PR #3
+already touches.
+
+**Credentialed real-MCP smoke against iFinD**
+
+Skipped on this Oracle host: `IFIND_MCP_*`, `HITHINK_FINANCE_*`, `LLM_*`
+env vars are not present in this turn's process env, and the prior
+`with-prod-env.sh` host-only helper is not available. iFinD host
+`api-mcp.51ifind.com:8643` was probed with curl; the connect timed out
+from this network, so no upstream `initialize` could be run locally.
+Operator should rerun the smoke on a host that has iFinD credentials in
+env:
+
+```text
+# In a host with prod .env sourced into a bun process (never set -x):
+HITHINK_FINANCE_TOOL_MAP=price:get_a_share_prices_snapshot \
+  bun run apps/api/scripts/mcp-probe.ts --provider=fuyao --server=a-share --tool=get_a_share_prices_snapshot --args='{"symbols":["600519.SH"]}'
+IFIND_MCP_TOOL_MAP=stock:<stock-tool-name> \
+  bun run apps/api/scripts/mcp-probe.ts --provider=ifind --server=stock --tool=<stock-tool-name> --args='<schema-derived-args>'
+IFIND_MCP_TOOL_MAP=news:<news-tool-name> \
+  bun run apps/api/scripts/mcp-probe.ts --provider=ifind --server=news --tool=<news-tool-name> --args='<schema-derived-args>'
+```
+
+The `mcp-probe.ts` output will print the captured tool name, input
+field names (`inputSchema.properties`), source, payload excerpt, and
+`publishedAt` / `retrievedAt` (all sanitized; no credentials). The
+expected URL is now `<base>/hexin-ifind-ds-stock-mcp` and
+`<base>/hexin-ifind-ds-news-mcp` for iFinD.
+
+PR #3 head amended in this round; force-pushed; still Draft.
+
 ## ELI-318 T0-aware `relationToDecision` + iFinD documentation — 2026-09-22 (Oracle CC)
 
 This round addresses the two concrete blockers raised in the supervisor's

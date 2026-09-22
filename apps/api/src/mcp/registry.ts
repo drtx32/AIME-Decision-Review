@@ -62,15 +62,17 @@ export function buildMcpRegistry(cfg: AppConfig): McpRegistry {
   function buildAdapter(key: McpServerKey): EvidenceAdapter | null {
     if ((configuredFuyao as Set<string>).has(key)) {
       if (fuyaoHasCreds && cfg.fuyao.baseUrl) {
+        const endpoint = joinMcpEndpoint(cfg.fuyao.baseUrl, key, "fuyao", cfg.fuyao.remoteSuffixMap as Partial<Record<string, string>>);
         return new LiveMcpAdapter({
           provider: "fuyao",
           serverKey: key,
-          endpoint: joinMcpEndpoint(cfg.fuyao.baseUrl, String(key)),
+          endpoint,
           credentials: {
             baseUrl: cfg.fuyao.baseUrl,
             apiKey: cfg.fuyao.apiKey,
           },
           toolForIntent: fuyaoToolFor,
+          remoteSuffixOverride: (cfg.fuyao.remoteSuffixMap as Partial<Record<string, string>>)[key] ?? null,
         });
       }
       return new MockFuyaoAdapter(key as FuyaoServerKey, {
@@ -80,15 +82,17 @@ export function buildMcpRegistry(cfg: AppConfig): McpRegistry {
     }
     if ((configuredIFind as Set<string>).has(key)) {
       if (ifindHasCreds && cfg.ifind.baseUrl) {
+        const endpoint = joinMcpEndpoint(cfg.ifind.baseUrl, key, "ifind", cfg.ifind.remoteSuffixMap as Partial<Record<string, string>>);
         return new LiveMcpAdapter({
           provider: "ifind",
           serverKey: key,
-          endpoint: joinMcpEndpoint(cfg.ifind.baseUrl, String(key)),
+          endpoint,
           credentials: {
             baseUrl: cfg.ifind.baseUrl,
             authorization: cfg.ifind.authorization,
           },
           toolForIntent: ifindToolFor,
+          remoteSuffixOverride: (cfg.ifind.remoteSuffixMap as Partial<Record<string, string>>)[key] ?? null,
         });
       }
       return new MockIFindAdapter(key as IFindServerKey, {
@@ -134,12 +138,37 @@ export function buildMcpRegistry(cfg: AppConfig): McpRegistry {
 /** Build the per-server MCP endpoint URL.
  *
  * Fuyao:    `<baseUrl>/<serverKey>`  (e.g. https://fuyao.aicubes.cn/mcp/a-share)
- * iFinD:    `<baseUrl>/<serverKey>`  (e.g. https://api-mcp.51ifind.com:8643/ds-mcp-servers/stock)
+ * iFinD:    `<baseUrl>/<remoteSuffix>` where `remoteSuffix` is looked up
+ *           from the provider's canonical→remote map (default uses
+ *           `hexin-ifind-ds-<serverKey>-mcp`, e.g.
+ *           https://api-mcp.51ifind.com:8643/ds-mcp-servers/hexin-ifind-ds-stock-mcp).
  *
- * If `baseUrl` already ends with the server key, we use it as-is.
+ * If `baseUrl` already ends with the resolved suffix, we use it as-is.
+ * If no entry exists in the map, we fall back to the short server key (the
+ * pre-fix behaviour) so a configured-but-unmapped server still produces a
+ * visible 404 from the gateway rather than a silent failure.
  */
-function joinMcpEndpoint(base: string, serverKey: string): string {
+function joinMcpEndpoint(
+  base: string,
+  serverKey: McpServerKey,
+  provider: "fuyao" | "ifind",
+  remoteSuffixMap: Partial<Record<string, string>>
+): string {
   const trimmed = base.replace(/\/$/, "");
-  if (trimmed.endsWith(`/${serverKey}`)) return trimmed;
-  return `${trimmed}/${serverKey}`;
+  const suffix = remoteSuffixMap[serverKey] ?? defaultRemoteSuffix(provider, serverKey);
+  if (trimmed.endsWith(`/${suffix}`)) return trimmed;
+  return `${trimmed}/${suffix}`;
+}
+
+/** Provider-default remote-name suffix. Override via env when the operator's
+ *  gateway uses a different convention. */
+function defaultRemoteSuffix(provider: "fuyao" | "ifind", serverKey: McpServerKey): string {
+  if (provider === "ifind") {
+    // iFinD gateway examples (verified externally): the server name published
+    // by iFinD's MCP gateway is `hexin-ifind-ds-<short>-mcp`, NOT the short
+    // key. The pre-fix `<base>/<short>` URL returned HTTP 404 from the
+    // upstream; this default makes the registry build the right URL.
+    return `hexin-ifind-ds-${serverKey}-mcp`;
+  }
+  return String(serverKey);
 }

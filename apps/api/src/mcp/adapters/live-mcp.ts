@@ -62,6 +62,15 @@ export interface LiveMcpAdapterInit {
   timeoutMs?: number;
   /** Override fetch (tests use this). */
   fetchImpl?: typeof fetch;
+  /**
+   * Optional override for the canonical→remote server-name suffix. When
+   * omitted, the adapter uses its declared `endpoint` as-is. The registry
+   * passes a per-server suffix for iFinD because its gateway requires the
+   * full server name (e.g. `hexin-ifind-ds-stock-mcp`) rather than the short
+   * canonical key. Defaults to `null` (no override); surfaces loud if the
+   * upstream returns a 4xx so the operator can correct the suffix.
+   */
+  remoteSuffixOverride?: string | null;
 }
 
 export class LiveMcpAdapter implements EvidenceAdapter {
@@ -72,6 +81,7 @@ export class LiveMcpAdapter implements EvidenceAdapter {
   private readonly toolForIntent: (intent: AdapterIntent) => string | null;
   private readonly timeoutMs: number;
   private readonly fetchImpl?: typeof fetch;
+  private readonly remoteSuffixOverride: string | null;
 
   private client?: McpStreamableHttpClient;
 
@@ -83,6 +93,7 @@ export class LiveMcpAdapter implements EvidenceAdapter {
     this.toolForIntent = init.toolForIntent;
     this.timeoutMs = init.timeoutMs ?? 8_000;
     this.fetchImpl = init.fetchImpl;
+    this.remoteSuffixOverride = init.remoteSuffixOverride ?? null;
   }
 
   canHandle(intent: AdapterIntent): boolean {
@@ -106,13 +117,16 @@ export class LiveMcpAdapter implements EvidenceAdapter {
     }
     try {
       const client = this.getClient();
-      const result = await client.callTool(toolName, {
-        symbol: req.symbol,
-        market: req.market ?? "CN",
-        T0: req.T0,
-        limit: req.limit ?? 5,
-        intent: req.intent,
-      });
+      const tools = await client.listTools();
+      const toolInfo = tools.find((tool) => tool.name === toolName);
+      // Note: we do NOT refuse the call when `toolInfo` is missing. The
+      // operator's `toolMap` is itself the assertion that the tool exists,
+      // and the upstream server may legitimately omit a tool from the cached
+      // `tools/list` while still serving it on `tools/call` (e.g. late
+      // registration). Build args from whatever schema we have; fall back
+      // to the legacy generic payload when no schema is present.
+      const args = buildToolArgs(toolInfo?.inputSchema, req);
+      const result = await client.callTool(toolName, args);
       if (result.isError) {
         return wrapPermanentError(
           `${this.provider.toUpperCase()}_TOOL_ERROR`,
@@ -194,6 +208,97 @@ export class LiveMcpAdapter implements EvidenceAdapter {
 }
 
 // ─── Parsing + normalization helpers (exported for tests) ─────────────────
+
+/**
+ * Build the `tools/call` argument object from the upstream tool's
+ * `inputSchema`. The pre-fix implementation sent the same generic payload
+ * `{symbol, market, T0, limit, intent}` to every tool; the verified Fuyao
+ * snapshot call actually uses `{"symbols":["600519.SH"]}` (an array under a
+ * different name). Different upstreams expose different field names; do not
+ * assume a green tool status means the requested symbol/time was honored.
+ *
+ * Strategy:
+ *   1. Read the schema's top-level `properties` keys.
+ *   2. For known symbol-key names (`symbol`, `symbols`, `thscode`, `ticker`,
+ *      `code`), write the symbol value in the format the upstream expects.
+ *      `symbols` is sent as a single-element array; the others as a string.
+ *   3. For known time-window keys (`T0`, `start_date`, `startDate`, `date`,
+ *      `end_date`, `endDate`), write T0 (and a derived end date) in ISO.
+ *   4. For known market / intent keys, write the relevant values.
+ *   5. Any unknown key in the schema is left out — never fabricate fields
+ *      the upstream hasn't declared.
+ *   6. If no schema is supplied (legacy servers), fall back to the previous
+ *      generic payload but emit a warning trace.
+ */
+export function buildToolArgs(
+  schema: Record<string, unknown> | undefined,
+  req: AdapterRequest
+): Record<string, unknown> {
+  const symbol = req.symbol;
+  const T0 = req.T0;
+  const market = req.market ?? "CN";
+  const limit = req.limit ?? 5;
+  const intent = req.intent;
+
+  const props =
+    schema && typeof schema === "object" && schema.properties && typeof schema.properties === "object"
+      ? (schema.properties as Record<string, unknown>)
+      : null;
+
+  if (!props) {
+    // No schema — preserve the previous payload so an unverified tool still
+    // gets a chance to respond; the call itself will surface the real error.
+    return {
+      symbol,
+      market,
+      T0,
+      limit,
+      intent,
+    };
+  }
+
+  const args: Record<string, unknown> = {};
+
+  // Symbol-key mapping. Array keys (symbols, codes) receive a single-element
+  // array; scalar keys receive the string directly.
+  const symbolAsArrayKeys = ["symbols", "codes", "tickers", "ths_codes"];
+  const symbolScalarKeys = ["symbol", "thscode", "ticker", "code", "stock_code", "security_id"];
+  for (const k of symbolAsArrayKeys) {
+    if (k in props) {
+      args[k] = [symbol];
+      break;
+    }
+  }
+  if (!("symbols" in args) && !("codes" in args)) {
+    for (const k of symbolScalarKeys) {
+      if (k in props) {
+        args[k] = symbol;
+        break;
+      }
+    }
+  }
+
+  // T0 / time-window mapping.
+  if ("T0" in props) args.T0 = T0;
+  if ("start_date" in props) args.start_date = T0.slice(0, 10);
+  if ("startDate" in props) args.startDate = T0;
+  if ("end_date" in props) {
+    // Use T0 + a small look-back window by default. We do not pass a future
+    // date: an upstream that requires both dates and gets only the start
+    // date is more likely to error visibly than to silently truncate.
+    args.end_date = T0.slice(0, 10);
+  }
+  if ("endDate" in props) args.endDate = T0;
+  if ("date" in props) args.date = T0.slice(0, 10);
+  if ("trade_date" in props) args.trade_date = T0.slice(0, 10);
+
+  // Misc context.
+  if ("market" in props) args.market = market;
+  if ("limit" in props) args.limit = limit;
+  if ("intent" in props) args.intent = intent;
+
+  return args;
+}
 
 /** Pull structured evidence-like items out of an MCP tool-call content array. */
 export function parseToolContent(

@@ -295,6 +295,7 @@ describe("Forced first-login password change", () => {
   });
 
   test("change-password with correct current password clears the flag", async () => {
+    ctx.deps.provider = { id: "test", modelName: "test", configured: true, complete: async () => ({ text: "{}" }) };
     const loginRes = await ctx.app.request("/api/auth/login", {
       method: "POST",
       headers: { "content-type": "application/json" },

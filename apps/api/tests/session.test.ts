@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, test } from "bun:test";
-import { makeTestServer, type TestServer } from "./helpers.ts";
+import { loginAndCookie, makeTestServer, seedUser, type TestServer } from "./helpers.ts";
 import type { ModelProvider } from "../src/providers/index.ts";
 
 const extraction = {
@@ -16,9 +16,11 @@ describe("Conversation session contract", () => {
   afterEach(() => ctx.cleanup());
 
   test("uses provider structured extraction for the Chinese multi-decision regression", async () => {
+    const alice = await loginAndCookie(ctx.app, ctx.userRepo, "alice", "alice-pass");
+    const bob = await loginAndCookie(ctx.app, ctx.userRepo, "bob", "bob-pass");
     const calls: string[] = [];
     ctx.deps.provider = { id: "test", modelName: "test", configured: true, complete: async (req) => { calls.push(req.schemaHint || "followup"); return req.schemaHint ? { text: JSON.stringify(extraction) } : { text: "基于当前 session 的证据回答。" }; } } satisfies ModelProvider;
-    const created = await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json", "x-user-id": "alice" }, body: JSON.stringify({ message: "昨天我卖掉了金牛化工，大概是下午2:34左右，是通过午间休市的时候挂的限价单，16.57卖的，然后卖了2手。同时尾盘集合竞价又买了中粮糖业。全仓买入，第二天早上，也就是今天卖掉了，差不多亏了零点几个点就跑了。", clientNow: "2025-03-18T09:00:00+08:00", timezone: "Asia/Shanghai" }) });
+    const created = await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json", cookie: alice }, body: JSON.stringify({ message: "昨天我卖掉了金牛化工，大概是下午2:34左右，是通过午间休市的时候挂的限价单，16.57卖的，然后卖了2手。同时尾盘集合竞价又买了中粮糖业。全仓买入，第二天早上，也就是今天卖掉了，差不多亏了零点几个点就跑了。", clientNow: "2025-03-18T09:00:00+08:00", timezone: "Asia/Shanghai" }) });
     expect(created.status).toBe(201);
     const body = await created.json() as any;
     expect(body.decisions).toHaveLength(3);
@@ -29,30 +31,52 @@ describe("Conversation session contract", () => {
     expect(body.decisions[2].executedAt).toBeNull();
     expect(body.decisions[2].timePrecision).toBe("unknown");
     expect(calls).toEqual(["DecisionExtractionResult"]);
-    const hidden = await ctx.app.request(`/api/sessions/${body.sessionId}`, { headers: { "x-user-id": "bob" } });
+    const hidden = await ctx.app.request(`/api/sessions/${body.sessionId}`, { headers: { cookie: bob } });
     expect(hidden.status).toBe(404);
   });
 
   test("no model cannot create a session or fake decisions", async () => {
-    const response = await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: "买入 600519" }) });
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "alice", "alice-pass");
+    const response = await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ message: "买入 600519" }) });
     expect(response.status).toBe(503);
     expect(await response.json()).toEqual({ error: "MODEL_NOT_CONFIGURED", message: "当前未配置可用的大模型服务，请联系管理员。" });
-    expect(ctx.repo.listSessions("dev-user")).toHaveLength(0);
+    expect(ctx.repo.listSessions("alice")).toHaveLength(0);
   });
 
   test("requires an actual T0 before review and sends follow-up through provider", async () => {
     let call = 0;
     const provider: ModelProvider = { id: "test", modelName: "test", configured: true, complete: async (req) => { call += 1; return req.schemaHint ? { text: JSON.stringify({ decisions: [{ ...extraction.decisions[2] }] }) } : { text: "基于当前 session 的证据，建议先检查失效条件。" }; } };
     ctx.deps.provider = provider;
-    const created = await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ message: "今天卖出中粮糖业" }) });
-    const { sessionId } = await created.json() as { sessionId: string };
-    const confirm = await ctx.app.request(`/api/sessions/${sessionId}/confirm`, { method: "POST" });
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "alice", "alice-pass");
+    const created = await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ message: "今天卖出中粮糖业" }) });
+    const createdBody = await created.json() as { sessionId: string; decisions: Array<{ id: string }> };
+    const { sessionId } = createdBody;
+    const confirm = await ctx.app.request(`/api/sessions/${sessionId}/confirm`, { method: "POST", headers: { cookie } });
     expect(confirm.status).toBe(422);
-    const update = await ctx.app.request(`/api/sessions/${sessionId}/decisions/${(await ctx.repo.listSessionDecisions(sessionId, "dev-user"))[0].id}`, { method: "PATCH", headers: { "content-type": "application/json" }, body: JSON.stringify({ executedAt: "2025-03-18T09:00:00+08:00", timePrecision: "exact" }) });
+    const update = await ctx.app.request(`/api/sessions/${sessionId}/decisions/${createdBody.decisions[0].id}`, { method: "PATCH", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ executedAt: "2025-03-18T09:00:00+08:00", timePrecision: "exact" }) });
     expect(update.status).toBe(200);
-    const response = await ctx.app.request(`/api/sessions/${sessionId}/messages`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ content: "当前最重要的反向证据是什么？" }) });
+    const response = await ctx.app.request(`/api/sessions/${sessionId}/messages`, { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ content: "当前最重要的反向证据是什么？" }) });
     expect(response.status).toBe(201);
     expect((await response.json() as any).message.content).toContain("当前 session");
     expect(call).toBe(2);
+  });
+
+  test("session identity is cookie-derived and invalidation/gates block conversation access", async () => {
+    expect((await ctx.app.request("/api/sessions")).status).toBe(401);
+    const alice = await loginAndCookie(ctx.app, ctx.userRepo, "alice", "alice-pass");
+    const bob = await loginAndCookie(ctx.app, ctx.userRepo, "bob", "bob-pass");
+    ctx.deps.provider = { id: "test", modelName: "test", configured: true, complete: async () => ({ text: JSON.stringify(extraction) }) } satisfies ModelProvider;
+    const forged = await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json", cookie: alice, "x-user-id": "bob" }, body: JSON.stringify({ message: "买入 600519" }) });
+    expect(forged.status).toBe(400);
+    const created = await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json", cookie: alice }, body: JSON.stringify({ message: "买入 600519" }) });
+    const createdBody = await created.json() as { sessionId: string };
+    expect((await ctx.app.request(`/api/sessions/${createdBody.sessionId}`, { headers: { cookie: bob } })).status).toBe(404);
+    const logout = await ctx.app.request("/api/auth/logout", { method: "POST", headers: { cookie: alice } });
+    expect(logout.status).toBe(200);
+    expect((await ctx.app.request(`/api/sessions/${createdBody.sessionId}/messages`, { method: "POST", headers: { "content-type": "application/json", cookie: alice }, body: JSON.stringify({ content: "继续" }) })).status).toBe(401);
+    await seedUser(ctx.userRepo, "must-change", "temporary-pass", { mustChangePassword: true });
+    const mustChange = await ctx.app.request("/api/auth/login", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ username: "must-change", password: "temporary-pass" }) });
+    const mustChangeCookie = mustChange.headers.get("set-cookie")!.split(";")[0];
+    expect((await ctx.app.request("/api/sessions", { headers: { cookie: mustChangeCookie } })).status).toBe(403);
   });
 });

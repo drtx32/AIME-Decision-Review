@@ -40,6 +40,7 @@ describe("Review API contract", () => {
   });
 
   test("production with no configured model keeps health up but rejects review creation", async () => {
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "reviewer", "reviewer-pass");
     ctx.cfg.runtime = "production";
     const health = await ctx.app.request("/health");
     expect(health.status).toBe(200);
@@ -50,7 +51,7 @@ describe("Review API contract", () => {
 
     const review = await ctx.app.request("/api/reviews", {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", cookie },
       body: JSON.stringify({ symbol: "600519", market: "CN", action: "buy", executedAt: "2024-03-15T00:00:00Z", userReason: "channel checks" }),
     });
     expect(review.status).toBe(503);

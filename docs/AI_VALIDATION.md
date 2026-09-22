@@ -385,9 +385,11 @@ to `main`.
 - Frontend bundle is mock-mode aware but the login flow requires the
   production `/api` proxy; `npm run dev` outside Compose still needs a
   `/api` mock or proxy to exercise login end-to-end.
-- The default bootstrap password is intentionally public per the issue
-  acceptance; `must_change_password=1` and the disabled-default-account
-  guard are the safety net.
+- `INITIAL_ADMIN_PASSWORD` is required from the deployment secret store
+  on every fresh database; there is intentionally no in-repo fallback.
+  The bootstrap admin is created with `must_change_password=1`, which
+  remains the safety net against a leaked initial value. See the
+  ELI-325 credential-cleanup entry below for the full contract change.
 - Initial Compose deployment on a host with a pre-existing `api-data`
   volume created by the earlier root-user image may still need a
   one-time ownership migration (`/var/lib/aime`); this is the existing

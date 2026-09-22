@@ -409,3 +409,66 @@ to `main`.
   not carry `pull_requests` scope (`403 Resource not accessible by
   personal access token` on `repos/.../pulls`); branch is pushed and
   ready for the supervisor or a token with the right scope to update.
+
+## ELI-325 credential cleanup — 2026-09-22 (Oracle CC)
+
+**AI/tool used**
+- Oracle CC (Claude Opus 4.8) on branch `agent/oracle-cc/4988b142bf66`
+
+**Task**
+- ELI-325 follow-up: remove the in-repo credential fallback. PR #9
+  landed `INITIAL_ADMIN_PASSWORD` with a literal `"admin@123"` default
+  in `apps/api/src/config.ts` and a shell default of the same in
+  `docker-compose.yml`. Per AGENTS.md §7 ("Never commit... secret
+  values... Use only server environment variables / GitHub Secrets"),
+  this violated the project rule — a misconfigured deployment should
+  fail fast, not silently run with a public password.
+
+**Output**
+- `apps/api/src/config.ts`:
+  - `initialAdmin.password` now typed `string | null` (was `string`).
+  - `loadConfig` no longer returns a fallback; missing env → `null`.
+- `apps/api/src/index.ts`:
+  - On startup, if the DB has no admin AND `INITIAL_ADMIN_PASSWORD`
+    is empty/missing, log a clear error and `process.exit(1)` before
+    binding the HTTP listener.
+- `docker-compose.yml`:
+  - `INITIAL_ADMIN_PASSWORD` now uses shell `${VAR:?msg}` so a missing
+    value fails Compose startup with the documented message — verified
+    by `docker compose config`.
+- `.env.example`:
+  - Removed the `Defaults are admin / admin@123` mention from the
+    comment block; added an explicit "password has no default — it
+    MUST be supplied" notice.
+- `apps/api/tests/helpers.ts`:
+  - `makeTestConfig` no longer carries the literal; uses a
+    self-documenting placeholder string that is only consumed by the
+    `ensureBootstrapAdmin` tests, which assert the hash separation
+    directly.
+
+**Validation**
+- `bun run typecheck` → 0 errors.
+- `bun test` → **54/54 pass, 253 expect() calls** (was 52/249; +2 new
+  `loadConfig` tests that pin the fail-fast contract).
+- `npm run build` → clean (`vite build`).
+- Secret scan on production paths:
+  - `apps/api/src/`, `src/`, `docker-compose.yml`, `.env.example` →
+    zero literal `admin@123`.
+  - Only narrative mentions of the string remain in
+    `docs/AI_VALIDATION.md` (this entry) describing the prior bug.
+  - No `sk-*`, `Bearer …`, or `Authorization: Bearer` patterns in
+    source.
+- `docker compose config` against an environment without
+  `INITIAL_ADMIN_PASSWORD` correctly errors out:
+  `required variable INITIAL_ADMIN_PASSWORD is missing a value`
+  with the documented message.
+
+**Residual risk / unresolved**
+- Tests under `apps/api/tests/` still contain the literal `admin@123`
+  as test fixtures (31 occurrences). These are deliberate — the
+  existing assertions (e.g. `expect(row.passwordHash).not.toBe(...)`
+  and the secret-hygiene tests) verify that the literal never leaks
+  into the database or any response body. Replacing them with a
+  module-level placeholder would lose the explicit
+  plaintext-vs-hash separation signal without changing what the
+  tests actually verify.

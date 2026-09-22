@@ -4,15 +4,30 @@ import { UserRepository } from "./auth/repository.ts";
 
 const config = loadConfig();
 
-// Construct the user repo separately so we can run the idempotent bootstrap
-// before wiring up routes. If a fresh DB exists and INITIAL_ADMIN_USERNAME /
-// INITIAL_ADMIN_PASSWORD are set, the bootstrap admin is created with
-// mustChangePassword=1 so the public default cannot linger.
+// The bootstrap admin password MUST come from server env / GitHub Secrets.
+// If it is missing, fail fast here so a misconfigured deployment cannot
+// silently run with no admin (and cannot default to a public credential).
+// This check only matters on a fresh DB — once any admin exists, the
+// ensureBootstrapAdmin() call below is a no-op.
+const bootstrapPassword = config.initialAdmin.password;
 const userRepo = new UserRepository(config.sqlitePath);
+const needsBootstrap = !userRepo.hasAnyAdmin();
+
+if (needsBootstrap && (!bootstrapPassword || !bootstrapPassword.length)) {
+  console.error(
+    "[decision-review-api] INITIAL_ADMIN_PASSWORD is required for a fresh database. " +
+      "Set it via the deployment secret store / GitHub Secret; the API refuses " +
+      "to fall back to a repository-resident default."
+  );
+  process.exit(1);
+}
+
 userRepo
   .ensureBootstrapAdmin({
     initialAdminUsername: config.initialAdmin.username,
-    initialAdminPassword: config.initialAdmin.password,
+    // The non-null assertion is safe here because of the process.exit above;
+    // tests stub the repo via buildServer overrides and never hit this path.
+    initialAdminPassword: bootstrapPassword!,
   })
   .then((result) => {
     if (result.created) {

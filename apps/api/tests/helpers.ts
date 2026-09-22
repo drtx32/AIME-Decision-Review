@@ -1,6 +1,11 @@
 /**
  * Test helpers — build a server with a fresh in-memory SQLite and the
  * default mock registry. Each test gets a clean state.
+ *
+ * The `initialAdmin.password` here is a placeholder used only to satisfy
+ * the non-null AppConfig shape; the bootstrap path is bypassed in tests
+ * by seeding users directly via UserRepository, so this value never
+ * reaches the database and is never logged.
  */
 
 import { rmSync } from "node:fs";
@@ -19,7 +24,10 @@ export function makeTestConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     isProduction: false,
     initialAdmin: {
       username: "admin",
-      password: "admin@123",
+      // Test-only placeholder. The bootstrap path runs only in the
+      // dedicated ensureBootstrapAdmin tests; everywhere else users are
+      // seeded explicitly. Never reuse this literal as a real credential.
+      password: "test-only-placeholder-never-committed-elsewhere",
     },
     llm: {
       provider: "mock",

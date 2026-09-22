@@ -123,6 +123,27 @@ describe("Auth bootstrap", () => {
       })
     ).rejects.toThrow(/PASSWORD/);
   });
+
+  test("loadConfig rejects INITIAL_ADMIN_PASSWORD without a repository fallback (security)", async () => {
+    // Regression for ELI-325 follow-up: the API must NOT silently fall
+    // back to a hardcoded default password. When the env var is unset,
+    // AppConfig.initialAdmin.password is null and the bootstrap path in
+    // apps/api/src/index.ts refuses to start on a fresh DB.
+    const { loadConfig } = await import("../src/config.ts");
+    const cfg = loadConfig({});
+    expect(cfg.initialAdmin.username).toBe("admin");
+    expect(cfg.initialAdmin.password).toBeNull();
+  });
+
+  test("loadConfig propagates a non-empty INITIAL_ADMIN_PASSWORD", async () => {
+    const { loadConfig } = await import("../src/config.ts");
+    const cfg = loadConfig({
+      INITIAL_ADMIN_USERNAME: "ops",
+      INITIAL_ADMIN_PASSWORD: "supplied-from-deployment-secret",
+    });
+    expect(cfg.initialAdmin.username).toBe("ops");
+    expect(cfg.initialAdmin.password).toBe("supplied-from-deployment-secret");
+  });
 });
 
 describe("Auth login / logout / me", () => {

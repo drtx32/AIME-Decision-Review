@@ -12,7 +12,13 @@ export interface AppConfig {
 
   initialAdmin: {
     username: string;
-    password: string;
+    /**
+     * Bootstrap admin password. `null` means the env var was not set —
+     * the bootstrap admin path will refuse to start with a clear error
+     * so a misconfigured deployment fails fast instead of running with
+     * a public default. The runtime never logs this value.
+     */
+    password: string | null;
   };
 
   llm: {
@@ -77,14 +83,18 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const provider: AppConfig["llm"]["provider"] =
     providerRaw === "mock" || providerRaw === "" ? "mock" : "openai-compatible";
 
-  // INITIAL_ADMIN_USERNAME / INITIAL_ADMIN_PASSWORD carry the *bootstrap*
-  // admin credentials. They are only used on a fresh DB and never logged.
-  // Default username "admin" / password "admin@123" is the documented
-  // fallback; Compose passes through real values when present.
+  // INITIAL_ADMIN_USERNAME and INITIAL_ADMIN_PASSWORD carry the *bootstrap*
+  // admin credentials. They MUST be supplied via server env / GitHub
+  // Secrets — there is intentionally no repository fallback, so a fresh
+  // deployment without configured credentials fails fast at startup
+  // instead of silently running with a public default.
+  //
+  // Username defaults to "admin" (a public label, not a credential);
+  // password has no default and is required.
   const initialAdminUsername = (env.INITIAL_ADMIN_USERNAME ?? "admin").trim() || "admin";
   const initialAdminPassword = env.INITIAL_ADMIN_PASSWORD?.length
     ? env.INITIAL_ADMIN_PASSWORD
-    : "admin@123";
+    : null;
 
   const nodeEnv = (env.NODE_ENV ?? "development").toLowerCase();
   const isProduction =

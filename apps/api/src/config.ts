@@ -3,6 +3,8 @@
  * we never log them and never persist them.
  */
 
+import type { AdapterIntent } from "./mcp/adapters/types.ts";
+
 export interface AppConfig {
   port: number;
   sqlitePath: string;
@@ -26,12 +28,15 @@ export interface AppConfig {
     baseUrl: string | null;
     apiKey: string | null;
     servers: FuyaoServerKey[];
+    /** Operator-supplied intent → MCP tool name map (e.g. "price:get_security_price"). */
+    toolMap: Partial<Record<AdapterIntent, string>>;
   };
 
   ifind: {
     baseUrl: string | null;
     authorization: string | null;
     servers: IFindServerKey[];
+    toolMap: Partial<Record<AdapterIntent, string>>;
   };
 }
 
@@ -47,6 +52,20 @@ function parseEnumList<T extends string>(
     .split(",")
     .map((s) => s.trim())
     .filter((s): s is T => (allowed as readonly string[]).includes(s));
+}
+
+/** Parse "intent:toolName,intent2:toolName2" into a Partial<Record>. */
+function parseToolMap(
+  raw: string | undefined
+): Partial<Record<AdapterIntent, string>> {
+  const out: Partial<Record<AdapterIntent, string>> = {};
+  if (!raw) return out;
+  for (const pair of raw.split(",")) {
+    const [intent, toolName] = pair.split(":").map((s) => s.trim());
+    if (!intent || !toolName) continue;
+    out[intent as AdapterIntent] = toolName;
+  }
+  return out;
 }
 
 const ALL_FUYAO_SERVERS: readonly FuyaoServerKey[] = [
@@ -115,6 +134,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         ALL_FUYAO_SERVERS,
         [...ALL_FUYAO_SERVERS]
       ),
+      toolMap: parseToolMap(env.HITHINK_FINANCE_TOOL_MAP),
     },
     ifind: {
       baseUrl: env.IFIND_MCP_BASE_URL?.trim() || null,
@@ -124,6 +144,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         ALL_IFIND_SERVERS,
         [...ALL_IFIND_SERVERS]
       ),
+      toolMap: parseToolMap(env.IFIND_MCP_TOOL_MAP),
     },
   };
 }

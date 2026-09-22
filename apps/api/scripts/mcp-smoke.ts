@@ -1,26 +1,28 @@
 /**
- * MCP smoke — exercises LiveHttpAdapter against Fuyao or iFinD HTTP upstream.
+ * MCP smoke — exercises the real MCP JSON-RPC 2.0 client against Fuyao or
+ * iFinD upstream. This script replaces the older REST-shaped version because
+ * the live MCP transport speaks MCP protocol, not arbitrary REST.
  *
- * Two modes:
- *   - default (no HITHINK_FINANCE_BASE_URL / IFIND_MCP_BASE_URL set): starts a
- *     Bun.serve fake upstream that records inbound Authorization / x-api-key
- *     headers, runs the registry-backed adapter against it, and prints a
- *     structured trace.
+ * Two modes (auto-detected from env):
+ *   - default (no `HITHINK_FINANCE_BASE_URL` / `IFIND_MCP_BASE_URL` set):
+ *     starts a Bun.serve fake MCP server that responds to
+ *     initialize / tools/list / tools/call, records inbound Authorization /
+ *     X-api-key headers, and returns one evidence item per call.
  *   - with real baseUrl + credential set: routes straight at the production
- *     gateway. We never print the credential — only its scheme, length, and
- *     first 6 chars.
- *
- * The script accepts `--provider=fuyao|ifind` (default fuyao) and
- * `--server=a-share|stock|...` (default depends on provider).
+ *     MCP gateway using `initialize → tools/list → tools/call`. We never
+ *     print the credential — only its scheme, length, and first 6 chars.
  *
  * Usage:
- *   bun run scripts/mcp-smoke.ts                           # fake upstream
- *   HITHINK_FINANCE_BASE_URL=https://api.example.com/mcp \
+ *   bun run apps/api/scripts/mcp-smoke.ts                           # fake
+ *   HITHINK_FINANCE_BASE_URL=https://fuyao.aicubes.cn/mcp \
  *     HITHINK_FINANCE_API_KEY=fy-... \
- *     bun run scripts/mcp-smoke.ts --provider=fuyao --server=a-share
+ *     HITHINK_FINANCE_TOOL='price:get_security_price' \
+ *     bun run apps/api/scripts/mcp-smoke.ts --provider=fuyao --server=a-share
  */
 
-import { LiveHttpAdapter } from "../src/mcp/adapters/live-http.ts";
+import { McpStreamableHttpClient } from "../src/mcp/adapters/mcp-client.ts";
+
+type Provider = "fuyao" | "ifind";
 
 function parseArgs(argv: string[]): Record<string, string> {
   const out: Record<string, string> = {};
@@ -33,14 +35,14 @@ function parseArgs(argv: string[]): Record<string, string> {
   return out;
 }
 
-function mask(authHeader: string | null | undefined): {
+function mask(value: string | null | undefined): {
   present: boolean;
   scheme: string | null;
   prefix: string | null;
   length: number | null;
 } {
-  if (!authHeader) return { present: false, scheme: null, prefix: null, length: null };
-  const trimmed = authHeader.trim();
+  if (!value) return { present: false, scheme: null, prefix: null, length: null };
+  const trimmed = value.trim();
   const spaceIdx = trimmed.indexOf(" ");
   const scheme = spaceIdx > 0 ? trimmed.slice(0, spaceIdx) : null;
   const token = spaceIdx > 0 ? trimmed.slice(spaceIdx + 1) : trimmed;
@@ -56,198 +58,201 @@ function emit(stage: string, ok: boolean, detail: Record<string, unknown>): void
   console.log(JSON.stringify({ stage, ok, detail }));
 }
 
-interface StartedServer {
+interface StartedFakeMcp {
   url: string;
+  captured: Array<{ method: string; headers: Record<string, string>; body: unknown }>;
   close: () => void;
 }
 
-async function startFakeFuyao(
-  fakeApiKey: string
-): Promise<StartedServer & { lastAuth: { authorization: string | null; xApiKey: string | null } }> {
-  const state = { authorization: null as string | null, xApiKey: null as string | null };
+/** Bun.serve fake MCP — speaks JSON-RPC 2.0 with initialize/tools/list/tools/call. */
+async function startFakeMcp(provider: Provider): Promise<StartedFakeMcp> {
+  const captured: StartedFakeMcp["captured"] = [];
   const server = Bun.serve({
     port: 0,
     fetch: async (req) => {
-      state.authorization = req.headers.get("authorization");
-      state.xApiKey = req.headers.get("x-api-key");
-      const body = {
-        items: [
+      const url = new URL(req.url);
+      const headers: Record<string, string> = {};
+      req.headers.forEach((v, k) => (headers[k.toLowerCase()] = v));
+      let body: any = null;
+      try {
+        body = await req.json();
+      } catch {
+        /* no body */
+      }
+      captured.push({ method: req.method + " " + url.pathname, headers, body });
+      const id = body?.id ?? 0;
+      const method = body?.method as string | undefined;
+      if (method === "initialize") {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            result: {
+              protocolVersion: "2025-03-26",
+              serverInfo: { name: `fake-${provider}-mcp`, version: "1.0.0" },
+              capabilities: { tools: {} },
+            },
+          }),
           {
-            id: `fuyao-${Date.now()}`,
-            type: "price",
-            title: "A-share close, pre-T0",
-            content: "Fake upstream price 1620.50 CN.",
-            source: "fuyao:a-share:price",
-            publishedAt: "2024-03-14T00:00:00Z",
-            metadata: { field: "close" },
-          },
-        ],
-      };
-      return new Response(JSON.stringify(body), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
+            status: 200,
+            headers: { "content-type": "application/json", "mcp-session-id": "fake-session" },
+          }
+        );
+      }
+      if (method === "notifications/initialized") {
+        return new Response("", { status: 204 });
+      }
+      if (method === "tools/list") {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            result: { tools: [{ name: "smoke_tool", description: "Smoke" }] },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (method === "tools/call") {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            result: {
+              content: [
+                {
+                  type: "text",
+                  text: JSON.stringify([
+                    {
+                      id: `${provider}-fake-${Date.now()}`,
+                      type: provider === "fuyao" ? "price" : "news",
+                      title: `${provider} smoke evidence`,
+                      content: `Fake upstream ${provider} evidence.`,
+                      source: `${provider}:smoke`,
+                      publishedAt: new Date().toISOString(),
+                    },
+                  ]),
+                },
+              ],
+            },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32601, message: "method not found" } }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
     },
   });
   return {
-    url: `http://localhost:${server.port}`,
+    url: `http://localhost:${server.port}/mcp/${provider === "fuyao" ? "a-share" : "news"}`,
+    captured,
     close: () => server.stop(true),
-    lastAuth: state,
-  };
-}
-
-async function startFakeIFind(
-  fakeAuth: string
-): Promise<StartedServer & { lastAuth: { authorization: string | null; xApiKey: string | null } }> {
-  const state = { authorization: null as string | null, xApiKey: null as string | null };
-  const server = Bun.serve({
-    port: 0,
-    fetch: async (req) => {
-      state.authorization = req.headers.get("authorization");
-      state.xApiKey = req.headers.get("x-api-key");
-      const body = {
-        items: [
-          {
-            id: `ifind-${Date.now()}`,
-            type: "news",
-            title: "Sector news, pre-T0",
-            content: "Fake upstream sector news.",
-            source: "ifind:news:sector",
-            publishedAt: "2024-03-10T00:00:00Z",
-          },
-        ],
-      };
-      return new Response(JSON.stringify(body), {
-        status: 200,
-        headers: { "content-type": "application/json" },
-      });
-    },
-  });
-  return {
-    url: `http://localhost:${server.port}`,
-    close: () => server.stop(true),
-    lastAuth: state,
   };
 }
 
 async function main(): Promise<void> {
   const args = parseArgs(process.argv.slice(2));
-  const provider = (args.provider ?? "fuyao").toLowerCase();
+  const provider = (args.provider as Provider) ?? "fuyao";
   const serverKey = args.server ?? (provider === "fuyao" ? "a-share" : "news");
-
-  emit("start", true, {
-    provider,
-    server: serverKey,
-    ts: new Date().toISOString(),
-  });
-
-  let adapter: LiveHttpAdapter;
-  let closer: (() => void) | null = null;
-  let traceAuth: { authorization: string | null; xApiKey: string | null } | null = null;
-  let baseUrlHost: string;
-
-  if (provider === "fuyao") {
-    const realBaseUrl = process.env.HITHINK_FINANCE_BASE_URL?.trim();
-    const realKey = process.env.HITHINK_FINANCE_API_KEY?.trim();
-    if (realBaseUrl && realKey) {
-      adapter = new LiveHttpAdapter({
-        provider: "fuyao",
-        serverKey,
-        credentials: { baseUrl: realBaseUrl, apiKey: realKey },
-        pathFor: (k, intent) => `/${k}/${intent}`,
-        buildAuthHeader: () => realKey,
-      });
-      baseUrlHost = new URL(realBaseUrl).host;
-    } else {
-      const fake = await startFakeFuyao("sk-fake-fuyao");
-      closer = fake.close;
-      traceAuth = fake.lastAuth;
-      adapter = new LiveHttpAdapter({
-        provider: "fuyao",
-        serverKey,
-        credentials: { baseUrl: fake.url, apiKey: "sk-fake-fuyao" },
-        pathFor: (k, intent) => `/${k}/${intent}`,
-        buildAuthHeader: () => "sk-fake-fuyao",
-      });
-      baseUrlHost = `localhost:${new URL(fake.url).port}`;
-    }
-  } else if (provider === "ifind") {
-    const realBaseUrl = process.env.IFIND_MCP_BASE_URL?.trim();
-    const realAuth = process.env.IFIND_MCP_AUTHORIZATION?.trim();
-    if (realBaseUrl && realAuth) {
-      adapter = new LiveHttpAdapter({
-        provider: "ifind",
-        serverKey,
-        credentials: { baseUrl: realBaseUrl, authorization: realAuth },
-        pathFor: (k, intent) => `/${k}/${intent}`,
-        buildAuthHeader: () => realAuth,
-      });
-      baseUrlHost = new URL(realBaseUrl).host;
-    } else {
-      const fake = await startFakeIFind("Bearer sk-fake-ifind");
-      closer = fake.close;
-      traceAuth = fake.lastAuth;
-      adapter = new LiveHttpAdapter({
-        provider: "ifind",
-        serverKey,
-        credentials: { baseUrl: fake.url, authorization: "Bearer sk-fake-ifind" },
-        pathFor: (k, intent) => `/${k}/${intent}`,
-        buildAuthHeader: () => "Bearer sk-fake-ifind",
-      });
-      baseUrlHost = `localhost:${new URL(fake.url).port}`;
-    }
-  } else {
-    emit("error", false, { reason: "unknown_provider", provider });
-    process.exit(2);
+  if (provider !== "fuyao" && provider !== "ifind") {
+    emit("error", false, { message: `unsupported provider ${provider}` });
+    process.exit(1);
   }
 
-  emit("adapter.constructed", true, {
+  const baseUrl = provider === "fuyao" ? process.env.HITHINK_FINANCE_BASE_URL : process.env.IFIND_MCP_BASE_URL;
+  const apiKey = provider === "fuyao" ? process.env.HITHINK_FINANCE_API_KEY : process.env.IFIND_MCP_AUTHORIZATION;
+  const fakeKey = provider === "fuyao" ? "sk-fake-fuyao" : "Bearer sk-fake-ifind";
+
+  let endpoint: string;
+  let authHeaders: Record<string, string>;
+  let mode: "fake-upstream" | "real-gateway";
+
+  if (baseUrl && apiKey) {
+    mode = "real-gateway";
+    const trimmed = baseUrl.replace(/\/$/, "");
+    endpoint = trimmed.endsWith(`/${serverKey}`) ? trimmed : `${trimmed}/${serverKey}`;
+    authHeaders =
+      provider === "fuyao"
+        ? { "x-api-key": apiKey, authorization: `Bearer ${apiKey}` }
+        : { authorization: apiKey };
+  } else {
+    mode = "fake-upstream";
+    const fake = await startFakeMcp(provider);
+    endpoint = fake.url;
+    authHeaders =
+      provider === "fuyao"
+        ? { "x-api-key": fakeKey, authorization: fakeKey }
+        : { authorization: fakeKey };
+    // Attach fake's captured + close to module-scope for later steps
+    (main as any).__fake = fake;
+  }
+
+  emit("start", true, { provider, serverKey, endpoint });
+  emit("mode", true, { mode, note: mode === "real-gateway" ? "credentials set" : "credentials missing → fake upstream" });
+
+  const client = new McpStreamableHttpClient({
+    endpoint,
+    serverKey,
     provider,
-    server: serverKey,
-    base_url_host: baseUrlHost,
+    buildAuthHeaders: () => authHeaders,
   });
 
-  const result = await adapter.fetch({
-    intent: provider === "fuyao" ? "price" : "news",
-    symbol: "600519",
-    market: "CN",
-    T0: "2024-03-15T00:00:00Z",
-    limit: 1,
+  const startList = Date.now();
+  const tools = await client.listTools();
+  emit("tools.list", true, { count: tools.length, duration_ms: Date.now() - startList });
+
+  const startCall = Date.now();
+  const result = await client.callTool("smoke_tool", { symbol: "600519" });
+  emit("tools.call", true, {
+    duration_ms: Date.now() - startCall,
+    content_parts: result.content.length,
+    is_error: result.isError ?? false,
   });
 
-  if (closer) closer();
+  // Parse first content part as JSON and surface the first item.
+  const first = result.content[0];
+  let parsed: unknown = null;
+  try {
+    parsed = first?.text ? JSON.parse(first.text) : null;
+  } catch {
+    parsed = first?.text;
+  }
+  if (Array.isArray(parsed) && parsed.length > 0) {
+    const item = parsed[0] as Record<string, unknown>;
+    emit("evidence.first_item", true, {
+      id: item.id,
+      source: item.source,
+      published_at: item.publishedAt,
+      title: item.title,
+    });
+  }
 
-  emit("adapter.result", result.status === "success", {
-    status: result.status,
-    count: result.status === "success" ? result.data?.length ?? 0 : 0,
-    first_source: result.status === "success" ? result.data?.[0]?.source : undefined,
-    first_published_at:
-      result.status === "success" ? result.data?.[0]?.publishedAt : undefined,
-    error_code: result.error?.code,
-    latency_ms: result.latencyMs,
-  });
+  const diag = client.dumpDiagnostics();
+  emit("diagnostics", true, diag);
 
-  if (traceAuth) {
+  // Sanitize the captured Authorization / X-api-key headers.
+  const fake = (main as any).__fake as StartedFakeMcp | undefined;
+  if (fake) {
+    const capturedAuth = fake.captured
+      .map((c) => c.headers.authorization)
+      .find((v): v is string => !!v);
+    const capturedKey = fake.captured
+      .map((c) => c.headers["x-api-key"])
+      .find((v): v is string => !!v);
     emit("fake.upstream.headers", true, {
-      authorization: mask(traceAuth.authorization),
-      x_api_key: mask(traceAuth.xApiKey),
+      request_count: fake.captured.length,
+      authorization: mask(capturedAuth ?? null),
+      x_api_key: mask(capturedKey ?? null),
     });
-  } else {
-    emit("real.upstream.headers", true, {
-      authorization: mask(
-        provider === "fuyao"
-          ? process.env.HITHINK_FINANCE_API_KEY
-          : process.env.IFIND_MCP_AUTHORIZATION
-      ),
-      note: "Token is masked; presence and length are non-secret metadata.",
-    });
+    fake.close();
   }
 
-  emit("done", result.status === "success", {
-    ts: new Date().toISOString(),
-  });
-
-  if (result.status !== "success") process.exit(1);
+  await client.close();
+  emit("done", true, { ts: new Date().toISOString() });
 }
 
-await main();
+main().catch((e) => {
+  emit("error", false, { message: e instanceof Error ? e.message : String(e) });
+  process.exit(1);
+});

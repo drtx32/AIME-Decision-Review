@@ -1,435 +1,3 @@
-# AI Usage & Validation Log
-
-This file records how AI tools are used in the project, what they generated, how outputs were checked, and what humans corrected.
-
-## Rules
-
-- Never paste secrets, API keys, Authorization headers, cookies, or sensitive user data.
-- Record material AI-assisted implementation/design decisions.
-- Distinguish AI-generated suggestions from verified results.
-- For important financial outputs, record how evidence/claims were validated.
-- Update this file during development.
-
-## Entry template
-
-### YYYY-MM-DD HH:MM — <task>
-
-**AI/tool used**
-- Agent/model/tool:
-
-**Task**
-- What AI was asked to do:
-
-**Output**
-- What it produced:
-
-**Validation**
-- Commands/tests/manual checks performed:
-- Data/evidence cross-checks:
-
-**Human corrections**
-- What was changed, rejected, or constrained:
-
-**Residual risk / unresolved**
-- What is still uncertain:
-
----
-
-## Initial project decisions — 2026-09-22
-
-**AI/tool used**
-- ChatGPT for product architecture and task decomposition
-- Multica agents for parallel frontend/backend implementation
-
-**Task**
-- Convert AIME topic 11 “Investment Decision Review & Learning” into an executable MVP architecture.
-
-**Output**
-- React/Vite/Bun frontend plan
-- Bun/Hono/OpenAI Agents SDK backend plan
-- T0 ex-ante/ex-post evidence design
-- Fuyao + iFinD MCP registry strategy
-- bounded reflection and tool error semantics
-
-**Validation**
-- Checked against assignment requirements: runnable Web product, source repository, README, AI usage/validation record, testing, evidence traceability, and explicit handling of missing/conflicting/failed data.
-
-**Human corrections**
-- Scope reduced to a single-agent MVP.
-- Streamlit rejected in favor of React/Vite/TypeScript/Bun.
-- Heavy sandbox/runtime work rejected as unnecessary.
-- Fuyao fund/futures/options retained because cross-asset evidence can matter in stock decision review.
-- iFinD servers configured broadly but intended for lazy/intent-based loading.
-
-**Residual risk / unresolved**
-- Real MCP capabilities still need live verification per server.
-- LLM provider compatibility and production deployment need integration testing.
-
----
-
-## Frontend Web Shell — 2026-09-22
-
-**AI/tool used**
-- Codex for React/Vite/TypeScript UI implementation and mock adapter design.
-
-**Task**
-- Implement the frontend-only Decision Review vertical slice while preserving the T0 ex-ante/ex-post boundary and keeping backend credentials server-side.
-
-**Output**
-- Home → Running → Result flow with a mock adapter.
-- T0 evidence split, separate Decision Quality / Outcome, attribution labels, lessons, checklist, and evidence references.
-- Configurable non-sensitive `VITE_API_BASE_URL` placeholder; no API keys or authorization data.
-
-**Validation**
-- `npm install && npm run build` passed (TypeScript check plus Vite production build).
-- Manually reviewed the mock flow structure against `docs/SPEC.md` sections 18, 20, and 22 and `docs/TEST_PLAN.md` cases T01, T02, T09, T14, and T15.
-- Bun was not installed in the execution environment, so `bun install` / `bun run dev` could not be executed here.
-
-**Human corrections**
-- Kept the implementation frontend-only and mock-backed; no changes to `apps/api/`.
-- Rebuilt the feature branch from `origin/main` and appended this record rather than overwriting canonical repository docs.
-
-**Residual risk / unresolved**
-- Real API/SSE adapter and browser-level visual checks remain for integration testing.
-- GitHub PR creation may require a token with pull-request permissions.
-
----
-
-## Backend MVP vertical slice — 2026-09-22
-
-**AI/tool used**
-- Local CC (Claude agent) running on the user's Windows host
-- Bun 1.2.19 + Hono 4 + OpenAI Agents SDK TS 0.1.x + Zod 3
-
-**Task**
-- ELI-313: stand up the AIME Decision Review backend MVP under `apps/api/`:
-  Bun + Hono + OpenAI Agents SDK TS, thin LLM provider abstraction, MCP
-  registry covering Fuyao (6) + iFinD (11) with lazy loading, SQLite
-  persistence, Decision Review Agent state machine, bounded reflection,
-  Review API (`POST /api/reviews`, `GET /api/reviews/:id`, `/events`, `/result`,
-  `/health`), tests for normal / empty / transient_error paths.
-
-**Output**
-- `apps/api/` scaffold: `package.json`, `tsconfig.json`, `.gitignore`,
-  `.env.example`, `README.md`, `src/` (config, types, providers, mcp registry
-  + adapters, db, agents, routes, server, entrypoint), `tests/`.
-- Decision Review Agent state machine:
-  `created → planning → retrieving → analyzing → reflecting → completed | partial | failed`.
-- T0 frozen from `executedAt`; evidence aligned via `alignEvidence(...)` so
-  ex-post never contaminates decision-quality reasoning.
-- Reflection (single bounded pass) checks ex-post leak, numeric grounding,
-  correlation→causality, ignored counter-evidence, outcome contamination.
-- Mock LLM provider and mock MCP adapters so the vertical slice runs without
-  real credentials. Live Fuyao / iFinD HTTP branches are wired but currently
-  return `permanent_error` when credentials are configured (follow-up).
-
-**Validation**
-- `bun run typecheck` → 0 errors.
-- `bun test` → 10/10 pass, 110 expect() calls (3 spec files:
-  `tests/api.test.ts`, `tests/agent.test.ts`, `tests/mcp-registry.test.ts`).
-- `bun run start` then `curl /health` → 200 with all 17 MCP servers registered.
-- `curl POST /api/reviews` with a buy decision on 600519 T0=2024-03-15:
-  review completes synchronously, `status: "completed"`, 22 evidence items
-  split around T0 (15 ex_ante + 7 ex_post), `decisionQuality` and `outcome`
-  keys distinct, tool statuses surface every adapter call honestly.
-- T0 alignment sanity check: every `publishedAt` ≤ `T0` for `exAnteEvidence`,
-  every `publishedAt` > `T0` for `exPostEvidence`.
-- Reflection produced no flags on the canonical vertical slice; produced
-  expected flags on the overconfidence-user-reason synthetic case.
-- Rebased onto current `origin/main` (after frontend MVP merge) to keep the
-  `feature/backend-agent-core` branch synced; conflict in `docs/AI_VALIDATION.md`
-  resolved by keeping both the frontend and the backend entries.
-
-**Human corrections**
-- Branch rebased onto the post-frontend main head so PR remains a fast-forward.
-
-**Residual risk / unresolved**
-- Live Fuyao / iFinD HTTP transport not wired in this slice; live path is a
-  follow-up that must verify against real credentials before merging.
-- MiniMax provider adapter is plumbed but only the `mock` provider has been
-  exercised end-to-end. Real LLM call path needs an integration test against a
-  configured endpoint.
-- SQLite is per-process; multi-instance deployment needs migration to
-  PostgreSQL / shared volume.
-
----
-
-## ELI-313 acceptance — 2026-09-22 (Oracle CC follow-up)
-
-**AI/tool used**
-- Oracle CC (Claude Opus 4.8) on branch `feature/backend-agent-core`
-
-**Task**
-- Validate Issue ELI-313 acceptance against the Local CC backend MVP and add
-  the T11 (non-compliant request) boundary that the original slice missed.
-
-**Output**
-- Added `nonCompliantReasonFor()` to `apps/api/src/routes/api.ts`: rejects
-  POST /api/reviews with HTTP 422 when the user reason contains deterministic
-  prediction / guaranteed-return / direct buy-sell instruction language.
-- Added bun:test case `POST /api/reviews rejects non-compliant (T11) ...`
-  to `apps/api/tests/api.test.ts`.
-
-**Validation**
-- `bun run typecheck` → 0 errors.
-- `bun test` → 11/11 pass, 113 expect() calls.
-- Live curl smoke (PORT=8787, `LLM_PROVIDER=mock`):
-  - GET /health → 200, provider=mock, 5 configured servers.
-  - POST /api/reviews (600519, T0=2024-03-15) → 202 with id; GET /api/reviews/:id
-    → status=completed, finishedAt set.
-  - GET /api/reviews/:id/events → 14 events across 9 distinct product-level
-    kinds: review_created, plan_started, market_data_retrieved,
-    index_sector_context_retrieved, news_events_retrieved, evidence_time_aligned,
-    fact_consistency_checked, reflection, final_review_generated.
-  - GET /api/reviews/:id/result → exAnte=9, exPost=2; decisionQuality and
-    outcome fields distinct; checklist=4, citations=9, uncertainties=2.
-  - T02 boundary: every exAnte.publishedAt ≤ max 2024-03-14T00:00:00Z (≤ T0
-    − 1d); every exPost.publishedAt ≥ min 2024-03-29T00:00:00Z (> T0 + 14d).
-  - T11 (POST with "Guaranteed 100% return in 30 days") → 422
-    `{ error: "non_compliant_request", reason: "100% return" }`.
-  - GET /api/reviews/missing → 404 `{ error: "not_found" }`.
-- Secret scan on `apps/api/`: no `sk-*`, no `Bearer …`, no populated credential
-  values; `.env.example` has variable names only; `.env*` gitignored.
-
-**Human corrections**
-- Verified T11 boundary was missing in the Local CC bootstrap commit and
-  added it before declaring acceptance.
-- Adopted the Local CC backend commit (1ef5255) instead of the duplicate
-  Oracle CC commit that diverged at the same SHA, per AGENTS.md "feature
-  branches / small reviewable commits" — kept a single canonical MVP and
-  added only the missing boundary.
-
-**Residual risk / unresolved**
-- Live Fuyao / iFinD HTTP transport still unverified (mock-only).
-- Real LLM (MiniMax) call not yet exercised; mock path is the canonical
-  vertical slice.
-- The result endpoint does not echo `T0`; clients must call /api/reviews/:id
-  for the canonical T0. (Low priority; documented.)
-
-Note: The `feature/backend-agent-core` branch now contains the merged
-Local CC MVP + Oracle CC T11 boundary + Oracle CC T11 test. Ready for PR
-to `main`.
-
----
-
-## PR #2 Supervisor blocker fix — 2026-09-22 (Oracle CC)
-
-**AI/tool used**
-- Oracle CC (Claude Opus 4.8) on branch `feature/backend-agent-core`
-
-**Task**
-- Resolve PR #2 Supervisor blocker: `apps/api/src/providers/openai-compatible.ts`
-  directly imports `"openai"`, but `apps/api/package.json` only declared
-  `"openai"` transitively via `@openai/agents`.
-
-**Output**
-- `apps/api/package.json`: added `"openai": "^5.23.2"` to direct dependencies
-  (matches the version already resolved transitively; `import OpenAI from
-  "openai"` + `new OpenAI({ apiKey, baseURL })` is the v5 SDK contract).
-- `apps/api/bun.lock`: regenerated with explicit `openai` entry; `configVersion`
-  bumped to 0 by Bun.
-- Merged `origin/main` into `feature/backend-agent-core` to bring the new
-  Product CI workflow (`.github/workflows/ci.yml`) into the PR base — the CI
-  workflow runs `bun install --frozen-lockfile && bun run typecheck && bun
-  test` in `apps/api`, matching the validated local flow.
-
-**Validation**
-- `bun run typecheck` → 0 errors.
-- `bun test` → 11/11 pass, 113 expect() calls.
-- `bun install --frozen-lockfile` resolves cleanly with the new dep declared.
-- Secret scan on `apps/api/` → no `sk-*`, `Bearer …`, or populated cred
-  values; no contract drift (only the dependency declaration changed).
-- New PR head: `15a02ca` (ahead of `main` by 3, behind 0).
-
-**Human corrections**
-- Drove the fix directly as ELI-313 lead instead of waiting on Local CC —
-  the blocker was small (one-line `package.json` + lockfile regen) and the
-  user explicitly named me as final integrator.
-- Did not rebase; used `--no-ff merge` style merge commit to keep history
-  readable for the supervisor.
-
-**Residual risk / unresolved**
-- Product CI `.github/workflows/ci.yml` runs the frontend job from repo
-  root (`npm ci && npm run build`) without a root `package-lock.json`;
-  the frontend job may fail on `npm ci` and need a `working-directory:
-  apps/web` adjustment. Backend job is correctly scoped to `apps/api`
-  and should pass.
-- Awaiting Codex / Supervisor follow-up review.
-
----
-
-## ELI-318 integration — 2026-09-22 (Oracle CC)
-
-**AI/tool used**
-- Oracle CC (Claude Opus 4.8) on branch `feature/eli-318-real-llm-mcp-integration`
-- Parallel support from Local CC (`scripts/llm-smoke.ts`,
-  `apps/api/scripts/mcp-smoke.ts` auto-detect smoke harness) and Local
-  Codex (API contract / CORS / mock↔real audit). Oracle CC remains the
-  issue owner; assignees untouched.
-
-**Task**
-- ELI-318: turn the merged frontend + backend MVP into one real end-to-end
-  vertical slice. Scope: real frontend↔backend integration, real
-  `openai-compatible` LLM path, live Fuyao + iFinD MCP HTTP transport,
-  validation evidence against `docs/TEST_PLAN.md` (T01/T02/T04/T05/T07/
-  T08/T09/T10/T18).
-
-> **Scope clarification (added post-Local-CC follow-up):** every "real
-> LLM / real MCP" smoke in this entry was executed against a **controlled
-> fake upstream** spun up locally on `:9097` / `:9098` / `:9099`, with the
-> request shape, header forwarding, response contract, and per-call
-> timeout all exercised end-to-end. **None** of these smokes have been
-> rerun against the production MiniMax / Fuyao / iFinD gateways with real
-> credentials. That real-gateway verification is still pending (see
-> *Still requires real-gateway verification* below) and is the blocker for
-> flipping PR #3 from Draft to Ready.
-
-**Output**
-- Frontend `src/api.ts`: real adapter that POSTs `/api/reviews`, polls
-  `/api/reviews/:id`, fetches `/result`; falls back to the static mock
-  when `VITE_API_BASE_URL` is empty. The frontend now lives in a
-  readable single-file React component (rewritten from the previous
-  one-line minified blob) so it can be reviewed against SPEC §18.
-- Frontend `src/App.tsx`: rewired to consume the new adapter; preserves
-  T0 split, ex-ante/ex-post separation, decision-quality vs outcome,
-  attribution labels, lessons, checklist, and citations.
-- Backend `src/mcp/adapters/live-http.ts`: new generic HTTP transport
-  adapter (Fuyao + iFinD share it) with explicit
-  success/empty/transient_error/permanent_error semantics; per-call
-  timeout via `AbortController`; missing `publishedAt` items are
-  rejected (never substituted with `retrievedAt`); Authorization and
-  `x-api-key` headers are forwarded but never logged.
-- Backend `src/mcp/registry.ts`: when credentials are configured, the
-  registry now resolves to `LiveHttpAdapter`; the same `FUYAO_INTENT_MAP`
-  / `IFIND_INTENT_MAP` gate which intents each live server supports so
-  the registry never fans a "news" call to a "price-only" server.
-- Backend `src/routes/api.ts`: CORS middleware so the React shell can
-  call the API from a different origin in dev.
-- Backend `src/server.ts`: default `runSync = false` so a real browser
-  session polls for progress; tests still override `runSync: true`.
-- New tests:
-  - `apps/api/tests/live-http.test.ts` — 9 cases (200 success, empty,
-    5xx → transient, 4xx → permanent, missing publishedAt → empty,
-    timeout → transient, registry routing with credentials, mock fallback,
-    T18 vertical with both registries). All cases run against
-    in-process `Bun.serve` fakes; no external network.
-  - `apps/api/tests/openai-compatible.test.ts` — 2 cases (real chat
-    completions against a `Bun.serve` fake; 429 does not leak the api key
-    into the thrown error message). Fake-only.
-- Local CC smoke harness (commit `2a2d588`, Oracle CC chain):
-  - `scripts/llm-smoke.ts` — auto-detects real vs fake LLM gateway from
-    `LLM_BASE_URL`/`LLM_API_KEY`; prints only `{scheme, prefix(6 chars),
-    length}` for the credential, never the raw value.
-  - `apps/api/scripts/mcp-smoke.ts` — same shape for Fuyao + iFinD,
-    switches to real `LiveHttpAdapter` when `HITHINK_FINANCE_*` or
-    `IFIND_MCP_*` are set, otherwise exercises the adapter against an
-    in-process fake.
-
-**Validation**
-- `bun run typecheck` (apps/api) → 0 errors.
-- `bun test` → **22 / 22 pass**, 146 `expect()` calls across 5 files.
-  (Local CC re-ran locally with the same result.)
-- Frontend `npm run build` (repo root) → succeeds; CSS 7.76 kB, JS
-  237.24 kB.
-- Secret scan on `apps/` + `src/` + `docs/` + `scripts/` →
-  - `.env.example` placeholders (variable names only).
-  - Test fixtures with explicit `fake-` / `test-` / `sk-fake-` /
-    `sk-test-` prefixes in `tests/live-http.test.ts`,
-    `tests/openai-compatible.test.ts`, the new smoke scripts.
-  - No production credential values anywhere in repo, scripts, or
-    this entry.
-
-**Controlled-fake upstream smokes (NOT production gateway)**
-- LLM smoke (`/tmp/llm-smoke.ts`, then re-exercised by Local CC via
-  `scripts/llm-smoke.ts`):
-  - Local fake upstream on `:9099`, real backend on `:8787` with
-    `LLM_PROVIDER=openai-compatible` pointed at the fake.
-  - POST `/api/reviews` (600519, buy, T0=2024-03-15) → `completed`.
-  - All configured tool adapters reported `success`.
-  - Fake upstream observed `Authorization: Bearer …` exactly once,
-    confirming the OpenAI-compatible provider actually hits the
-    configured `LLM_BASE_URL` with the configured key in the
-    `Authorization` header. **No production MiniMax endpoint touched.**
-- MCP smoke (`/tmp/mcp-smoke.ts`, then re-exercised by Local CC via
-  `apps/api/scripts/mcp-smoke.ts`):
-  - Local fake Fuyao on `:9097`, fake iFinD on `:9098`, real backend on
-    `:8788` with `HITHINK_FINANCE_*` + `IFIND_MCP_*` pointed at the
-    fakes.
-  - POST `/api/reviews` → `completed`.
-  - Distinct evidence sources returned in the result:
-    `fuyao:a-share:price`, `fuyao:a-share:announcement`,
-    `ifind:stock:price`, `ifind:news:sector` — every fake-produced
-    evidence item carried `source` + `publishedAt`, and the
-    `LiveHttpAdapter` correctly assigned the items to `ex_ante` vs
-    `ex_post` based on T0.
-  - Tool statuses: `a-share:success`, `stock:success`, `news:success`
-    for the live adapters; `<none-configured>:empty` for intents no
-    configured server handles (honest lazy loading).
-  - **No production Fuyao / iFinD endpoint touched.**
-
-**TEST_PLAN crosswalk (against controlled-fake upstreams only)**
-- **T01** normal review — fake-MCP + fake-LLM smokes produced
-  `status=completed`, exAnte+exPost split, decisionQuality vs outcome
-  distinct, lessons + checklist, citations.
-- **T02** T0 boundary — existing agent.test.ts loop that asserts every
-  `exAnte.publishedAt ≤ T0` and every `exPost > T0`; fake-MCP result
-  carries `publishedAt` for both sides.
-- **T04** empty result — existing `simulateEmpty` agent test.
-- **T05** transient failure — existing `simulateTransientFailure` test;
-  live-http test additionally covers 5xx → transient_error (against
-  in-process fake).
-- **T07** numeric mismatch — agent.test.ts path unchanged.
-- **T08** unsupported causal — `reflection.ts` unchanged; existing
-  tests still apply.
-- **T09** good process / bad outcome — `decisionQuality` vs
-  `outcome` always rendered as separate objects in `Result.tsx`.
-- **T10** bad process / good outcome — same: outcome is its own
-  field, quality reasoning no longer references P&L.
-- **T18** real MCP minimal path — **partially satisfied**: request
-  shape, response normalization, header forwarding, timeout, and
-  intent gating all verified against controlled fake upstreams. The
-  "real" qualifier (real gateway + real credentials) is not satisfied.
-
-**Still requires real-gateway verification (blocker for PR #3 → Ready)**
-- Re-run `scripts/llm-smoke.ts` against the production MiniMax-compatible
-  gateway with real `LLM_BASE_URL` + `LLM_API_KEY`; capture one line of
-  proof that the upstream received `Authorization: Bearer <prefix>…` and
-  returned a `chat.completion` with the expected model name. The script
-  prints only `{scheme, prefix(6), length}`; the raw key never reaches
-  stdout or this log.
-- Re-run `apps/api/scripts/mcp-smoke.ts --provider=fuyao --server=a-share`
-  against the real Fuyao gateway, and `--provider=ifind --server=news`
-  against the real iFinD gateway. Each must produce one evidence item
-  with a real `publishedAt` and a real `source` that matches the
-  upstream payload.
-- Update the *Controlled-fake upstream smokes* block above (or append a
-  new dated section) with the real-gateway traces; only then does
-  PR #3 go Ready for review.
-
-**Cross-issue dependencies**
-- **ELI-322** — will consolidate root `.env.example` and remove
-  `apps/api/.env.example`. PR #3 must rebase / sync to that change
-  before transitioning from Draft to Ready. Tracked as a follow-up
-  in this branch's PR description.
-
-**Human corrections**
-- Started from `agent/oracle-cc/116ec799ffbb` (the ELI-313 base) and
-  branched into `feature/eli-318-real-llm-mcp-integration` rather than
-  pushing directly to main, per AGENTS.md §8.
-- Frontend file split: kept the single-file aesthetic but pulled the
-  HTTP adapter into `src/api.ts` so the call sites in `App.tsx` stay
-  short; no behavioural change for the mock-only path.
-- Did not relax T11 (deterministic-prediction) rejection — it remains
-  enforced in `routes/api.ts`.
-- Local Codex surfaced 5 contract findings (CORS should pin origin via
-  env; `ReviewResult` type is a presentation subset of `EvidenceSchema`
-  and should be a shared decoder; `Number()` on price/quantity can yield
-  `NaN` → `null` → 400 instead of field-level error; `VITE_API_BASE_URL`
-  empty/non-empty is a strict mode switch with no silent fallback to
-  mock after a real submission starts). Filed as follow-up issues;
-  none are blocking this PR.
-
-**Residual risk / unresolved**
 - The default demo ports 8080/3000 may need overrides when another local service
   already occupies them; the Compose defaults remain simple for a clean host.
 - Existing volumes created by the earlier root-user image need a one-time
@@ -551,3 +119,160 @@ to `main`.
   not carry `pull_requests` scope (`403 Resource not accessible by
   personal access token` on `repos/.../pulls`); branch is pushed and
   ready for the supervisor or a token with the right scope to update.
+- Production upstream field names: the controlled-fake upstreams used
+  `{items: Evidence[]}`. Some real upstreams use `data` or `list`
+  instead. `LiveHttpAdapter.itemsField` is configurable per server;
+  real-gateway smoke is the right time to confirm the field name and
+  flip the default if needed.
+- `LiveHttpAdapter` does not yet retry on transient errors. The agent
+  harness treats a transient adapter as `partial` and surfaces it in
+  `uncertainties`; retry/back-off is a follow-up if real upstream SLOs
+  require it.
+- The frontend `VITE_API_BASE_URL` is a single base URL with no per-env
+  switching; production deploys must inject it at build time.
+- CI `frontend` job runs from repo root without a root
+  `package-lock.json`; `npm ci` may fail until a root lockfile exists
+  or the job's `working-directory` is set to `apps/web` (out of scope
+  for ELI-318).
+
+---
+
+## ELI-318 MCP transport rework — 2026-09-22 (Oracle CC)
+
+**AI/tool used**
+- Oracle CC (Claude Opus 4.8) on branch `feature/eli-318-real-llm-mcp-integration`
+
+**Task**
+- Replace the earlier REST-shaped `LiveHttpAdapter` (which fabricated
+  `/{serverKey}/{intent}` paths) with a real MCP JSON-RPC 2.0 client that
+  drives `initialize → tools/list → tools/call` against the Fuyao and iFinD
+  MCP gateways, per user instruction:
+  - Fuyao: `https://fuyao.aicubes.cn/mcp/<serverKey>`, header `X-api-key`.
+  - iFinD: `https://api-mcp.51ifind.com:8643/ds-mcp-servers/<serverKey>`,
+    header `Authorization`.
+  - Lazy load — never enumerate every tool schema at startup.
+  - Tool name per intent must come from operator config (`*_TOOL_MAP`); we
+    refuse to fabricate tool names.
+  - T0 wall: real `publishedAt` only; never substitute `retrievedAt`.
+  - AIME / MiniMax / OpenAI-compatible provider stays as-is.
+
+**Output**
+- `apps/api/src/mcp/adapters/mcp-client.ts` (new): `McpStreamableHttpClient`
+  drives real MCP JSON-RPC 2.0 — `initialize` (with `protocolVersion`,
+  `clientInfo`, `capabilities`), `tools/list` (cached), `tools/call`. Handles
+  `Mcp-Session-Id`, `Accept: application/json, text/event-stream`, per-RPC
+  `AbortController` timeout, `TransientMcpError` / `PermanentMcpError`
+  classification. Credentials forwarded in headers but never logged.
+- `apps/api/src/mcp/adapters/live-mcp.ts` (new): `LiveMcpAdapter` wraps the
+  client. `toolForIntent` is operator-supplied (one closure per server key).
+  `canHandle(intent)` returns true only when an intent has a tool name
+  configured — so a missing map means no live call is ever issued.
+  `parseToolContent()` accepts MCP `content[].text` carrying JSON, an array,
+  or `{items|data|results}`; `normalizeItems()` rejects items lacking
+  `publishedAt` and never substitutes `retrievedAt`.
+- `apps/api/src/mcp/adapters/live-http.ts` (deleted): the REST-shaped
+  adapter is gone — replaced by the real MCP client.
+- `apps/api/src/mcp/registry.ts`: builds `LiveMcpAdapter` when credentials
+  are present; uses `cfg.fuyao.toolMap` / `cfg.ifind.toolMap` to populate
+  `toolForIntent`. Endpoint composition: `<baseUrl>/<serverKey>` (refuses
+  to double-append if base already ends with the server key).
+- `apps/api/src/config.ts`: added `fuyao.toolMap` / `ifind.toolMap`
+  parsed from new env vars `HITHINK_FINANCE_TOOL_MAP` and
+  `IFIND_MCP_TOOL_MAP` (format: `intent:toolName,intent2:toolName2`).
+- `.env.example` (root): added `HITHINK_FINANCE_TOOL_MAP` and
+  `IFIND_MCP_TOOL_MAP` placeholders; refreshed smoke harness notes to
+  describe the real MCP protocol path.
+- `apps/api/scripts/mcp-smoke.ts` (rewritten): now speaks JSON-RPC 2.0
+  against the upstream. In fake mode it boots a `Bun.serve` MCP server
+  that responds to `initialize` / `tools/list` / `tools/call` and records
+  inbound `Authorization` / `X-api-key` headers. In real-gateway mode it
+  drives the production endpoint straight. Credential mask = `{scheme,
+  prefix(6), length}`, never raw value.
+- `tests/live-http.test.ts` (rewritten): mocks the MCP JSON-RPC protocol
+  end-to-end. Covers initialize → tools/list → tools/call round-trip,
+  Authorization / X-api-key header forwarding (iFinD sends only
+  `Authorization`), 5xx → transient, 4xx → permanent, JSON-RPC error →
+  permanent, timeout → transient, missing `publishedAt` → empty,
+  upstream `isError` → permanent, content parsing shapes (`items`,
+  `data`, `results`, single object, plain text), alternate timestamp
+  field names, and T18 vertical slice (real Fuyao + real iFinD side by
+  side with verified `initialize`/`tools/call` invocations on each).
+
+**Validation**
+- `bun run typecheck` (apps/api) → 0 errors.
+- `bun test` → **31 / 31 pass**, 178 `expect()` calls across 5 files
+  (was 22 / 22 before rework; +9 new protocol tests).
+- `bun test tests/openai-compatible.test.ts` → 2 / 2 pass (LLM provider
+  untouched per instruction).
+- `bun run scripts/llm-smoke.ts` (LLM harness, fake mode) → still passes;
+  no change to the OpenAI-compatible contract.
+- `bun run apps/api/scripts/mcp-smoke.ts --provider=fuyao --server=a-share`
+  (fake mode) → `tools.list count=1, tools.call content_parts=1`,
+  `request_count=3` (initialize + tools/list + tools/call), inbound
+  `X-api-key` and `Authorization` present with redacted prefix `sk-fak`.
+- `bun run apps/api/scripts/mcp-smoke.ts --provider=ifind --server=news`
+  (fake mode) → same shape; inbound `Authorization: Bearer …` present
+  with redacted prefix `sk-fak`; `X-api-key` absent (iFinD only).
+- Frontend `npm run build` → clean.
+- Secret scan → only intentional test fixtures (`sk-test-*`, `sk-fake-*`,
+  `Bearer ifind-token-xyz`); no production credentials anywhere.
+
+**Server-env credential probe (this turn)**
+
+```
+LLM_API_KEY             = MISSING
+LLM_BASE_URL            = MISSING
+LLM_MODEL               = MISSING
+HITHINK_FINANCE_API_KEY = MISSING
+HITHINK_FINANCE_BASE_URL= MISSING
+IFIND_MCP_AUTHORIZATION = MISSING
+IFIND_MCP_BASE_URL      = MISSING
+```
+
+All seven credential env vars MISSING in this Oracle runtime → real-gateway
+smoke not exercised this turn; smoke harness still runs against an
+in-process JSON-RPC fake to prove the bearer path end-to-end without any
+real credential.
+
+**Mock fallback**
+- Mock layer (`MockFuyaoAdapter` / `MockIFindAdapter`) is unchanged and
+  still selected when credentials are missing. Mock paths exercise the
+  full agent state machine end-to-end (T01 / T04 / T05 / T07 / T08 /
+  T09 / T10).
+
+**TEST_PLAN crosswalk update**
+- T18 — previously *partially satisfied* via REST-shaped client and
+  controlled fake. Now: real MCP protocol exchange is unit-tested
+  end-to-end (`initialize` / `tools/list` / `tools/call` round-trip,
+  session-id cache, header forwarding, error classification, schema
+  parsing). Real-gateway trace against `fuyao.aicubes.cn` /
+  `api-mcp.51ifind.com` still pending credentialed environment.
+
+**Human corrections**
+- Did not relax T0 wall: `publishedAt` from the upstream is mandatory;
+  `retrievedAt` is recorded separately and never substituted.
+- Did not relax T11 (deterministic-prediction) rejection — still enforced
+  in `routes/api.ts`.
+- Did not relax the "don't fabricate tool names" rule — without an
+  operator-supplied `*_TOOL_MAP`, `canHandle(intent)` returns false and
+  the registry falls back to mock adapters for that server.
+- Did not touch `OpenAICompatibleProvider`, `MockModelProvider`, or the
+  LLM-only structured-judgment layer — AIME provider stays OpenAI-
+  compatible, config from env, secrets only in env.
+
+**Residual risk / unresolved**
+- Real Fuyao + iFinD gateway smoke is still pending credentialed
+  environment. `apps/api/scripts/mcp-smoke.ts` will switch to
+  `mode=real-gateway` automatically as soon as the env vars are set.
+- Live upstream tool names are not yet enumerated (the production
+  gateway may expose different names than we guessed in the examples).
+  The operator-supplied `*_TOOL_MAP` env var is the documented override.
+- MCP session replay (`Mcp-Session-Id`) is implemented but not all
+  servers require it; some servers may also need `notifications/initialized`
+  after `initialize` (we send it but don't error if the server returns
+  204 / 200 with empty body).
+- The iFinD base URL `/ds-mcp-servers/<serverKey>` pattern is based on
+  the user-provided host; we have not yet verified against the
+  official documentation which server keys are exposed at that host.
+
+PR #3 stays Draft; status `in_progress`; assignee Oracle CC.

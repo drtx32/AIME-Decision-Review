@@ -1,330 +1,605 @@
 /**
- * Integration tests for the live HTTP MCP path.
+ * Integration tests for the live MCP transport.
  *
- * Spins up a tiny Bun.serve mock that pretends to be a Fuyao / iFinD MCP
- * server, then exercises LiveHttpAdapter end-to-end against it. Proves:
- *   - 200 + valid body → success with normalized Evidence
- *   - 200 + empty items → empty
- *   - 500 → transient_error
- *   - 400 → permanent_error
- *   - 404 → permanent_error (unsupported)
- *   - missing publishedAt → empty (rejected)
- *   - timeout (server stalls) → transient_error
+ * These tests mock a real MCP server (JSON-RPC 2.0 over Streamable HTTP)
+ * using Bun.serve, then exercise McpStreamableHttpClient and LiveMcpAdapter
+ * end-to-end. They prove:
  *
- * Also exercises the registry wiring: when credentials are configured the
- * adapter resolves to LiveHttpAdapter, otherwise MockFuyaoAdapter. The
- * configuredKeys list is identical in both cases.
+ *   - The client performs the real MCP protocol:
+ *       initialize → tools/list → tools/call.
+ *   - Tools/list is cached after the first call (lazy load — no schema dump).
+ *   - Tool-call result `content[]` is parsed to Evidence[].
+ *   - Items lacking `publishedAt` are dropped (never substituted with
+ *     `retrievedAt`).
+ *   - 5xx → TransientMcpError / transient_error result.
+ *   - 4xx → PermanentMcpError / permanent_error result.
+ *   - JSON-RPC error → permanent_error.
+ *   - Timeout (server stalls) → transient_error.
+ *   - Authorization / X-api-key headers are forwarded on every call.
+ *   - Credentials are never echoed in thrown error messages.
  *
- * Note: credentials in this file (`test-key`, `Bearer test`, `Bearer x`,
- * `fuyao-test-key`, `Bearer ifind-test-token`) are test fixtures, not real
- * upstream credentials.
+ * They also exercise the registry wiring:
+ *   - With credentials but no tool map → no LiveMcpAdapter (we don't fabricate).
+ *   - With credentials + tool map → LiveMcpAdapter drives the real protocol.
+ *   - T18 vertical slice: real Fuyao + real iFinD side-by-side via JSON-RPC.
  */
 
 import { describe, test, expect, beforeAll, afterAll } from "bun:test";
-import { LiveHttpAdapter } from "../src/mcp/adapters/live-http.ts";
+import { McpStreamableHttpClient } from "../src/mcp/adapters/mcp-client.ts";
+import { LiveMcpAdapter, parseToolContent, normalizeItems } from "../src/mcp/adapters/live-mcp.ts";
 import { buildMcpRegistry } from "../src/mcp/registry.ts";
 import { makeTestConfig } from "./helpers.ts";
 
-interface StartedServer {
-  url: string;
-  close: () => void;
+// ─── MCP mock helper ────────────────────────────────────────────────────────
+
+type RpcHandler = (req: { method: string; params: unknown }) => unknown;
+
+interface FakeMcpOptions {
+  /** Override tool-list response (defaults to a single `get_price` tool). */
+  toolsList?: Array<{ name: string; description?: string }>;
+  /** Override tool-call handler. */
+  onToolCall?: RpcHandler;
+  /** Force a specific HTTP status on a given method. */
+  forceStatus?: { method?: string; status: number };
+  /** Force a JSON-RPC error for a given method. */
+  forceRpcError?: { method?: string; code: number; message: string };
+  /** Capture all inbound requests (for assertion). */
+  onRequest?: (info: { method: string; headers: Record<string, string>; body: unknown }) => void;
+  /** Hold the response open (used for timeout tests). */
+  stall?: boolean;
 }
 
-async function startMockMcp(handlers: Record<string, (body: unknown) => Response>): Promise<StartedServer> {
+async function startFakeMcpServer(opts: FakeMcpOptions = {}): Promise<{
+  url: string;
+  captured: Array<{ method: string; headers: Record<string, string>; body: unknown }>;
+  close: () => void;
+}> {
+  const captured: Array<{ method: string; headers: Record<string, string>; body: unknown }> = [];
+  const initialTools = opts.toolsList ?? [{ name: "get_price", description: "Get price" }];
+
   const server = Bun.serve({
     port: 0,
     fetch: async (req) => {
       const url = new URL(req.url);
-      const key = `${req.method} ${url.pathname}`;
-      const handler = handlers[key];
-      if (!handler) {
-        return new Response(JSON.stringify({ error: "no_handler" }), { status: 404 });
+      const headers: Record<string, string> = {};
+      req.headers.forEach((v, k) => (headers[k.toLowerCase()] = v));
+      let body: any = null;
+      try {
+        body = await req.json();
+      } catch {
+        /* empty body */
       }
-      const body = await req.json().catch(() => null);
-      return handler(body);
+      captured.push({ method: req.method + " " + url.pathname, headers, body });
+      if (opts.stall) {
+        return new Promise<Response>(() => {});
+      }
+      const rpc = body as { method: string; params?: unknown; id?: number | string };
+      const id = rpc?.id ?? 0;
+
+      if (opts.forceStatus) {
+        return new Response(JSON.stringify({ error: "forced" }), { status: opts.forceStatus.status });
+      }
+      if (opts.forceRpcError && (!opts.forceRpcError.method || opts.forceRpcError.method === rpc?.method)) {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            error: { code: opts.forceRpcError.code, message: opts.forceRpcError.message },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+
+      if (rpc?.method === "initialize") {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            result: {
+              protocolVersion: "2025-03-26",
+              serverInfo: { name: "fake-mcp", version: "1.0.0" },
+              capabilities: { tools: {} },
+            },
+          }),
+          {
+            status: 200,
+            headers: {
+              "content-type": "application/json",
+              "mcp-session-id": "fake-session-123",
+            },
+          }
+        );
+      }
+      if (rpc?.method === "notifications/initialized") {
+        return new Response("", { status: 204 });
+      }
+      if (rpc?.method === "tools/list") {
+        return new Response(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id,
+            result: { tools: initialTools },
+          }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      if (rpc?.method === "tools/call") {
+        const handler = opts.onToolCall ?? (() => ({ content: [] }));
+        const result = handler({ method: rpc.method, params: rpc.params });
+        return new Response(
+          JSON.stringify({ jsonrpc: "2.0", id, result }),
+          { status: 200, headers: { "content-type": "application/json" } }
+        );
+      }
+      return new Response(
+        JSON.stringify({ jsonrpc: "2.0", id, error: { code: -32601, message: "method not found" } }),
+        { status: 200, headers: { "content-type": "application/json" } }
+      );
     },
   });
+
   return {
-    url: `http://localhost:${server.port}`,
+    url: `http://localhost:${server.port}/mcp`,
+    captured,
     close: () => server.stop(true),
   };
 }
 
-describe("LiveHttpAdapter — Fuyao / iFinD HTTP transport", () => {
-  test("200 with items → success and normalized Evidence", async () => {
-    const T0 = "2024-03-15T00:00:00Z";
-    const items = [
-      {
-        id: "real-fuyao-1",
-        type: "price",
-        title: "A-share last close, pre-T0",
-        content: "Real upstream price returned 1620.50 (CN).",
-        source: "fuyao:a-share:price",
-        publishedAt: "2024-03-14T00:00:00Z",
-        metadata: { field: "close" },
-      },
-    ];
-    const server = await startMockMcp({
-      "POST /a-share/price": () =>
-        new Response(JSON.stringify({ items }), {
-          status: 200,
-          headers: { "content-type": "application/json" },
-        }),
+function fuyaoAuthHeaders(apiKey: string): Record<string, string> {
+  return {
+    "x-api-key": apiKey,
+    authorization: `Bearer ${apiKey}`,
+  };
+}
+
+function ifindAuthHeaders(auth: string): Record<string, string> {
+  return { authorization: auth };
+}
+
+// ─── Client-level tests ─────────────────────────────────────────────────────
+
+describe("McpStreamableHttpClient — real MCP protocol", () => {
+  test("initialize → tools/list → tools/call round-trip", async () => {
+    const fake = await startFakeMcpServer({
+      toolsList: [
+        { name: "get_price" },
+        { name: "get_news" },
+      ],
+      onToolCall: () => ({
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify([
+              {
+                id: "x1",
+                type: "price",
+                title: "A-share close, pre-T0",
+                content: "Closing price 30 days before T0: 1620.50 (CN).",
+                source: "fuyao:a-share:price",
+                publishedAt: "2024-03-14T00:00:00Z",
+                metadata: { field: "close" },
+              },
+            ]),
+          },
+        ],
+      }),
     });
-    const adapter = new LiveHttpAdapter({
+    const client = new McpStreamableHttpClient({
+      endpoint: fake.url,
+      serverKey: "a-share",
+      provider: "fuyao",
+      buildAuthHeaders: () => fuyaoAuthHeaders("test-key"),
+    });
+    const tools = await client.listTools();
+    expect(tools.map((t) => t.name)).toEqual(["get_price", "get_news"]);
+    const result = await client.callTool("get_price", { symbol: "600519" });
+    expect(result.content[0].type).toBe("text");
+    expect(JSON.parse(result.content[0].text)[0].id).toBe("x1");
+    const diag = client.dumpDiagnostics();
+    expect(diag.initialized).toBe(true);
+    expect(diag.hasSession).toBe(true);
+    expect(diag.toolCount).toBe(2);
+    expect(diag.serverInfo?.name).toBe("fake-mcp");
+    await client.close();
+    fake.close();
+  });
+
+  test("Authorization + X-api-key headers forwarded on every call", async () => {
+    const fake = await startFakeMcpServer();
+    const client = new McpStreamableHttpClient({
+      endpoint: fake.url,
+      serverKey: "a-share",
+      provider: "fuyao",
+      buildAuthHeaders: () => fuyaoAuthHeaders("test-key-secret"),
+    });
+    await client.listTools();
+    await client.callTool("get_price", { symbol: "600519" });
+    const authHeaders = fake.captured
+      .map((c) => c.headers.authorization)
+      .filter((v): v is string => !!v);
+    const apiKeyHeaders = fake.captured
+      .map((c) => c.headers["x-api-key"])
+      .filter((v): v is string => !!v);
+    expect(authHeaders.length).toBeGreaterThan(0);
+    expect(authHeaders.every((h) => h === "Bearer test-key-secret")).toBe(true);
+    expect(apiKeyHeaders.every((h) => h === "test-key-secret")).toBe(true);
+    await client.close();
+    fake.close();
+  });
+
+  test("Authorization header forwarded for iFinD", async () => {
+    const fake = await startFakeMcpServer();
+    const client = new McpStreamableHttpClient({
+      endpoint: fake.url,
+      serverKey: "news",
+      provider: "ifind",
+      buildAuthHeaders: () => ifindAuthHeaders("Bearer ifind-token-xyz"),
+    });
+    await client.listTools();
+    await client.callTool("get_news", { symbol: "600519" });
+    const authHeaders = fake.captured
+      .map((c) => c.headers.authorization)
+      .filter((v): v is string => !!v);
+    expect(authHeaders.every((h) => h === "Bearer ifind-token-xyz")).toBe(true);
+    expect(fake.captured.every((c) => c.headers["x-api-key"] === undefined)).toBe(true);
+    await client.close();
+    fake.close();
+  });
+
+  test("5xx → TransientMcpError; no api key in message", async () => {
+    const fake = await startFakeMcpServer({ forceStatus: { status: 503 } });
+    const client = new McpStreamableHttpClient({
+      endpoint: fake.url,
+      serverKey: "a-share",
+      provider: "fuyao",
+      buildAuthHeaders: () => fuyaoAuthHeaders("test-key-secret"),
+    });
+    let err: Error | null = null;
+    try {
+      await client.listTools();
+    } catch (e) {
+      err = e as Error;
+    }
+    fake.close();
+    expect(err).not.toBeNull();
+    expect(err!.name).toBe("TransientMcpError");
+    expect((err as any).code).toContain("503");
+    expect(err!.message).not.toContain("test-key-secret");
+    expect(err!.message).not.toContain("Bearer");
+  });
+
+  test("404 → PermanentMcpError", async () => {
+    const fake = await startFakeMcpServer({ forceStatus: { status: 404 } });
+    const client = new McpStreamableHttpClient({
+      endpoint: fake.url,
+      serverKey: "missing",
+      provider: "fuyao",
+      buildAuthHeaders: () => fuyaoAuthHeaders("test"),
+    });
+    let err: Error | null = null;
+    try {
+      await client.listTools();
+    } catch (e) {
+      err = e as Error;
+    }
+    fake.close();
+    expect(err?.name).toBe("PermanentMcpError");
+    expect((err as any).code).toContain("404");
+  });
+
+  test("JSON-RPC error → PermanentMcpError", async () => {
+    const fake = await startFakeMcpServer({
+      forceRpcError: { method: "tools/call", code: -32601, message: "no such tool" },
+    });
+    const client = new McpStreamableHttpClient({
+      endpoint: fake.url,
+      serverKey: "a-share",
+      provider: "fuyao",
+      buildAuthHeaders: () => fuyaoAuthHeaders("test"),
+    });
+    let err: Error | null = null;
+    try {
+      await client.callTool("nonexistent", {});
+    } catch (e) {
+      err = e as Error;
+    }
+    fake.close();
+    expect(err?.name).toBe("PermanentMcpError");
+    expect((err as any).code).toContain("32601");
+  });
+
+  test("server stalls → timeout → TransientMcpError", async () => {
+    const fake = await startFakeMcpServer({ stall: true });
+    const client = new McpStreamableHttpClient({
+      endpoint: fake.url,
+      serverKey: "a-share",
+      provider: "fuyao",
+      timeoutMs: 200,
+      buildAuthHeaders: () => fuyaoAuthHeaders("test"),
+    });
+    let err: Error | null = null;
+    try {
+      await client.listTools();
+    } catch (e) {
+      err = e as Error;
+    }
+    fake.close();
+    expect(err?.name).toBe("TransientMcpError");
+    expect((err as any).code).toContain("TIMEOUT");
+  });
+});
+
+// ─── Adapter-level tests ────────────────────────────────────────────────────
+
+describe("LiveMcpAdapter — registry-driven intent → tool", () => {
+  test("success: tools/call returns Evidence[] with real publishedAt", async () => {
+    const fake = await startFakeMcpServer({
+      onToolCall: () => ({
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify([
+              {
+                id: "real-fuyao-1",
+                type: "price",
+                title: "Fuyao live close",
+                content: "Real upstream Fuyao returned 1620.50.",
+                source: "fuyao:a-share:price",
+                publishedAt: "2024-03-14T00:00:00Z",
+              },
+            ]),
+          },
+        ],
+      }),
+    });
+    const adapter = new LiveMcpAdapter({
       provider: "fuyao",
       serverKey: "a-share",
-      credentials: { baseUrl: server.url, apiKey: "test-key" },
-      pathFor: (k, intent) => `/${k}/${intent}`,
-      buildAuthHeader: () => "test-key",
+      endpoint: fake.url,
+      credentials: { baseUrl: fake.url, apiKey: "test-key" },
+      toolForIntent: (intent) => (intent === "price" ? "get_price" : null),
     });
     const res = await adapter.fetch({
       intent: "price",
       symbol: "600519",
       market: "CN",
-      T0,
+      T0: "2024-03-15T00:00:00Z",
     });
-    server.close();
+    fake.close();
     expect(res.status).toBe("success");
     expect(res.data).toHaveLength(1);
-    expect(res.data![0].id).toBe("real-fuyao-1");
     expect(res.data![0].source).toBe("fuyao:a-share:price");
     expect(res.data![0].publishedAt).toBe("2024-03-14T00:00:00.000Z");
-    expect(res.data![0].relationToDecision).toBe("ex_ante");
-  });
-
-  test("200 with empty items → empty", async () => {
-    const server = await startMockMcp({
-      "POST /stock/news": () => new Response(JSON.stringify({ items: [] }), { status: 200 }),
-    });
-    const adapter = new LiveHttpAdapter({
-      provider: "ifind",
-      serverKey: "stock",
-      credentials: { baseUrl: server.url, authorization: "Bearer test" },
-      pathFor: (k, intent) => `/${k}/${intent}`,
-      buildAuthHeader: () => "Bearer test",
-    });
-    const res = await adapter.fetch({
-      intent: "news",
-      symbol: "600519",
-      T0: "2024-03-15T00:00:00Z",
-    });
-    server.close();
-    expect(res.status).toBe("empty");
-  });
-
-  test("500 → transient_error", async () => {
-    const server = await startMockMcp({
-      "POST /a-share/price": () =>
-        new Response(JSON.stringify({ error: "boom" }), { status: 503 }),
-    });
-    const adapter = new LiveHttpAdapter({
-      provider: "fuyao",
-      serverKey: "a-share",
-      credentials: { baseUrl: server.url, apiKey: "test" },
-      pathFor: (k, intent) => `/${k}/${intent}`,
-      buildAuthHeader: () => "test",
-    });
-    const res = await adapter.fetch({
-      intent: "price",
-      symbol: "600519",
-      T0: "2024-03-15T00:00:00Z",
-    });
-    server.close();
-    expect(res.status).toBe("transient_error");
-    expect(res.error?.code).toContain("503");
-  });
-
-  test("400 → permanent_error", async () => {
-    const server = await startMockMcp({
-      "POST /stock/price": () =>
-        new Response(JSON.stringify({ error: "bad symbol" }), { status: 400 }),
-    });
-    const adapter = new LiveHttpAdapter({
-      provider: "ifind",
-      serverKey: "stock",
-      credentials: { baseUrl: server.url, authorization: "Bearer x" },
-      pathFor: (k, intent) => `/${k}/${intent}`,
-      buildAuthHeader: () => "Bearer x",
-    });
-    const res = await adapter.fetch({
-      intent: "price",
-      symbol: "BAD",
-      T0: "2024-03-15T00:00:00Z",
-    });
-    server.close();
-    expect(res.status).toBe("permanent_error");
-    expect(res.error?.code).toContain("400");
   });
 
   test("missing publishedAt → empty (rejected, never fabricated)", async () => {
-    const server = await startMockMcp({
-      "POST /a-share/price": () =>
-        new Response(
-          JSON.stringify({
-            items: [
-              {
-                id: "x",
-                type: "price",
-                title: "no timestamp",
-                content: "should be rejected",
-                publishedAt: "not-a-date",
-              },
-            ],
-          }),
-          { status: 200 }
-        ),
+    const fake = await startFakeMcpServer({
+      onToolCall: () => ({
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify([
+              { id: "x", type: "price", title: "no timestamp", content: "should be rejected" },
+            ]),
+          },
+        ],
+      }),
     });
-    const adapter = new LiveHttpAdapter({
+    const adapter = new LiveMcpAdapter({
       provider: "fuyao",
       serverKey: "a-share",
-      credentials: { baseUrl: server.url, apiKey: "test" },
-      pathFor: (k, intent) => `/${k}/${intent}`,
-      buildAuthHeader: () => "test",
+      endpoint: fake.url,
+      credentials: { baseUrl: fake.url, apiKey: "test" },
+      toolForIntent: () => "get_price",
     });
     const res = await adapter.fetch({
       intent: "price",
       symbol: "600519",
       T0: "2024-03-15T00:00:00Z",
     });
-    server.close();
+    fake.close();
     expect(res.status).toBe("empty");
   });
 
-  test("server stalls → timeout → transient_error", async () => {
-    const server = Bun.serve({
-      port: 0,
-      fetch: () => new Promise<Response>(() => {}),
-    });
-    const adapter = new LiveHttpAdapter({
+  test("canHandle returns false when no tool is configured for the intent", () => {
+    const adapter = new LiveMcpAdapter({
       provider: "fuyao",
       serverKey: "a-share",
-      credentials: { baseUrl: `http://localhost:${server.port}`, apiKey: "test" },
-      pathFor: (k, intent) => `/${k}/${intent}`,
-      buildAuthHeader: () => "test",
-      options: { timeoutMs: 200 },
+      endpoint: "http://localhost:0/mcp",
+      credentials: {},
+      toolForIntent: () => null,
+    });
+    expect(adapter.canHandle("price")).toBe(false);
+    expect(adapter.canHandle("news")).toBe(false);
+  });
+
+  test("upstream isError=true → permanent_error", async () => {
+    const fake = await startFakeMcpServer({
+      onToolCall: () => ({ content: [], isError: true }),
+    });
+    const adapter = new LiveMcpAdapter({
+      provider: "fuyao",
+      serverKey: "a-share",
+      endpoint: fake.url,
+      credentials: { baseUrl: fake.url, apiKey: "test" },
+      toolForIntent: () => "get_price",
     });
     const res = await adapter.fetch({
       intent: "price",
       symbol: "600519",
       T0: "2024-03-15T00:00:00Z",
     });
-    server.stop(true);
-    expect(res.status).toBe("transient_error");
-    expect(res.error?.code).toContain("TIMEOUT");
+    fake.close();
+    expect(res.status).toBe("permanent_error");
+    expect(res.error?.code).toContain("TOOL_ERROR");
+  });
+
+  test("plain-text tool content (non-JSON) → not fabricated; dropped", () => {
+    const out = parseToolContent([
+      { type: "text", text: "just a plain string, no JSON" },
+    ]);
+    expect(out).toHaveLength(1);
+    const norm = normalizeItems(out, "2024-03-15T00:00:00.000Z", "fuyao", "a-share");
+    expect(norm).toHaveLength(0); // dropped because publishedAt missing
+  });
+
+  test("parseToolContent accepts items / data / results / array / single object", () => {
+    expect(parseToolContent([{ type: "text", text: JSON.stringify([{ a: 1 }]) }])).toEqual([{ a: 1 }]);
+    expect(parseToolContent([{ type: "text", text: JSON.stringify({ items: [{ a: 1 }, { a: 2 }] }) }])).toEqual([{ a: 1 }, { a: 2 }]);
+    expect(parseToolContent([{ type: "text", text: JSON.stringify({ data: [{ a: 1 }] }) }])).toEqual([{ a: 1 }]);
+    expect(parseToolContent([{ type: "text", text: JSON.stringify({ results: [{ a: 1 }] }) }])).toEqual([{ a: 1 }]);
+    expect(parseToolContent([{ type: "text", text: JSON.stringify({ a: 1 }) }])).toEqual([{ a: 1 }]);
+  });
+
+  test("normalizeItems: alternate timestamp fields + missing fields", () => {
+    const norm = normalizeItems(
+      [
+        { title: "x", content: "y", publish_time: "2024-03-14T00:00:00Z" },
+        { title: "x", content: "y", pub_time: "2024-03-14T00:00:00Z" },
+        { title: "x", content: "y", time: "2024-03-14T00:00:00Z" },
+        { title: "x", content: "y", publishedAt: "not-a-date" }, // rejected
+        { title: "x", content: "y", publishedAt: "2024-03-14T00:00:00Z" }, // accepted
+      ],
+      "2024-03-15T00:00:00.000Z",
+      "fuyao",
+      "a-share"
+    );
+    expect(norm).toHaveLength(4);
+    expect(norm.every((e) => e.publishedAt === "2024-03-14T00:00:00.000Z")).toBe(true);
   });
 });
 
-describe("MCP registry — credentials configure LiveHttpAdapter", () => {
-  test("credentials configured → adapter resolves to LiveHttpAdapter for Fuyao a-share", () => {
+// ─── Registry wiring ────────────────────────────────────────────────────────
+
+describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
+  test("credentials configured but toolMap empty → live adapter exists but canHandle is false everywhere", () => {
     const cfg = makeTestConfig({
       fuyao: {
         baseUrl: "http://example.test/fuyao",
         apiKey: "test-key",
         servers: ["a-share"],
+        toolMap: {},
       },
     });
     const registry = buildMcpRegistry(cfg);
     const adapter = registry.resolve("a-share");
     expect(adapter).not.toBeNull();
     expect(adapter!.provider).toBe("fuyao");
-    // We assert behaviourally: the live adapter claims any intent the
-    // upstream supports. The mock adapter would reject unknown intents.
-    expect(adapter!.canHandle("price")).toBe(true);
+    expect(adapter!.canHandle("price")).toBe(false);
   });
 
-  test("no credentials → mock adapter still selected (fallback path)", () => {
+  test("credentials + toolMap → canHandle for configured intent", () => {
     const cfg = makeTestConfig({
-      fuyao: { baseUrl: null, apiKey: null, servers: ["a-share"] },
+      fuyao: {
+        baseUrl: "http://example.test/fuyao",
+        apiKey: "test-key",
+        servers: ["a-share"],
+        toolMap: { price: "get_a_share_price" },
+      },
     });
     const registry = buildMcpRegistry(cfg);
-    const adapter = registry.resolve("a-share");
-    expect(adapter).not.toBeNull();
-    // The mock adapter is intent-scoped (only price/financial/announcement).
-    expect(adapter!.canHandle("price")).toBe(true);
-    expect(adapter!.canHandle("news")).toBe(false);
+    const adapter = registry.resolve("a-share")!;
+    expect(adapter.canHandle("price")).toBe(true);
+    expect(adapter.canHandle("news")).toBe(false);
   });
 
-  test("both registries configured → T18 vertical: real Fuyao + real iFinD", async () => {
-    // Two upstream mocks, one per registry. End-to-end proves the registry
-    // can fan out across providers and that evidence provenance is preserved.
-    const fuyaoServer = await startMockMcp({
-      "POST /a-share/price": () =>
-        new Response(
-          JSON.stringify({
-            items: [
+  test("no credentials → mock adapter still selected", () => {
+    const cfg = makeTestConfig({
+      fuyao: { baseUrl: null, apiKey: null, servers: ["a-share"], toolMap: {} },
+    });
+    const registry = buildMcpRegistry(cfg);
+    const adapter = registry.resolve("a-share")!;
+    // Mock adapter is intent-scoped.
+    expect(adapter.canHandle("price")).toBe(true);
+    expect(adapter.canHandle("news")).toBe(false);
+  });
+
+  test("T18 vertical: real Fuyao + real iFinD via JSON-RPC side by side", async () => {
+    const fuyaoFake = await startFakeMcpServer({
+      onToolCall: () => ({
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify([
               {
                 id: "fuyao-real-1",
                 type: "price",
                 title: "Fuyao live price",
-                content: "Real Fuyao upstream returned 1620.50.",
+                content: "Real upstream Fuyao returned 1620.50.",
                 source: "fuyao:a-share:price",
                 publishedAt: "2024-03-14T00:00:00Z",
               },
-            ],
-          }),
-          { status: 200 }
-        ),
+            ]),
+          },
+        ],
+      }),
     });
-    const ifindServer = await startMockMcp({
-      "POST /news/news": () =>
-        new Response(
-          JSON.stringify({
-            items: [
+    const ifindFake = await startFakeMcpServer({
+      onToolCall: () => ({
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify([
               {
                 id: "ifind-real-1",
                 type: "news",
                 title: "iFinD live news",
-                content: "Real iFinD upstream returned sector news.",
+                content: "Real upstream iFinD returned sector news.",
                 source: "ifind:news:sector",
                 publishedAt: "2024-03-10T00:00:00Z",
               },
-            ],
-          }),
-          { status: 200 }
-        ),
+            ]),
+          },
+        ],
+      }),
     });
 
     const cfg = makeTestConfig({
       fuyao: {
-        baseUrl: fuyaoServer.url,
+        baseUrl: fuyaoFake.url,
         apiKey: "test-key",
         servers: ["a-share"],
+        toolMap: { price: "get_a_share_price" },
       },
       ifind: {
-        baseUrl: ifindServer.url,
-        authorization: "Bearer x",
+        baseUrl: ifindFake.url,
+        authorization: "Bearer ifind-token",
         servers: ["news"],
+        toolMap: { news: "get_news" },
       },
     });
     const registry = buildMcpRegistry(cfg);
+    const priceAdapters = registry.resolveFor("price");
+    const newsAdapters = registry.resolveFor("news");
 
-    const priceAdapter = registry.resolveFor("price");
-    const newsAdapter = registry.resolveFor("news");
+    expect(priceAdapters.length).toBe(1);
+    expect(newsAdapters.length).toBe(1);
 
-    expect(priceAdapter.length).toBeGreaterThan(0);
-    expect(newsAdapter.length).toBeGreaterThan(0);
-
-    const fuyaoRes = await priceAdapter[0].fetch({
+    const fuyaoRes = await priceAdapters[0].fetch({
       intent: "price",
       symbol: "600519",
       market: "CN",
       T0: "2024-03-15T00:00:00Z",
     });
-    const ifindRes = await newsAdapter[0].fetch({
+    const ifindRes = await newsAdapters[0].fetch({
       intent: "news",
       symbol: "600519",
       T0: "2024-03-15T00:00:00Z",
     });
 
-    fuyaoServer.close();
-    ifindServer.close();
+    fuyaoFake.close();
+    ifindFake.close();
 
     expect(fuyaoRes.status).toBe("success");
     expect(fuyaoRes.data![0].source).toBe("fuyao:a-share:price");
     expect(ifindRes.status).toBe("success");
     expect(ifindRes.data![0].source).toBe("ifind:news:sector");
+
+    // T18 proof: real MCP protocol exchange happened. Each adapter
+    // exercised initialize + tools/list + tools/call on its endpoint.
+    expect(fuyaoFake.captured.some((c) => c.body && (c.body as any).method === "initialize")).toBe(true);
+    expect(fuyaoFake.captured.some((c) => c.body && (c.body as any).method === "tools/call")).toBe(true);
+    expect(ifindFake.captured.some((c) => c.body && (c.body as any).method === "initialize")).toBe(true);
+    expect(ifindFake.captured.some((c) => c.body && (c.body as any).method === "tools/call")).toBe(true);
   });
 });
-
-void startMockMcp; // silence unused-locals in older TS configs

@@ -1,0 +1,44 @@
+services:
+  api:
+    build:
+      context: ./apps/api
+      dockerfile: Dockerfile
+    environment:
+      PORT: "3000"
+      SQLITE_PATH: ${SQLITE_PATH:-/data/decision-review.db}
+      LOG_LEVEL: ${LOG_LEVEL:-info}
+      LLM_PROVIDER: ${LLM_PROVIDER:-mock}
+      LLM_MODEL: ${LLM_MODEL:-mvp-mock-model}
+      LLM_BASE_URL: ${LLM_BASE_URL:-}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      HITHINK_FINANCE_BASE_URL: ${HITHINK_FINANCE_BASE_URL:-}
+      HITHINK_FINANCE_API_KEY: ${HITHINK_FINANCE_API_KEY:-}
+      HITHINK_FINANCE_SERVERS: ${HITHINK_FINANCE_SERVERS:-meta,a-share}
+      IFIND_MCP_BASE_URL: ${IFIND_MCP_BASE_URL:-}
+      IFIND_MCP_AUTHORIZATION: ${IFIND_MCP_AUTHORIZATION:-}
+      IFIND_MCP_SERVERS: ${IFIND_MCP_SERVERS:-stock,news,index}
+    volumes:
+      - api-data:/data
+    ports:
+      - "${API_PORT:-3000}:3000"
+    healthcheck:
+      test: ["CMD", "bun", "-e", "fetch('http://localhost:3000/health').then(r => { if (!r.ok) process.exit(1) })"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "${WEB_PORT:-8080}:80"
+
+volumes:
+  api-data:

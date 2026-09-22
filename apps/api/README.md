@@ -22,11 +22,21 @@ without real LLM credentials.
 
 ## Quick start
 
+From the repository root, prefer the unified Compose path:
+
+```bash
+docker compose up --build
+```
+
+The API listens inside Compose on port `3000`; SQLite is persisted in the
+named `api-data` volume. Configuration is documented in the root `.env.example`.
+
+For backend-only development:
+
 ```bash
 cd apps/api
 bun install
-cp .env.example .env   # fill values if you have them; otherwise leave empty
-bun run dev            # http://localhost:3000
+bun run dev            # http://localhost:3000; export env vars from the root template
 ```
 
 With no `LLM_API_KEY` and `LLM_PROVIDER=mock`, the API runs an in-process mock
@@ -109,8 +119,8 @@ tests/                    # bun:test specs
 
 ## Environment variables
 
-See `.env.example`. Real values **must** come from server environment variables
-or GitHub Secrets — never commit them.
+See the repository-root `.env.example`. Real values **must** come from server
+environment variables or GitHub Secrets — never commit them.
 
 ## Tests
 

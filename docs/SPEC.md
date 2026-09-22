@@ -95,6 +95,15 @@ Browser
 
 Secrets remain server-side only.
 
+### 4.1 Local/prod-like orchestration
+
+The root `docker-compose.yml` is the authoritative container orchestration
+path. It runs the static frontend and Bun/Hono API as separate services, routes
+frontend `/api` requests to the API service, and persists the API SQLite file in
+the named `api-data` volume. Runtime configuration is documented in the root
+`.env.example`; Compose maps `API_PORT` to the API process port and does not
+pass backend secrets to the frontend image.
+
 ## 5. DecisionReviewAgent
 
 Single agent in v0.1.

@@ -255,3 +255,53 @@ to `main`.
   apps/web` adjustment. Backend job is correctly scoped to `apps/api`
   and should pass.
 - Awaiting Codex / Supervisor follow-up review.
+
+## Root Compose orchestration — 2026-09-22 (Oracle Codex)
+
+**AI/tool used**
+- Oracle Codex for container and deployment integration.
+
+**Task**
+- Add the authoritative root Docker Compose path after the frontend/backend
+  MVPs, unify environment documentation, and keep backend credentials server-only.
+
+**Output**
+- Separate Nginx web and Bun API images, API health-gated startup, named
+  persistent SQLite volume, root-only `.env.example`, and browser `/api` proxy.
+- Frontend production builds use the non-sensitive `VITE_API_BASE_URL` and call
+  the backend review API when configured; mock mode remains the default outside
+  Compose.
+
+**Validation**
+- `npm run build` passed for the root frontend.
+- `docker compose config` validated the service, healthcheck, dependency, and
+  volume configuration; `docker compose build` built both images successfully.
+- With host ports overridden to avoid unrelated local services, Compose smoke
+  checks passed: API `/health` returned 200, web `/` returned 200, and a POST
+  through the web `/api` proxy completed with 9 ex-ante and 2 ex-post evidence
+  items.
+- Secret scan checked that no populated key, token, or Authorization value was
+  added.
+
+**Human corrections**
+- Kept all runtime variable names in the root template and removed the obsolete
+  `apps/api/.env.example` to prevent split configuration sources.
+
+**Residual risk / unresolved**
+- The default demo ports 8080/3000 may need overrides when another local service
+  already occupies them; the Compose defaults remain simple for a clean host.
+- Existing volumes created by the earlier root-user image need a one-time
+  ownership migration before the non-root ELI-321 runtime can write SQLite;
+  fresh named volumes inherit the image's `/var/lib/aime` ownership.
+
+## Compose handoff alignment — 2026-09-22 (Oracle Codex)
+
+**Validation**
+- Re-read the ELI-320 and ELI-321 delivery comments and inspected their pushed
+  branches before finalizing Compose integration.
+- Compose now consumes the actual frontend `apps/web/Dockerfile` contract and
+  the backend multi-stage `apps/api/Dockerfile` contract: `/health`, non-root
+  runtime, and SQLite at `/var/lib/aime`.
+- Added the backend `.dockerignore` from the ELI-321 handoff and added the
+  repository-wide multi-component architecture/Compose planning rule to
+  `AGENTS.md`.

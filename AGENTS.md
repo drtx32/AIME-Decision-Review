@@ -158,3 +158,11 @@ An issue is not complete until:
 - behavior matches `docs/SPEC.md`
 - required validation evidence is recorded
 - known limitations are documented
+
+## 11. Multi-component architecture planning
+
+For projects involving multiple frontend, backend, database, or deployment
+components, first write and validate an overall architecture plan before
+implementing component-level changes. When appropriate, prefer Docker Compose
+as the local/prod-like orchestration path, unless the canonical project SPEC
+explicitly requires another deployment approach.

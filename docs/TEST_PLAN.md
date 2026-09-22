@@ -155,6 +155,16 @@ Expected:
 - source/timestamp provenance preserved
 - partial failures are visible
 
+## 11. Container orchestration
+
+### T19 — Compose build, health, and persistence
+Expected:
+- root `docker compose build` succeeds using the frontend/backend Dockerfiles
+- API `/health` and web `/health` return 200 after health-gated startup
+- a review written through the web `/api` proxy completes successfully
+- SQLite remains writable and persists in the named `api-data` volume
+- images contain no secrets and the API runtime remains non-root
+
 ## Pre-submit checklist
 
 - [ ] Web URL works in clean browser session

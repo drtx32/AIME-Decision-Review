@@ -16,3 +16,23 @@ If an Issue conflicts with `docs/SPEC.md`, the explicit newer Issue instruction 
 ## Security
 
 Never commit API keys, Authorization headers, MCP credentials, cookies, or other secrets. Use server environment variables / GitHub Secrets only.
+
+## Run with Docker Compose
+
+The root Compose file is the production-like local path. It builds the static
+frontend and Bun/Hono API, proxies browser `/api` requests to the API, and
+stores SQLite in the named `api-data` volume.
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+Open `http://localhost:8080`. The API is also available at
+`http://localhost:3000/health`. Set `WEB_PORT` or `API_PORT` in the root `.env`
+to change host ports. Backend credentials stay in the API container and are
+never passed to the frontend build.
+
+For frontend-only development, `npm install && npm run dev` keeps the mock
+adapter unless `VITE_API_BASE_URL` is set. The root `.env.example` is the only
+runtime configuration template; do not create an app-local `.env.example`.

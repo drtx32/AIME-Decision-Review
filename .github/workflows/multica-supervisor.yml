@@ -1,0 +1,96 @@
+name: Multica Supervisor
+
+on:
+  push:
+    branches:
+      - main
+      - "feature/**"
+  pull_request:
+    types:
+      - opened
+      - synchronize
+      - reopened
+      - ready_for_review
+      - closed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: multica-supervisor-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  notify-multica:
+    runs-on: ubuntu-latest
+    if: ${{ secrets.MULTICA_AIME_SUPERVISOR_WEBHOOK_URL != '' }}
+    steps:
+      - name: Build supervisor event payload
+        id: payload
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action || '' }}
+          REPOSITORY: ${{ github.repository }}
+          REF_NAME: ${{ github.ref_name }}
+          SHA: ${{ github.sha }}
+          ACTOR: ${{ github.actor }}
+          RUN_ID: ${{ github.run_id }}
+          SERVER_URL: ${{ github.server_url }}
+          PR_NUMBER: ${{ github.event.pull_request.number || '' }}
+          PR_URL: ${{ github.event.pull_request.html_url || '' }}
+          PR_MERGED: ${{ github.event.pull_request.merged || false }}
+          PR_DRAFT: ${{ github.event.pull_request.draft || false }}
+          HEAD_REF: ${{ github.head_ref || '' }}
+          BASE_REF: ${{ github.base_ref || '' }}
+        run: |
+          jq -nc \
+            --arg event_name "$EVENT_NAME" \
+            --arg event_action "$EVENT_ACTION" \
+            --arg repository "$REPOSITORY" \
+            --arg ref_name "$REF_NAME" \
+            --arg sha "$SHA" \
+            --arg actor "$ACTOR" \
+            --arg run_url "$SERVER_URL/$REPOSITORY/actions/runs/$RUN_ID" \
+            --arg pr_number "$PR_NUMBER" \
+            --arg pr_url "$PR_URL" \
+            --arg pr_merged "$PR_MERGED" \
+            --arg pr_draft "$PR_DRAFT" \
+            --arg head_ref "$HEAD_REF" \
+            --arg base_ref "$BASE_REF" \
+            '{
+              source: "github-actions",
+              project: "AI Test",
+              repo: $repository,
+              event: $event_name,
+              action: $event_action,
+              ref: $ref_name,
+              sha: $sha,
+              actor: $actor,
+              run_url: $run_url,
+              pull_request: {
+                number: $pr_number,
+                url: $pr_url,
+                merged: $pr_merged,
+                draft: $pr_draft,
+                head_ref: $head_ref,
+                base_ref: $base_ref
+              }
+            }' > /tmp/multica-event.json
+
+      - name: Notify Multica supervisor
+        env:
+          WEBHOOK_URL: ${{ secrets.MULTICA_AIME_SUPERVISOR_WEBHOOK_URL }}
+        run: |
+          curl --fail-with-body \
+            --silent \
+            --show-error \
+            --retry 3 \
+            --retry-all-errors \
+            --connect-timeout 10 \
+            --max-time 30 \
+            -X POST \
+            -H "Content-Type: application/json" \
+            --data-binary @/tmp/multica-event.json \
+            "$WEBHOOK_URL"

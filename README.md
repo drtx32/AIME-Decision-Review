@@ -10,6 +10,7 @@ All agents and contributors MUST read the repository docs before implementation 
 - `docs/AI_VALIDATION.md` — AI usage and validation log
 - `docs/TEST_PLAN.md` — required test coverage and evidence
 - `docs/AUTOMATION.md` — GitHub Actions → Multica supervision
+- `docs/DEPLOYMENT.md` — canonical production path, Compose pinning, secrets, health checks, backup, and rollback
 
 If an Issue conflicts with `docs/SPEC.md`, the explicit newer Issue instruction wins; otherwise follow the docs.
 
@@ -17,22 +18,33 @@ If an Issue conflicts with `docs/SPEC.md`, the explicit newer Issue instruction 
 
 Never commit API keys, Authorization headers, MCP credentials, cookies, or other secrets. Use server environment variables / GitHub Secrets only.
 
+## Production deploy path
+
+Production deploys must run from:
+
+```bash
+~/projects/aime-decision-review
+```
+
+Do not run production from `/root/multica_workspaces/...` or another transient agent/issue workspace. See `docs/DEPLOYMENT.md` for migration, SQLite-volume preservation, and rollback details.
+
 ## Run with Docker Compose
 
-The root Compose file is the production-like local path. It builds the static
-frontend and Bun/Hono API, proxies browser `/api` requests to the API, and
-stores SQLite in the named `api-data` volume.
+The root Compose file builds the static frontend and Bun/Hono API as separate services. Browser `/api` requests are proxied through the web container. SQLite is stored in the named `api-data` volume.
 
 ```bash
 cp .env.example .env
-docker compose up --build
+chmod 600 .env
+docker compose up -d --build
 ```
 
-Open `http://localhost:8080`. The API is also available at
-`http://localhost:3000/health`. Set `WEB_PORT` or `API_PORT` in the root `.env`
-to change host ports. Backend credentials stay in the API container and are
-never passed to the frontend build.
+By default the only host-published service is the web container at `http://localhost:13608`. The API listens on Compose-internal port `3000` and is reached through the web proxy, for example:
 
-For frontend-only development, `npm install && npm run dev` keeps the mock
-adapter unless `VITE_API_BASE_URL` is set. The root `.env.example` is the only
-runtime configuration template; do not create an app-local `.env.example`.
+```bash
+curl -fsS http://127.0.0.1:13608/health
+curl -fsS http://127.0.0.1:13608/api/health
+```
+
+Set `WEB_PORT` in the root `.env` only if the host web port must change. Backend credentials are passed only to the API container and are never exposed to the frontend build.
+
+For frontend-only development, `npm install && npm run dev` may use the explicit development mock adapter unless `VITE_API_BASE_URL` is set. The root `.env.example` is the only runtime configuration template; do not create an app-local `.env.example`.

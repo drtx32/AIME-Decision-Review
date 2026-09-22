@@ -727,3 +727,75 @@ describe("Health is public", () => {
     expect(r.status).toBe(200);
   });
 });
+
+describe("Identity-contract guard (ELI-328 / PR #7 collision)", () => {
+  let ctx: TestServer;
+  let cookie: string;
+
+  beforeEach(async () => {
+    ctx = makeTestServer();
+    await seedAdmin(ctx.userRepo, "admin", "admin@123", false);
+    cookie = await loginAndCookie(ctx.app, ctx.userRepo, "admin", "admin@123");
+  });
+  afterEach(() => ctx.cleanup());
+
+  test("client-supplied x-user-id header is rejected on /api/reviews", async () => {
+    const res = await ctx.app.request("/api/reviews", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        cookie,
+        "x-user-id": "usr_someone_else",
+      },
+      body: JSON.stringify({
+        symbol: "600519",
+        action: "buy",
+        executedAt: "2024-03-15T00:00:00Z",
+        userReason: "test",
+      }),
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("x_user_id_header_not_allowed");
+  });
+
+  test("x-user-id is ignored on /api/admin/users (rejected even when authenticated)", async () => {
+    const res = await ctx.app.request("/api/admin/users", {
+      headers: { cookie, "x-user-id": "usr_someone_else" },
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("x_user_id_header_not_allowed");
+  });
+
+  test("user identity is derived from cookie session, never from x-user-id", async () => {
+    // Without a cookie, an x-user-id header still gets rejected on protected
+    // routes — the guard fires before requireAuth can match it to anything.
+    const res = await ctx.app.request("/api/admin/users", {
+      headers: { "x-user-id": "usr_anyone" },
+    });
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("x_user_id_header_not_allowed");
+  });
+
+  test("/api/auth/login still works even with x-user-id header (boundary pass-through)", async () => {
+    const res = await ctx.app.request("/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-user-id": "usr_anything" },
+      body: JSON.stringify({ username: "admin", password: "WRONG" }),
+    });
+    // Login is allowed to receive x-user-id (it just ignores it). Wrong
+    // password still returns 401 invalid_credentials.
+    expect(res.status).toBe(401);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("invalid_credentials");
+  });
+
+  test("/health is unaffected by x-user-id header", async () => {
+    const res = await ctx.app.request("/health", {
+      headers: { "x-user-id": "usr_anything" },
+    });
+    expect(res.status).toBe(200);
+  });
+});

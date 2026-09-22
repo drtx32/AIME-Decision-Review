@@ -15,7 +15,7 @@ import type { UserRepository } from "../auth/repository.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
 import { DecisionReviewAgent } from "../agents/decision-review.ts";
 import type { ModelProvider } from "../providers/index.ts";
-import { attachUser, requireAuth, gateMustChangePassword, type AuthEnv } from "../auth/middleware.ts";
+import { attachUser, requireAuth, gateMustChangePassword, rejectClientUserIdHeader, type AuthEnv } from "../auth/middleware.ts";
 import { buildAuthRoutes } from "../auth/routes.ts";
 import { buildAdminRoutes } from "../auth/admin.ts";
 
@@ -38,6 +38,12 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   const admin = buildAdminRoutes(deps.userRepo);
 
   app.use("*", attachUser(deps.userRepo));
+
+  // Identity-contract guard — must run BEFORE requireAuth so a forged
+  // x-user-id header is rejected even if a future route forgets the auth
+  // gate. Runs after attachUser so it doesn't interfere with /health or
+  // /api/auth/login response paths.
+  app.use("/api/*", rejectClientUserIdHeader());
 
   app.get("/health", (c) => {
     return c.json({

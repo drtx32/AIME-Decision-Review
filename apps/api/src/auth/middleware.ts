@@ -124,6 +124,49 @@ export function gateMustChangePassword(): MiddlewareHandler<AuthEnv> {
   };
 }
 
+/**
+ * Identity-contract guard: refuse any client-supplied `x-user-id` /
+ * `X-User-Id` header on protected routes. The user identity for review
+ * data, sessions, learning state and admin actions is always derived
+ * from the ELI-325 session cookie (`attachUser` populates ctx.get("user")
+ * from the session row → users row). Clients must never be trusted to
+ * self-report their own identity. This guard documents and enforces the
+ * contract for ELI-328 / PR #7 and any future routes that join the same
+ * API surface.
+ *
+ * Login / logout / health are explicitly allowed to pass through so the
+ * cookie can be issued in the first place.
+ */
+export function rejectClientUserIdHeader(): MiddlewareHandler<AuthEnv> {
+  return async (c, next) => {
+    const path = c.req.path;
+    const isAuthBoundary =
+      path === "/api/auth/login" ||
+      path === "/api/auth/logout" ||
+      path === "/health";
+    if (isAuthBoundary) {
+      await next();
+      return;
+    }
+    const claimed =
+      c.req.header("x-user-id") ??
+      c.req.header("X-User-Id") ??
+      c.req.header("x_user_id");
+    if (claimed) {
+      return c.json(
+        {
+          error: "x_user_id_header_not_allowed",
+          message:
+            "User identity is derived from the auth session cookie. " +
+            "Client-supplied x-user-id headers are not accepted on protected routes.",
+        },
+        400
+      );
+    }
+    await next();
+  };
+}
+
 export function getAuthContext(c: Context<AuthEnv>): AuthenticatedUserContext | null {
   const user = c.get("user");
   const session = c.get("session");

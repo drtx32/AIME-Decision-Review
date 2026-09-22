@@ -25,6 +25,7 @@ export interface AppConfig {
   llm: {
     provider: "openai-compatible" | "mock";
     model: string;
+    extractorModel: string;
     baseUrl: string | null;
     apiKey: string | null;
   };
@@ -116,6 +117,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     llm: {
       provider,
       model: env.LLM_MODEL ?? "mvp-mock-model",
+      extractorModel: env.LLM_EXTRACTOR_MODEL?.trim() || env.LLM_MODEL || "mvp-mock-model",
       baseUrl: env.LLM_BASE_URL?.trim() || null,
       apiKey: env.LLM_API_KEY?.trim() || null,
     },

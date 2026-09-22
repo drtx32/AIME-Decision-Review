@@ -1,7 +1,7 @@
 export type Input = { symbol: string; market: string; side: 'buy' | 'sell'; executedAt: string; price: string; quantity: string; reason: string; notes: string };
 export type ReviewEvent = { id: string; kind: string; message: string; at: string };
 export type Result = { id: string; input: Input; summary: string; ante: string[]; post: string[] };
-export type SessionDecision = { id: string; symbol: string; market: string; action: 'buy' | 'sell'; executedAt: string; price: number | null; quantity: number | null; reason: string; notes: string; reviewId: string | null; confirmed: boolean };
+export type SessionDecision = { id: string; symbol: string; name?: string | null; market: string; action: 'buy' | 'sell'; executedAt: string | null; executedAtText?: string; timePrecision?: 'exact' | 'approximate' | 'unknown'; price: number | null; quantity: number | null; quantityShares?: number | null; quantityText?: string | null; confidence?: number; needsConfirmation?: string[]; reason: string; notes: string; reviewId: string | null; confirmed: boolean };
 export type SessionMessage = { id: string; sessionId: string; userId: string; role: 'user' | 'assistant' | 'status'; content: string; createdAt: string };
 export type LearningMemory = { id: string; text: string; kind: string; sourceSessionId: string; sourceDecisionId: string | null; strength: number; active: boolean };
 export type SessionSnapshot = { session: { id: string; title: string; scope: string; status: string }; decisions: SessionDecision[]; messages: SessionMessage[]; memories: LearningMemory[]; results: Array<{ decisionId: string; reviewId: string; result: any }> };
@@ -17,21 +17,12 @@ async function request(path: string, init: RequestInit = {}) {
   return body;
 }
 
-const localDecisions = (message: string): SessionDecision[] => {
-  const found: Array<{ action: 'buy' | 'sell'; symbol: string }> = [];
-  const pattern = /(卖出|卖了|卖掉|减仓|买入|买了|加仓)\s*([^，,。；;和又以及]+)/g;
-  for (const match of message.matchAll(pattern)) found.push({ action: /卖|减仓/.test(match[1]) ? 'sell' : 'buy', symbol: match[2].trim() });
-  if (!found.length) found.push({ action: /卖|减仓/.test(message) ? 'sell' : 'buy', symbol: message.match(/\b\d{5,6}\b/)?.[0] || '待识别标的' });
-  const now = new Date().toISOString();
-  return found.slice(0, 12).map((item, index) => ({ id: `local-${index}`, symbol: item.symbol, market: 'CN', action: item.action, executedAt: new Date(Date.parse(now) + index * 60000).toISOString(), price: null, quantity: null, reason: message, notes: '', reviewId: null, confirmed: false }));
-};
-
 export const reviewApi = {
   async listSessions() { if (!apiBase) return []; const body = await request('/sessions'); return body.sessions as Array<{ id: string; title: string; status: string; updatedAt: string }>; },
   async getSession(id: string): Promise<SessionSnapshot> { return request(`/sessions/${encodeURIComponent(id)}`); },
-  async createSession(message: string): Promise<{ sessionId: string; decisions: SessionDecision[]; messages: SessionMessage[]; memories: LearningMemory[]; local?: boolean }> {
-    if (!apiBase) return { sessionId: 'local-session', decisions: localDecisions(message), messages: [{ id: 'local-message', sessionId: 'local-session', userId: 'dev-user', role: 'user', content: message, createdAt: new Date().toISOString() }], memories: [], local: true };
-    return request('/sessions', { method: 'POST', body: JSON.stringify({ message }) });
+  async createSession(message: string): Promise<{ sessionId: string; decisions: SessionDecision[]; messages: SessionMessage[]; memories: LearningMemory[] }> {
+    if (!apiBase) throw new Error(unavailable);
+    return request('/sessions', { method: 'POST', body: JSON.stringify({ message, clientNow: new Date().toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }) });
   },
   async confirm(sessionId: string) { if (!apiBase) throw new Error(unavailable); return request(`/sessions/${encodeURIComponent(sessionId)}/confirm`, { method: 'POST' }); },
   async updateDecision(sessionId: string, decisionId: string, patch: Partial<SessionDecision>) { if (!apiBase) return; await request(`/sessions/${encodeURIComponent(sessionId)}/decisions/${encodeURIComponent(decisionId)}`, { method: 'PATCH', body: JSON.stringify(patch) }); },

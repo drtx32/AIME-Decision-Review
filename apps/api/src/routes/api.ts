@@ -9,6 +9,7 @@ import type { AppConfig } from "../config.ts";
 import type { ReviewRepository } from "../db/sqlite.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
 import { DecisionReviewAgent } from "../agents/decision-review.ts";
+import { DecisionExtractorAgent } from "../agents/decision-extractor.ts";
 import type { ModelProvider } from "../providers/index.ts";
 
 export interface RouteDeps {
@@ -42,15 +43,21 @@ export function buildApi(deps: RouteDeps): Hono {
   app.get("/api/sessions", (c) => c.json({ sessions: deps.repo.listSessions(userIdFor(c)) }));
 
   app.post("/api/sessions", async (c) => {
-    const body = await c.req.json().catch(() => null) as { message?: string; scope?: string } | null;
+    const body = await c.req.json().catch(() => null) as { message?: string; scope?: string; clientNow?: string; timezone?: string } | null;
     const message = body?.message?.trim();
     if (!message) return c.json({ error: "invalid_input", message: "请输入一段历史决策描述。" }, 400);
+    if (!deps.provider.configured) return c.json({ error: "MODEL_NOT_CONFIGURED", message: MODEL_UNAVAILABLE_MESSAGE }, 503);
     const userId = userIdFor(c);
-    const decisions = extractDecisions(message);
+    let decisions;
+    try {
+      decisions = await new DecisionExtractorAgent(deps.provider, deps.config.llm.extractorModel).extract(message, { clientNow: body?.clientNow || new Date().toISOString(), timezone: body?.timezone || "UTC" });
+    } catch {
+      return c.json({ error: "DECISION_EXTRACTION_FAILED", message: "无法可靠识别决策，请补充标的、方向与成交时间后重试。" }, 422);
+    }
     const sessionId = deps.repo.createSession(userId, decisions.length > 1 ? `${decisions.length} 笔投资决策` : `${decisions[0]?.symbol ?? "新"} 决策复盘`, body?.scope ?? (decisions.length > 1 ? "custom" : "single"));
     deps.repo.addMessage(sessionId, userId, "user", message);
-    const stored = decisions.map((decision) => deps.repo.addSessionDecision({ ...decision, sessionId, userId }));
-    deps.repo.addMessage(sessionId, userId, "status", `已识别 ${stored.length} 笔决策，请确认每笔 T0 与方向。`);
+    const stored = decisions.map((decision) => deps.repo.addSessionDecision({ ...decision, quantity: decision.quantityShares, reason: decision.rationale, sessionId, userId }));
+    deps.repo.addMessage(sessionId, userId, "status", `已识别 ${stored.length} 笔决策，请确认每笔 T0、方向与数量。`);
     return c.json({ sessionId, decisions: stored, messages: deps.repo.listMessages(sessionId, userId), memories: deps.repo.listMemories(userId) }, 201);
   });
 
@@ -80,6 +87,8 @@ export function buildApi(deps: RouteDeps): Hono {
     if (!deps.provider.configured) return c.json({ error: "MODEL_NOT_CONFIGURED", message: MODEL_UNAVAILABLE_MESSAGE }, 503);
     const decisions = deps.repo.listSessionDecisions(id, userId);
     if (!decisions.length) return c.json({ error: "invalid_input", message: "没有可复盘的决策。" }, 400);
+    const pendingT0 = decisions.filter((item) => !item.executedAt || item.timePrecision === "unknown");
+    if (pendingT0.length) return c.json({ error: "DECISION_CONFIRMATION_REQUIRED", message: "请先确认每笔决策的成交时间。", decisionIds: pendingT0.map((item) => item.id) }, 422);
     deps.repo.updateSession(id, userId, "running");
     deps.repo.addMessage(id, userId, "status", "正在重建每笔决策各自的 T0 前信息环境…");
     const agent = new DecisionReviewAgent({ repo: deps.repo, registry: deps.registry, provider: deps.provider, config: deps.config });
@@ -87,7 +96,7 @@ export function buildApi(deps: RouteDeps): Hono {
     const pending: Promise<void>[] = [];
     for (const item of decisions) {
       const runId = `rev_${randomUUID()}`;
-      const decision: DecisionInput = { symbol: item.symbol, market: item.market as "CN" | "HK" | "US", action: item.action, executedAt: item.executedAt, price: item.price ?? undefined, quantity: item.quantity ?? undefined, userReason: item.reason, notes: item.notes };
+      const decision: DecisionInput = { symbol: item.symbol, market: item.market as "CN" | "HK" | "US", action: item.action, executedAt: item.executedAt!, price: item.price ?? undefined, quantity: item.quantityShares ?? item.quantity ?? undefined, userReason: item.reason, notes: item.notes };
       deps.repo.createRun(runId, decision, item.executedAt, id, userId);
       deps.repo.linkDecisionReview(item.id, userId, runId);
       runIds.push(runId);
@@ -127,15 +136,6 @@ export function buildApi(deps: RouteDeps): Hono {
   });
 
   app.post("/api/reviews", async (c) => {
-    if (deps.config.runtime === "production" && !deps.provider.configured) {
-      return c.json(
-        {
-          error: "MODEL_NOT_CONFIGURED",
-          message: MODEL_UNAVAILABLE_MESSAGE,
-        },
-        503
-      );
-    }
     const body = await c.req.json().catch(() => null);
     const parsed = DecisionInputSchema.safeParse(body);
     if (!parsed.success) {
@@ -160,6 +160,7 @@ export function buildApi(deps: RouteDeps): Hono {
         422
       );
     }
+    if (!deps.provider.configured) return c.json({ error: "MODEL_NOT_CONFIGURED", message: MODEL_UNAVAILABLE_MESSAGE }, 503);
     const id = `rev_${randomUUID()}`;
     const T0 = decision.executedAt;
     deps.repo.createRun(id, decision, T0);
@@ -270,21 +271,4 @@ function nonCompliantReasonFor(decision: { userReason?: string | null; notes?: s
     if (re.test(text)) return label;
   }
   return null;
-}
-
-function extractDecisions(message: string): Array<Omit<import("../db/sqlite.ts").SessionDecisionRow, "id" | "reviewId" | "confirmed">> {
-  const date = message.match(/(20\d{2})[年\-/](\d{1,2})[月\-/](\d{1,2})/);
-  const base = date ? new Date(Date.UTC(Number(date[1]), Number(date[2]) - 1, Number(date[3]), 10, 0)) : new Date();
-  const found: Array<{ action: "buy" | "sell"; symbol: string }> = [];
-  const pattern = /(卖出|卖了|卖掉|减仓|买入|买了|加仓)\s*([^，,。；;和又以及]+(?:和[^，,。；;]+)?)/g;
-  for (const match of message.matchAll(pattern)) {
-    const action = /卖|减仓/.test(match[1]) ? "sell" : "buy";
-    const raw = match[2].replace(/^(又|还|再)\s*/, "").trim();
-    for (const symbol of raw.split(/\s*(?:、|和|以及)\s*/).map((x) => x.trim()).filter(Boolean)) found.push({ action, symbol });
-  }
-  if (!found.length) {
-    const code = message.match(/\b\d{5,6}\b/)?.[0];
-    found.push({ action: /卖|减仓/.test(message) ? "sell" : "buy", symbol: code ?? message.slice(0, 24).trim() });
-  }
-  return found.slice(0, 12).map((item, index) => ({ sessionId: "", userId: "", symbol: item.symbol, market: /港股|HK/i.test(message) ? "HK" : /美股|US/i.test(message) ? "US" : "CN", action: item.action, executedAt: new Date(base.getTime() + index * 60_000).toISOString(), price: null, quantity: null, reason: message, notes: "" }));
 }

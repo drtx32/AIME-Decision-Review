@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { makeTestServer, loginAndCookie, type TestServer } from "./helpers.ts";
 import type { DecisionReviewResult } from "../src/types/index.ts";
+import type { ModelProvider } from "../src/providers/index.ts";
 
 describe("Review API contract", () => {
   let ctx: TestServer;
@@ -75,6 +76,7 @@ describe("Review API contract", () => {
   });
 
   test("POST /api/reviews → GET /result returns structured review (vertical slice)", async () => {
+    ctx.deps.provider = { id: "test", modelName: "test", configured: true, complete: async () => ({ text: "{}" }) } satisfies ModelProvider;
     const created = await ctx.app.request("/api/reviews", {
       method: "POST",
       headers: { "content-type": "application/json", cookie },

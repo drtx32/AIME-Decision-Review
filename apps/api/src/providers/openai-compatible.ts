@@ -32,7 +32,7 @@ export class OpenAICompatibleProvider implements ModelProvider {
 
   async complete(req: LLMCompletionRequest): Promise<LLMCompletion> {
     const response = await this.client.chat.completions.create({
-      model: this.modelName,
+      model: req.modelName ?? this.modelName,
       temperature: req.temperature ?? 0.2,
       max_tokens: req.maxOutputTokens ?? 1024,
       messages: [

@@ -21,6 +21,7 @@ export interface LLMCompletionRequest {
   schemaHint?: string;
   temperature?: number;
   maxOutputTokens?: number;
+  modelName?: string;
 }
 
 export interface LLMMessage {

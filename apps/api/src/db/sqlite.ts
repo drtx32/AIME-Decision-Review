@@ -38,9 +38,16 @@ export interface SessionDecisionRow {
   symbol: string;
   market: string;
   action: "buy" | "sell";
-  executedAt: string;
+  executedAt: string | null;
+  name: string | null;
+  executedAtText: string;
+  timePrecision: "exact" | "approximate" | "unknown";
   price: number | null;
   quantity: number | null;
+  quantityShares: number | null;
+  quantityText: string | null;
+  confidence: number;
+  needsConfirmation: string[];
   reason: string;
   notes: string;
   reviewId: string | null;
@@ -178,9 +185,16 @@ export class ReviewRepository {
         symbol TEXT NOT NULL,
         market TEXT NOT NULL,
         action TEXT NOT NULL,
-        executedAt TEXT NOT NULL,
+        executedAt TEXT,
+        name TEXT,
+        executedAtText TEXT NOT NULL DEFAULT '',
+        timePrecision TEXT NOT NULL DEFAULT 'unknown',
         price REAL,
         quantity REAL,
+        quantityShares REAL,
+        quantityText TEXT,
+        confidence REAL NOT NULL DEFAULT 0,
+        needsConfirmation TEXT NOT NULL DEFAULT '[]',
         reason TEXT NOT NULL,
         notes TEXT NOT NULL DEFAULT '',
         reviewId TEXT,
@@ -210,6 +224,15 @@ export class ReviewRepository {
     ]) {
       try { this.db.exec(statement); } catch { /* column already exists */ }
     }
+    for (const statement of [
+      "ALTER TABLE session_decisions ADD COLUMN name TEXT",
+      "ALTER TABLE session_decisions ADD COLUMN executedAtText TEXT NOT NULL DEFAULT ''",
+      "ALTER TABLE session_decisions ADD COLUMN timePrecision TEXT NOT NULL DEFAULT 'unknown'",
+      "ALTER TABLE session_decisions ADD COLUMN quantityShares REAL",
+      "ALTER TABLE session_decisions ADD COLUMN quantityText TEXT",
+      "ALTER TABLE session_decisions ADD COLUMN confidence REAL NOT NULL DEFAULT 0",
+      "ALTER TABLE session_decisions ADD COLUMN needsConfirmation TEXT NOT NULL DEFAULT '[]'",
+    ]) { try { this.db.exec(statement); } catch { /* column already exists */ } }
   }
 
   createRun(id: string, decision: DecisionInput, T0: string, sessionId?: string, userId?: string): ReviewRunRow {
@@ -431,22 +454,22 @@ export class ReviewRepository {
 
   addSessionDecision(input: Omit<SessionDecisionRow, "id" | "reviewId" | "confirmed">): SessionDecisionRow {
     const row: SessionDecisionRow = { ...input, id: `dec_${randomUUID()}`, reviewId: null, confirmed: false };
-    this.db.prepare(`INSERT INTO session_decisions (id,sessionId,userId,symbol,market,action,executedAt,price,quantity,reason,notes,reviewId,confirmed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-      .run(row.id,row.sessionId,row.userId,row.symbol,row.market,row.action,row.executedAt,row.price,row.quantity,row.reason,row.notes,null,0);
+    this.db.prepare(`INSERT INTO session_decisions (id,sessionId,userId,symbol,name,market,action,executedAt,executedAtText,timePrecision,price,quantity,quantityShares,quantityText,confidence,needsConfirmation,reason,notes,reviewId,confirmed) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+      .run(row.id,row.sessionId,row.userId,row.symbol,row.name,row.market,row.action,row.executedAt ?? "",row.executedAtText,row.timePrecision,row.price,row.quantity,row.quantityShares,row.quantityText,row.confidence,JSON.stringify(row.needsConfirmation),row.reason,row.notes,null,0);
     return row;
   }
 
   listSessions(userId: string) { return this.db.prepare(`SELECT * FROM review_sessions WHERE userId=? ORDER BY updatedAt DESC`).all(userId) as Array<Record<string, unknown>>; }
   getSession(id: string, userId: string) { return this.db.prepare(`SELECT * FROM review_sessions WHERE id=? AND userId=?`).get(id,userId) as Record<string, unknown> | null; }
   listMessages(sessionId: string, userId: string) { return this.db.prepare(`SELECT * FROM conversation_messages WHERE sessionId=? AND userId=? ORDER BY createdAt ASC`).all(sessionId,userId) as SessionMessageRow[]; }
-  listSessionDecisions(sessionId: string, userId: string) { return this.db.prepare(`SELECT * FROM session_decisions WHERE sessionId=? AND userId=? ORDER BY rowid ASC`).all(sessionId,userId).map((r: any) => ({ ...r, price: r.price ?? null, quantity: r.quantity ?? null, confirmed: Boolean(r.confirmed) })) as SessionDecisionRow[]; }
+  listSessionDecisions(sessionId: string, userId: string) { return this.db.prepare(`SELECT * FROM session_decisions WHERE sessionId=? AND userId=? ORDER BY rowid ASC`).all(sessionId,userId).map((r: any) => ({ ...r, name: r.name ?? null, executedAt: r.executedAt || null, executedAtText: r.executedAtText ?? "", timePrecision: r.timePrecision ?? "unknown", price: r.price ?? null, quantity: r.quantity ?? null, quantityShares: r.quantityShares ?? r.quantity ?? null, quantityText: r.quantityText ?? null, confidence: r.confidence ?? 0, needsConfirmation: JSON.parse(r.needsConfirmation || "[]"), confirmed: Boolean(r.confirmed) })) as SessionDecisionRow[]; }
   linkDecisionReview(decisionId: string, userId: string, reviewId: string): void { this.db.prepare(`UPDATE session_decisions SET reviewId=?, confirmed=1 WHERE id=? AND userId=?`).run(reviewId, decisionId, userId); }
-  updateSessionDecision(id: string, userId: string, patch: Partial<Pick<SessionDecisionRow, "symbol" | "market" | "action" | "executedAt" | "price" | "quantity" | "reason" | "notes">>): void {
-    const allowed = ["symbol", "market", "action", "executedAt", "price", "quantity", "reason", "notes"] as const;
+  updateSessionDecision(id: string, userId: string, patch: Partial<Pick<SessionDecisionRow, "symbol" | "name" | "market" | "action" | "executedAt" | "executedAtText" | "timePrecision" | "price" | "quantity" | "quantityShares" | "quantityText" | "reason" | "notes">>): void {
+    const allowed = ["symbol", "name", "market", "action", "executedAt", "executedAtText", "timePrecision", "price", "quantity", "quantityShares", "quantityText", "reason", "notes"] as const;
     const entries = Object.entries(patch).filter(([key, value]) => allowed.includes(key as typeof allowed[number]) && value !== undefined);
     if (!entries.length) return;
     const set = entries.map(([key]) => `${key}=?`).join(", ");
-    this.db.prepare(`UPDATE session_decisions SET ${set} WHERE id=? AND userId=?`).run(...entries.map(([, value]) => value ?? null), id, userId);
+    this.db.prepare(`UPDATE session_decisions SET ${set} WHERE id=? AND userId=?`).run(...entries.map(([key, value]) => key === "executedAt" ? (value || "") : (value ?? null)), id, userId);
   }
   listMemories(userId: string) { return this.db.prepare(`SELECT * FROM learning_memories WHERE userId=? AND active=1 ORDER BY updatedAt DESC`).all(userId) as LearningMemoryRow[]; }
   addMemory(userId: string, text: string, kind: LearningMemoryRow["kind"], sourceSessionId: string, sourceDecisionId: string | null): void {

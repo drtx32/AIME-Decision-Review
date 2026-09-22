@@ -90,6 +90,8 @@ curl -fsS https://10jqka-aime.tong-xiao.top/health
 curl -fsS https://10jqka-aime.tong-xiao.top/api/health
 ```
 
+Oracle host deployment evidence confirms the public homepage and `/api/health` returned 200, and public POST `/api/reviews` returned 202. Nginx forwards only to `http://127.0.0.1:13608`; it never targets the internal API port directly. The public URL is verified. Credentialed LLM/Fuyao/iFinD provider smoke remains pending.
+
 A missing/unavailable LLM must not be treated as process death. Service health and model/provider readiness are separate concerns; provider configuration failures must degrade review creation without taking down the API process.
 
 ## Migrating from an old workspace path

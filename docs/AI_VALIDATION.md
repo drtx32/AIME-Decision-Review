@@ -775,3 +775,78 @@ committing runtime secrets or build output.
   evidence rows for audit; a hard-delete maintenance path is not in
   v0.1.
 
+## ELI-358 — P0 archived-vs-active scope regression (PR #26)
+
+**AI / tool used**
+Local CC agent fixing a user-reported regression found in PR #26
+smoke testing: the sidebar's Active / Archived filter chips rendered
+identical lists because `listSessionsForUser` returned a superset for
+the `archived=1` branch.
+
+**Task**
+Tighten the sidebar scope contract so `archived=1` strictly returns
+sessions with `archivedAt IS NOT NULL` and the omitted-`archived`
+default strictly returns sessions with `archivedAt IS NULL`. Pin the
+contract with API regression (disjoint ID sets, search respects scope,
+empty archive truly empty, archive/unarchive moves between scopes) and
+a frontend wire-contract regression for the URL builder.
+
+**Output**
+- `apps/api/src/db/sqlite.ts` — `listSessionsForUser` now derives a
+  `scopeFilter` string (`AND archivedAt IS NOT NULL` vs
+  `AND archivedAt IS NULL`) and applies it to BOTH the no-query and
+  with-query SQL branches, replacing the previous ternary that emitted
+  a no-`archived` filter when `includeArchived=true`. Option renamed
+  to `archived?: boolean` to make the wire contract explicit.
+- `apps/api/src/routes/api.ts` — passes `archived: archivedScope` into
+  `listSessionsForUser`; the `archived=1` / omitted query split is
+  preserved on the wire.
+- `src/sessions-query.ts` — new pure helper `buildSessionsQueryString`
+  exports the URL builder so a regression test can pin the contract
+  without pulling in the Vite `import.meta.env` reference in
+  `src/api.ts`. Active view serializes no `archived` parameter;
+  archived view serializes `archived=1`; `q` is always URL-encoded
+  and combined with the active scope flag.
+- `src/api.ts` — `listSessions` delegates the query-string build to
+  `buildSessionsQueryString`. No behavior change for callers.
+- `apps/api/tests/session-library.test.ts` — 4 new API regression
+  cases: `archived scope is strictly disjoint from active scope`
+  (2 active + 2 archived, asserts disjoint ID sets and the
+  `archivedAt` polarity of each row); `archived=1 with no archived
+  rows returns empty`; `search respects archive scope — no
+  cross-scope leakage` (matches a unique phrase in both an active and
+  an archived row, asserts each scope only returns its own);
+  `archive/unarchive moves session between scopes immediately`.
+- `apps/api/tests/sidebar-filter-frontend-contract.test.ts` — new
+  file, 5 cases pinning the wrapper wire contract (active sends no
+  `archived`; archived sends `archived=1`; `q` is encoded; blank
+  `q` is dropped; the two URLs are mutually exclusive).
+
+**Validation**
+- `bun test` from `apps/api/` — **228 pass / 0 fail** (was 219 before
+  this regression fix; +9 = 4 new API cases + 5 new frontend wire
+  cases).
+- `bun run build` from the repo root — clean (CSS 30.05 kB,
+  JS 841.67 kB; same bundle sizes as before, no new top-level deps).
+- `bun run preflight` — 0 errors (one expected dirty-tree warning
+  pre-commit).
+
+**Human corrections**
+- Switched the option name from `includeArchived` to `archived` so
+  the wire contract is unambiguous; the route handler still maps
+  `?archived=1` to `archived: true`, but the database helper no
+  longer reads as "include archived in the result" (which was the
+  wording that allowed the regression).
+- Extracted `buildSessionsQueryString` as a pure helper instead of
+  testing the wrapper through a JSDOM/React harness; the project has
+  no frontend test runner, and the wire contract is the layer that
+  actually broke.
+
+**Residual risk / unresolved**
+- Same v0.1 LIKE-vs-FTS5 trade-off as the parent entry.
+- The Active / Archived chips still rely on a single `archiveFilter`
+  React state; concurrent toggles during an in-flight request could
+  briefly race the local list. Acceptable for the smoke path;
+  pinning request sequencing is deferred.
+
+

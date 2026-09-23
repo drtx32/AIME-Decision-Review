@@ -209,7 +209,12 @@ Conversation library routes (ELI-358) are user-scoped and never leak across
 users:
 
 - `GET /api/sessions?q=&archived=1` — list with optional full-content search
-  and archive scope.
+  and archive scope. `archived=1` strictly scopes to sessions with
+  `archivedAt IS NOT NULL`; an omitted `archived` parameter strictly
+  scopes to sessions with `archivedAt IS NULL`. The two scopes return
+  disjoint ID sets; the `archived=1` branch never falls back to a
+  superset that includes active rows. Soft-deleted sessions are excluded
+  from both scopes.
 - `POST /api/sessions` — create + extract; title is auto-derived from
   extracted symbols unless the user has manually renamed the session.
 - `GET /api/sessions/:id`

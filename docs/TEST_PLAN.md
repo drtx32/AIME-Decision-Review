@@ -76,6 +76,16 @@ Expected:
 - archive hides the session from the default Recent Reviews view, the
   session can be unarchived, and the `Active / Archived` filter chip
   switches scope;
+- the Active and Archived tabs return **strictly disjoint** result ID
+  sets; the `?archived=1` branch never falls back to a superset of the
+  active rows (P0 regression on PR #26). With 2 active + 2 archived
+  sessions the two tabs share zero rows; an archived-only run renders
+  an empty archive list, not a fallback to the active list;
+- search respects the selected scope — searching inside the Archived
+  tab never leaks an active row whose message body matches, and
+  vice versa;
+- archive / unarchive moves the row between scopes immediately, with
+  no manual refresh needed;
 - kebab menu clicks never open the session — the kebab trigger and
   row click are distinct.
 

@@ -182,6 +182,109 @@ describe("Conversation library — ELI-358", () => {
     expect(afterUnarchive.sessions.some((s: any) => s.id === body.sessionId)).toBe(true);
   });
 
+  test("archived scope is strictly disjoint from active scope (P0 regression)", async () => {
+    // Regression: previously `?archived=1` returned a superset that
+    // included active rows. Both tabs appeared identical in user smoke.
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "eleven", "eleven-pass");
+    ctx.deps.provider = { id: "test", modelName: "test", configured: true, complete: async (req) => req.schemaHint ? { text: JSON.stringify({ decisions: [exactDecision] }) } : { text: "继续" } } satisfies ModelProvider;
+
+    // Create 2 active + 2 archived sessions.
+    const ids: { active: string[]; archived: string[] } = { active: [], archived: [] };
+    for (let i = 0; i < 4; i++) {
+      const r = await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ message: `买入 万科A 第 ${i + 1} 笔` }) });
+      const j = (await r.json()) as any;
+      if (i < 2) ids.active.push(j.sessionId);
+      else {
+        ids.archived.push(j.sessionId);
+        const arch = await ctx.app.request(`/api/sessions/${j.sessionId}/archive`, { method: "POST", headers: { cookie } });
+        expect(arch.status).toBe(200);
+      }
+    }
+
+    // Active view (no query / `archived` omitted): only active IDs.
+    const active = (await (await ctx.app.request("/api/sessions", { headers: { cookie } })).json() as any).sessions as Array<{ id: string; archivedAt: string | null }>;
+    const activeIds = new Set(active.map((s) => s.id));
+    for (const id of ids.active) expect(activeIds.has(id)).toBe(true);
+    for (const id of ids.archived) expect(activeIds.has(id)).toBe(false);
+    // Active rows must report archivedAt IS NULL.
+    for (const row of active) expect(row.archivedAt).toBeNull();
+
+    // Archive view (`archived=1`): only archived IDs.
+    const archived = (await (await ctx.app.request("/api/sessions?archived=1", { headers: { cookie } })).json() as any).sessions as Array<{ id: string; archivedAt: string | null }>;
+    const archivedIds = new Set(archived.map((s) => s.id));
+    for (const id of ids.archived) expect(archivedIds.has(id)).toBe(true);
+    for (const id of ids.active) expect(archivedIds.has(id)).toBe(false);
+    // Archived rows must report archivedAt IS NOT NULL.
+    for (const row of archived) expect(row.archivedAt).toBeTruthy();
+
+    // Disjointness — the two result sets must not share any ID.
+    for (const id of activeIds) expect(archivedIds.has(id)).toBe(false);
+  });
+
+  test("archived=1 with no archived rows returns empty (no fallback to active)", async () => {
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "eleven", "eleven-pass");
+    ctx.deps.provider = { id: "test", modelName: "test", configured: true, complete: async (req) => req.schemaHint ? { text: JSON.stringify({ decisions: [exactDecision] }) } : { text: "继续" } } satisfies ModelProvider;
+
+    // Two active sessions, none archived.
+    await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ message: "买入 A" }) });
+    await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ message: "买入 B" }) });
+
+    const active = await (await ctx.app.request("/api/sessions", { headers: { cookie } })).json() as any;
+    expect(active.sessions.length).toBe(2);
+
+    const archived = await (await ctx.app.request("/api/sessions?archived=1", { headers: { cookie } })).json() as any;
+    expect(archived.sessions).toEqual([]);
+  });
+
+  test("search respects archive scope — no cross-scope leakage", async () => {
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "eleven", "eleven-pass");
+    ctx.deps.provider = { id: "test", modelName: "test", configured: true, complete: async (req) => req.schemaHint ? { text: JSON.stringify({ decisions: [exactDecision] }) } : { text: "OK" } } satisfies ModelProvider;
+
+    // Active session whose message body mentions the unique phrase.
+    const activeCreate = await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ message: "买入 万科A" }) });
+    const activeId = (await activeCreate.json() as any).sessionId;
+    await ctx.app.request(`/api/sessions/${activeId}/messages`, { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ content: "买入 300750 宁德线索 active-only" }) });
+
+    // Archived session whose message body also mentions the same phrase.
+    const archivedCreate = await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ message: "买入 招商银行" }) });
+    const archivedId = (await archivedCreate.json() as any).sessionId;
+    await ctx.app.request(`/api/sessions/${archivedId}/archive`, { method: "POST", headers: { cookie } });
+    await ctx.app.request(`/api/sessions/${archivedId}/messages`, { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ content: "买入 300750 宁德线索 archived-only" }) });
+
+    // Active search must return only the active row, even though both bodies match.
+    const activeSearch = (await (await ctx.app.request(`/api/sessions?q=${encodeURIComponent("300750")}`, { headers: { cookie } })).json() as any).sessions as Array<{ id: string }>;
+    expect(activeSearch.map((s) => s.id)).toEqual([activeId]);
+
+    // Archived search must return only the archived row.
+    const archivedSearch = (await (await ctx.app.request(`/api/sessions?q=${encodeURIComponent("300750")}&archived=1`, { headers: { cookie } })).json() as any).sessions as Array<{ id: string }>;
+    expect(archivedSearch.map((s) => s.id)).toEqual([archivedId]);
+  });
+
+  test("archive/unarchive moves session between scopes immediately", async () => {
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "eleven", "eleven-pass");
+    ctx.deps.provider = { id: "test", modelName: "test", configured: true, complete: async (req) => req.schemaHint ? { text: JSON.stringify({ decisions: [exactDecision] }) } : { text: "继续" } } satisfies ModelProvider;
+
+    const created = await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ message: "买入 万科A" }) });
+    const sessionId = (await created.json() as any).sessionId;
+
+    const getActive = async () => (await (await ctx.app.request("/api/sessions", { headers: { cookie } })).json() as any).sessions as Array<{ id: string }>;
+    const getArchived = async () => (await (await ctx.app.request("/api/sessions?archived=1", { headers: { cookie } })).json() as any).sessions as Array<{ id: string }>;
+
+    // Initial — active.
+    expect((await getActive()).some((s) => s.id === sessionId)).toBe(true);
+    expect((await getArchived()).some((s) => s.id === sessionId)).toBe(false);
+
+    // Archive.
+    await ctx.app.request(`/api/sessions/${sessionId}/archive`, { method: "POST", headers: { cookie } });
+    expect((await getActive()).some((s) => s.id === sessionId)).toBe(false);
+    expect((await getArchived()).some((s) => s.id === sessionId)).toBe(true);
+
+    // Unarchive.
+    await ctx.app.request(`/api/sessions/${sessionId}/unarchive`, { method: "POST", headers: { cookie } });
+    expect((await getActive()).some((s) => s.id === sessionId)).toBe(true);
+    expect((await getArchived()).some((s) => s.id === sessionId)).toBe(false);
+  });
+
   test("soft delete hides session everywhere, even another user cannot read it", async () => {
     const aliceCookie = await loginAndCookie(ctx.app, ctx.userRepo, "alice", "alice-pass");
     const bobCookie = await loginAndCookie(ctx.app, ctx.userRepo, "bob", "bob-pass");

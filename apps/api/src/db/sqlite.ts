@@ -60,6 +60,7 @@ export interface SessionMessageRow {
   userId: string;
   role: "user" | "assistant" | "status";
   content: string;
+  reasoning?: string | null;
   createdAt: string;
   state?: "accepted" | "extracting" | "needs_input" | "failed" | "completed" | "cancelled";
   errorMessage?: string | null;
@@ -176,6 +177,7 @@ export class ReviewRepository {
         userId TEXT NOT NULL,
         role TEXT NOT NULL,
         content TEXT NOT NULL,
+        reasoning TEXT,
         createdAt TEXT NOT NULL,
         state TEXT NOT NULL DEFAULT 'accepted',
         errorMessage TEXT,
@@ -240,6 +242,7 @@ export class ReviewRepository {
       "ALTER TABLE session_decisions ADD COLUMN needsConfirmation TEXT NOT NULL DEFAULT '[]'",
     ]) { try { this.db.exec(statement); } catch { /* column already exists */ } }
     for (const statement of [
+      "ALTER TABLE conversation_messages ADD COLUMN reasoning TEXT",
       "ALTER TABLE conversation_messages ADD COLUMN state TEXT NOT NULL DEFAULT 'accepted'",
       "ALTER TABLE conversation_messages ADD COLUMN errorMessage TEXT",
       "ALTER TABLE conversation_messages ADD COLUMN deletedAt TEXT",
@@ -455,10 +458,10 @@ export class ReviewRepository {
       .run(status, new Date().toISOString(), id, userId);
   }
 
-  addMessage(sessionId: string, userId: string, role: SessionMessageRow["role"], content: string, state: SessionMessageRow["state"] = "accepted", errorMessage: string | null = null): SessionMessageRow {
-    const row = { id: `msg_${randomUUID()}`, sessionId, userId, role, content, state, errorMessage, createdAt: new Date().toISOString() };
-    this.db.prepare(`INSERT INTO conversation_messages (id,sessionId,userId,role,content,createdAt,state,errorMessage) VALUES (?,?,?,?,?,?,?,?)`)
-      .run(row.id, row.sessionId, row.userId, row.role, row.content, row.createdAt, row.state, row.errorMessage);
+  addMessage(sessionId: string, userId: string, role: SessionMessageRow["role"], content: string, state: SessionMessageRow["state"] = "accepted", errorMessage: string | null = null, reasoning: string | null = null): SessionMessageRow {
+    const row = { id: `msg_${randomUUID()}`, sessionId, userId, role, content, reasoning, state, errorMessage, createdAt: new Date().toISOString() };
+    this.db.prepare(`INSERT INTO conversation_messages (id,sessionId,userId,role,content,reasoning,createdAt,state,errorMessage) VALUES (?,?,?,?,?,?,?,?,?)`)
+      .run(row.id, row.sessionId, row.userId, row.role, row.content, row.reasoning, row.createdAt, row.state, row.errorMessage);
     this.db.prepare(`UPDATE review_sessions SET updatedAt=? WHERE id=? AND userId=?`).run(row.createdAt, sessionId, userId);
     return row;
   }

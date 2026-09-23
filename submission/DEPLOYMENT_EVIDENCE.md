@@ -170,10 +170,11 @@ production deploy.
 
 ## Outstanding deployment notes
 
-- **Markdown / CoT / conversation routing** (PR #30, ELI-355) is **pending**
-  merge. The final deployed SHA must be re-captured after PR #30 lands
-  and a fresh deploy completes; the SHA recorded above is the last
-  pre-PR-#30 successful deploy.
+- **Markdown / CoT / conversation routing** (PR #30, ELI-355) **merged**
+  at `171907b`. ELI-362 (T0 datetime hotfix) and ELI-360 (user BYOK
+  browser-local) are still **running**; the final deployed SHA at
+  archive time must be re-captured once those land and a fresh
+  `docker compose up -d --build` completes.
 - **T0 datetime hotfix** (ELI-362) is **running**. Final deploy must
   happen on a SHA that contains this fix.
 - **User BYOK browser-local fix** (ELI-360) is **running**. Final

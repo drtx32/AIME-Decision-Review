@@ -210,8 +210,10 @@ omissions.
   running production deployment. Last successful production deploy SHA
   captured: `de426576` (merge of PR #27). Main has advanced to
   `b87e8fb` (ELI-358 archived-vs-active scope fix) and is moving
-  through PR #30 (ELI-355 Markdown / CoT / conversation routing),
-  ELI-362 (T0 datetime hotfix), and ELI-360 (user BYOK browser-local).
+  with PR #30 (ELI-355 Markdown / CoT / conversation routing) now
+  merged at 171907b. ELI-362 (T0 datetime hotfix) and ELI-360 (user
+  BYOK browser-local) are still running; final deployed SHA at archive
+  time must be re-captured once those land.
   The final deployed SHA recorded in `submission/DEPLOYMENT_EVIDENCE.md`
   must be re-captured when those PRs land and a fresh
   `docker compose up -d --build` completes.

@@ -232,17 +232,15 @@ the submission. They are also tracked per-case in
   adapters in the absence of credentials.
 - **Visual regression not automated.** Responsive desktop layout (T15)
   is verified manually; no Playwright/Cypress harness in this slice.
-- **Production deployment not yet executed.** `submission/DEPLOYMENT_EVIDENCE.md`
-  remains the unfilled template; the public Web URL placeholder and the
-  exact final deployed SHA are `UNKNOWN` until the production deploy
-  step lands (out of scope for ELI-340).
-- **P0 fixes status (as of `main` `b87e8fb`).** ELI-354 (chat
-  interaction primitives) merged. ELI-358 (P0 archived-vs-active scope)
-  merged at `b87e8fb`. PR #30 / ELI-355 (Markdown / CoT / conversation
-  routing) is **pending**. ELI-362 (T0 datetime hotfix) and ELI-360
-  (user BYOK browser-local) are **running**. This package documents the
-  state at the recorded SHA; later fixes land in a follow-up PR before
-  the final archive SHA is captured.
+- **Production deployment running.** `submission/DEPLOYMENT_EVIDENCE.md`
+  is the materialized record of the running production deployment on the
+  canonical path `/root/projects/aime-decision-review`. Last successful
+  production deploy SHA captured: `de42657` (merge of PR #27, MCP routing
+  hardening). Main has since advanced to `171907b` (PR #30 / ELI-355
+  Markdown / CoT / conversation routing merged). ELI-362 (T0 datetime
+  hotfix) and ELI-360 (user BYOK browser-local) are still **running**;
+  the final deployed SHA at archive time must be re-captured once those
+  land and a fresh `docker compose up -d --build` completes.
 - **Scanned / image-only PDFs are not OCR'd in v0.1** unless a verified
   vision capability is configured. Vision probing is explicitly opt-in
   (`d1a2e8c`).

@@ -317,7 +317,7 @@ code path it exercised matches the production review path.
 
 - **Source code path**: `docker-compose.yml` + `docs/DEPLOYMENT.md`.
 - **Status**: 🟡 **Partial — production running, final deployed SHA
-  pending close-out of PR #30 (ELI-355) and ELI-362 / ELI-360**. Last
+  pending close-out of ELI-362 / ELI-360 (PR #30 / ELI-355 already merged at 171907b)**. Last
   successful production deploy SHA captured: `de426576` (merge of
   PR #27 — MCP routing hardening). Main has since advanced to
   `b87e8fb` (ELI-358 archived-vs-active scope fix). Final deployed

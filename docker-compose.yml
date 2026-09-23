@@ -16,7 +16,7 @@ services:
       # a public credential. INITIAL_ADMIN_USERNAME is a public label and
       # defaults to "admin".
       INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
-      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?INITIAL_ADMIN_PASSWORD is required (set it in .env or the deployment secret store)}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
       LLM_PROVIDER: ${LLM_PROVIDER:-mock}
       LLM_MODEL: ${LLM_MODEL:-mvp-mock-model}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
@@ -39,6 +39,7 @@ services:
       timeout: 3s
       retries: 12
       start_period: 5s
+    restart: unless-stopped
 
   web:
     build:
@@ -51,6 +52,7 @@ services:
         condition: service_healthy
     ports:
       - "${WEB_PORT:-13608}:80"
+    restart: unless-stopped
 
 volumes:
   api-data:

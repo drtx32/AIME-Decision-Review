@@ -138,8 +138,8 @@ describe("ELI-326: API stays healthy with missing LLM config", () => {
   test("boot with no LLM env → API healthy (/health 200, provider_configured: false)", async () => {
     await withNoLlmEnv(async () => {
       const cfg = buildConfigWithoutLLM();
-      const { app, repo, userRepo } = buildServer(cfg);
-      ctx = { app, deps: { config: cfg } as never, repo, userRepo, cfg, cleanup: () => { repo.close(); userRepo.close(); } };
+      const { app, repo, userRepo, settingsRepo } = buildServer(cfg);
+      ctx = { app, deps: { config: cfg } as never, repo, userRepo, settingsRepo, cfg, cleanup: () => { repo.close(); userRepo.close(); settingsRepo.close(); } };
 
       const res = await app.request("/health");
       expect(res.status).toBe(200);
@@ -174,8 +174,8 @@ describe("ELI-326: API stays healthy with missing LLM config", () => {
   test("POST /api/reviews with no provider → controlled 503 + stable code MODEL_NOT_CONFIGURED", async () => {
     await withNoLlmEnv(async () => {
       const cfg = buildConfigWithoutLLM();
-      const { app, repo, userRepo } = buildServer(cfg);
-      ctx = { app, deps: { config: cfg } as never, repo, userRepo, cfg, cleanup: () => { repo.close(); userRepo.close(); } };
+      const { app, repo, userRepo, settingsRepo } = buildServer(cfg);
+      ctx = { app, deps: { config: cfg } as never, repo, userRepo, settingsRepo, cfg, cleanup: () => { repo.close(); userRepo.close(); settingsRepo.close(); } };
       const cookie = await loginAndCookie(app, userRepo, "nollm-user", "nollm-pass-12345");
 
       const res = await app.request("/api/reviews", {
@@ -209,8 +209,8 @@ describe("ELI-326: API stays healthy with missing LLM config", () => {
   test("/health remains 200 after a provider call failure (mock provider failure path)", async () => {
     await withNoLlmEnv(async () => {
       const cfg = buildConfigWithoutLLM();
-      const { app, repo, userRepo } = buildServer(cfg);
-      ctx = { app, deps: { config: cfg } as never, repo, userRepo, cfg, cleanup: () => { repo.close(); userRepo.close(); } };
+      const { app, repo, userRepo, settingsRepo } = buildServer(cfg);
+      ctx = { app, deps: { config: cfg } as never, repo, userRepo, settingsRepo, cfg, cleanup: () => { repo.close(); userRepo.close(); settingsRepo.close(); } };
       const cookie = await loginAndCookie(app, userRepo, "health-user", "health-pass-12345");
 
       // Trigger a 503 by submitting a review.
@@ -236,8 +236,8 @@ describe("ELI-326: API stays healthy with missing LLM config", () => {
 
   test("mock provider path keeps existing review flow working (sanity)", async () => {
     const cfg = makeTestConfig();
-    const { app, deps, repo, userRepo, cleanup } = makeTestServer();
-    ctx = { app, deps, repo, userRepo, cfg, cleanup };
+    const { app, deps, repo, userRepo, settingsRepo, cleanup } = makeTestServer();
+    ctx = { app, deps, repo, userRepo, settingsRepo, cfg, cleanup };
     const cookie = await loginAndCookie(app, userRepo, "sanity-user", "sanity-pass-12345");
 
     const created = await app.request("/api/reviews", {
@@ -468,8 +468,8 @@ describe("ELI-326: secret-redaction safety in route error responses", () => {
   test("error response body contains no api key or Authorization header", async () => {
     await withNoLlmEnv(async () => {
       const cfg = buildConfigWithoutLLM();
-      const { app, repo, userRepo } = buildServer(cfg);
-      ctx = { app, deps: { config: cfg } as never, repo, userRepo, cfg, cleanup: () => { repo.close(); userRepo.close(); } };
+      const { app, repo, userRepo, settingsRepo } = buildServer(cfg);
+      ctx = { app, deps: { config: cfg } as never, repo, userRepo, settingsRepo, cfg, cleanup: () => { repo.close(); userRepo.close(); settingsRepo.close(); } };
 
       const res = await app.request("/api/reviews", {
         method: "POST",

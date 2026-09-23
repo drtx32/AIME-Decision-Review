@@ -12,6 +12,7 @@ import { DecisionInputSchema, type DecisionInput, type DecisionReviewResult, typ
 import type { AppConfig } from "../config.ts";
 import type { ReviewRepository } from "../db/sqlite.ts";
 import type { UserRepository } from "../auth/repository.ts";
+import type { SettingsRepository } from "../settings/repository.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
 import { DecisionReviewAgent } from "../agents/decision-review.ts";
 import { DecisionExtractorAgent } from "../agents/decision-extractor.ts";
@@ -22,11 +23,13 @@ import { buildAuthRoutes } from "../auth/routes.ts";
 import { buildAdminRoutes } from "../auth/admin.ts";
 import { AttachmentService } from "../attachments/service.ts";
 import { buildAttachmentRoutes } from "../attachments/routes.ts";
+import { buildSettingsRoutes, buildUsageRoute, buildCapabilitiesRoute } from "../settings/routes.ts";
 
 export interface RouteDeps {
   config: AppConfig;
   repo: ReviewRepository;
   userRepo: UserRepository;
+  settingsRepo: SettingsRepository;
   registry: McpRegistry;
   provider: ModelProvider;
   attachments?: AttachmentService;
@@ -62,6 +65,9 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   const modelSecret = config.modelConfigSecret || config.initialAdmin.password || "aime-model-config-local-secret";
   const auth = buildAuthRoutes(deps.userRepo, config.isProduction);
   const admin = buildAdminRoutes(deps.userRepo);
+  const settings = buildSettingsRoutes({ settingsRepo: deps.settingsRepo });
+  const usage = buildUsageRoute({ settingsRepo: deps.settingsRepo });
+  const capabilities = buildCapabilitiesRoute();
   const modelUnavailable = "当前未配置可用的大模型服务，请联系管理员。";
   const providerForUser = (userId: string): ModelProvider => {
     const saved = deps.userRepo.getModelConfig(userId);
@@ -370,6 +376,10 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
 
   // Admin endpoints — guarded inside buildAdminRoutes.
   app.route("/api/admin", admin);
+
+  app.route("/api/settings", settings);
+  app.route("/api/usage", usage);
+  app.route("/api/models/capabilities", capabilities);
 
   return app;
 }

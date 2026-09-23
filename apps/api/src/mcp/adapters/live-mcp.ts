@@ -108,7 +108,19 @@ export class LiveMcpAdapter implements EvidenceAdapter {
       const client = this.getClient();
       const tools = await client.listTools();
       const toolInfo = tools.find((tool) => tool.name === toolName);
-      const result = await client.callTool(toolName, buildToolArgs(toolInfo?.inputSchema, req));
+      if (!toolInfo) {
+        // Never call an operator-mapped name that this server did not
+        // advertise. This turns stale config into an explicit permanent error
+        // instead of a guessed-tool 403 and preserves the sanitized tool map
+        // as the source of truth.
+        return wrapPermanentError(
+          `${this.provider.toUpperCase()}_TOOL_NOT_LISTED`,
+          `Configured tool ${toolName} was not advertised by ${this.serverKey}.`,
+          retrievedAt,
+          Date.now() - start
+        );
+      }
+      const result = await client.callTool(toolName, buildToolArgs(toolInfo.inputSchema, req));
       if (result.isError) {
         return wrapPermanentError(
           `${this.provider.toUpperCase()}_TOOL_ERROR`,

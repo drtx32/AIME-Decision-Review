@@ -19,6 +19,34 @@ than a successful validation result.
 
 This file records how AI tools are used in the project, what they generated, how outputs were checked, and what humans corrected.
 
+## ELI-318 MCP routing hardening — 2026-09-23
+
+**AI/tool used**
+- Oracle Codex with Bun 1.4.2, local TypeScript tests, and repository-only inspection.
+
+**Task**
+- Remediate the production MCP failure boundaries reported by the current smoke: cross-server guessed-tool dispatch, stale tool maps, and secondary-source failures incorrectly terminating a review.
+
+**Output**
+- Review plans now pass their preferred server allow-list into registry resolution, so a mapped tool is not dispatched to unrelated registries.
+- Live MCP calls now require the configured tool to be present in that server's authenticated `tools/list`; absent tools return an explicit `permanent_error` without a `tools/call` request.
+- A review with at least one successful source and a secondary permanent failure is `partial`, preserving both evidence and failure status. A run with no successful source remains `failed`.
+- Compose now passes server-specific tool maps and endpoint suffix maps to the API container. No values were added to the repository.
+
+**Validation**
+- `apps/api`: `bun run typecheck` passed; `bun test` passed (211 tests, 903 expectations).
+- Added regression coverage for preferred-server routing and no-call-on-unadvertised-tool behavior.
+- Frontend: `npm run build` passed; Vite emitted only existing configuration/chunk-size warnings.
+- `git diff --check` passed.
+- Repository/runtime environment inspection found all credential variables unset; no credentialed production probe was attempted and no real-provider/MCP success is claimed here.
+- Read-only public health check at `https://10jqka-aime.tong-xiao.top/api/health` returned `provider=mock`, `provider_configured=false`, `provider_status=unconfigured`, `requested_mode=mock`, `degraded=true`, and configured server keys `meta`, `a-share`, `stock`, `news`, `index` at `2026-09-23T07:30:34Z`. This confirms the current public host is not an accepted real-provider/MCP Golden Path.
+
+**Human corrections**
+- Kept the fix limited to routing, tool discovery safety, failure semantics, and deployment variable plumbing; did not guess or commit provider tool names.
+
+**Residual risk / unresolved**
+- The canonical host still requires an operator with access to the production secret store to run authenticated `initialize → tools/list` for each enabled server, select verified submission-path tools, and execute the current Golden Path. This local run cannot attest to current production connectivity.
+
 ## Rules
 
 - Never paste secrets, API keys, Authorization headers, cookies, or sensitive user data.

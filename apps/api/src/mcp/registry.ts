@@ -38,8 +38,8 @@ export interface McpRegistry {
   configuredKeys(): McpServerKey[];
   /** Resolve (and lazily construct) an adapter for a single server key. */
   resolve(key: McpServerKey): EvidenceAdapter | null;
-  /** List all adapters whose `canHandle(intent)` matches. */
-  resolveFor(intent: AdapterRequest["intent"]): EvidenceAdapter[];
+  /** List adapters for an intent, optionally restricted to planned servers. */
+  resolveFor(intent: AdapterRequest["intent"], preferredServers?: McpServerKey[]): EvidenceAdapter[];
 }
 
 type AdapterRequest = { intent: AdapterIntent };
@@ -113,11 +113,18 @@ export function buildMcpRegistry(cfg: AppConfig): McpRegistry {
     return adapter;
   }
 
-  function resolveFor(intent: AdapterIntent): EvidenceAdapter[] {
-    const keys: McpServerKey[] = [
+  function resolveFor(intent: AdapterIntent, preferredServers: McpServerKey[] = []): EvidenceAdapter[] {
+    const configuredKeys: McpServerKey[] = [
       ...(configuredFuyao as Set<FuyaoServerKey>),
       ...(configuredIFind as Set<IFindServerKey>),
     ];
+    // A plan's preferred servers are an allow-list. Without this filter a
+    // shared/global tool map can cause the same guessed tool to be sent to
+    // unrelated MCP registries, producing avoidable 403s.
+    const preferred = new Set(preferredServers);
+    const keys = preferredServers.length > 0
+      ? configuredKeys.filter((key) => preferred.has(key))
+      : configuredKeys;
     const out: EvidenceAdapter[] = [];
     for (const key of keys) {
       const adapter = resolve(key);

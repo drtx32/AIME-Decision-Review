@@ -345,6 +345,25 @@ describe("McpStreamableHttpClient — real MCP protocol", () => {
   });
 });
 
+describe("LiveMcpAdapter — mapped tool safety", () => {
+  test("does not call a mapped tool absent from tools/list", async () => {
+    const fake = await startFakeMcpServer({ toolsList: [{ name: "actual_tool" }] });
+    const adapter = new LiveMcpAdapter({
+      provider: "fuyao",
+      serverKey: "a-share",
+      endpoint: fake.url,
+      credentials: { apiKey: "test-key" },
+      toolForIntent: () => "stale_tool",
+    });
+    const result = await adapter.fetch({ intent: "price", symbol: "600519", T0: "2024-03-15T00:00:00Z" });
+    expect(result.status).toBe("permanent_error");
+    expect(result.error?.code).toBe("FUYAO_TOOL_NOT_LISTED");
+    expect(fake.captured.some((entry) => (entry.body as { method?: string }).method === "tools/call")).toBe(false);
+    await adapter.close();
+    fake.close();
+  });
+});
+
 describe("schema-driven MCP arguments", () => {
   test("maps Fuyao symbols and historical dates without generic extras", () => {
     expect(buildToolArgs({ properties: { symbols: {}, start_date: {}, end_date: {} } }, {

@@ -148,11 +148,15 @@ export class DecisionReviewAgent {
 
     // Decide terminal status.
     const hasPermanent = toolStatuses.some((s) => s.status === "permanent_error");
+    const hasSuccess = toolStatuses.some((s) => s.status === "success");
     const allEmpty = toolStatuses.every((s) => s.status === "empty");
     const hasTransient = toolStatuses.some((s) => s.status === "transient_error");
     const judgmentDegraded = draft.uncertainties.some((item) => item.startsWith("Structured model judgment" ) || item.startsWith("A model attribution") || item.startsWith("No model attribution"));
     let terminal: ReviewStatus = "completed";
-    if (hasPermanent) terminal = "failed";
+    // A broken secondary source must not erase a usable primary result. Keep
+    // the failure visible in toolStatuses and mark the review partial; only a
+    // run with no successful source is terminally failed.
+    if (hasPermanent) terminal = hasSuccess ? "partial" : "failed";
     else if (allEmpty || hasTransient || judgmentDegraded) terminal = "partial";
 
     repo.updateStatus(reviewId, terminal, { finishedAt: new Date().toISOString() });
@@ -177,7 +181,7 @@ export class DecisionReviewAgent {
     const toolStatuses: ToolStatusRow[] = [];
 
     for (const step of plan) {
-      const adapters = this.deps.registry.resolveFor(step.intent);
+      const adapters = this.deps.registry.resolveFor(step.intent, step.preferredServers);
       if (adapters.length === 0) {
         toolStatuses.push({
           tool: step.intent,

@@ -154,7 +154,7 @@ describe("Conversation session contract", () => {
 
   test("requires an actual T0 before review and sends follow-up through provider", async () => {
     let call = 0;
-    const provider: ModelProvider = { id: "test", modelName: "test", configured: true, complete: async (req) => { call += 1; return req.schemaHint ? { text: JSON.stringify({ decisions: [{ ...extraction.decisions[2] }] }) } : { text: "基于当前 session 的证据，建议先检查失效条件。" }; } };
+    const provider: ModelProvider = { id: "test", modelName: "test", configured: true, complete: async (req) => { call += 1; return req.schemaHint ? { text: JSON.stringify({ decisions: [{ ...extraction.decisions[2] }] }) } : { text: "<think>先核对证据边界，再回答用户。</think>**结论**：基于当前 session 的证据，建议先检查失效条件。\n\n- 保留反向证据\n- 核对时间戳" }; } };
     ctx.deps.provider = provider;
     const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "alice", "alice-pass");
     const created = await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ message: "今天卖出中粮糖业" }) });
@@ -166,7 +166,15 @@ describe("Conversation session contract", () => {
     expect(update.status).toBe(200);
     const response = await ctx.app.request(`/api/sessions/${sessionId}/messages`, { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ content: "当前最重要的反向证据是什么？" }) });
     expect(response.status).toBe(201);
-    expect((await response.json() as any).message.content).toContain("当前 session");
+    const followupBody = await response.json() as any;
+    expect(followupBody.message.content).toContain("**结论**");
+    expect(followupBody.message.content).toContain("当前 session");
+    expect(followupBody.message.content).not.toContain("<think>");
+    expect(followupBody.message.reasoning).toContain("先核对证据边界");
+    const restoredAfterFollowup = await (await ctx.app.request(`/api/sessions/${sessionId}`, { headers: { cookie } })).json() as any;
+    const assistantMessage = restoredAfterFollowup.messages.find((message: any) => message.role === "assistant");
+    expect(assistantMessage.reasoning).toContain("先核对证据边界");
+    expect(assistantMessage.content).not.toContain("<think>");
     expect(call).toBe(2);
   });
 

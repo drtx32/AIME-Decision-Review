@@ -107,6 +107,38 @@ This file records how AI tools are used in the project, what they generated, how
 **Residual risk / unresolved**
 - The real provider and real upstream payload semantics still require credentialed host verification before submission. Price snapshot observation timestamps are usable for placing that snapshot around T0; they are not treated as news/event publication timestamps.
 
+## ELI-355 conversation routing, capability status & CoT hygiene — 2026-09-23
+
+**AI/tool used**
+- Local OC on Windows with the Multica runtime; Bun 1.2.19 / bun test; TypeScript `tsc --noEmit`; Vite/Vitest 5 for the frontend; implementation in React + TypeScript + Vite (root).
+
+**Task**
+- First-turn conversation routing: a trade narrative sent through `POST /api/sessions/:id/messages` on a session without structured decisions must enter extraction → confirmation state, never a generic follow-up chat reply.
+- Capability questions ("MCP/Fuyao/iFinD 能不能用") must be answered from backend runtime status, not the generic LLM, must not demand a structured-data template, must not expose credentials/URLs/tool names, and must work on an empty session.
+- Raw provider chain-of-thought must never be persisted to or served from conversation content.
+- After a confirmed review, worklog ActivityEvents (tool_completed/tool_updated/reasoning_summary) must coexist with the persisted assistant review summary, and follow-ups must be grounded in stored results without invoking MCP.
+- Frontend markdown rendering must use a standard sanitized renderer (react-markdown + remark-gfm with raw-HTML stripping and safe-link guard).
+
+**Output**
+- `routes/api.ts` `/messages` now: detects capability questions first (token × intent, e.g. "MCP" + "能用"), answers from `buildRuntimeStatus`/`formatRuntimeStatusMessage` (`capability-status.ts`) without a provider-availability gate and without invoking the LLM; persists the user question; otherwise gates on provider readiness, persists the user message as `extracting`, and routes decision-free sessions into `DecisionExtractorAgent`, then to follow-up only once decisions exist.
+- Provider state is config-honest: `configured-unverified` (creds + tool map + servers; "已配置…本轮未进行实际连接验证"), `degraded` (creds without tool map; will not call remote sources), `not-configured`. Manager note: config-based, not live-verified — real credentialed Fuyao/iFinD validation on a review host is still required before submission (unchanged known limitation).
+- `chain-of-thought.ts` strips `<thinking>`/```think fences from provider text before persistence; verified end-to-end that the secret never appears in stored/returned conversation content.
+- Frontend `MarkdownText.tsx` renders assistant/status messages with react-markdown + remark-gfm, `skipHtml` plus a raw-HTML pre-pass (dangerous elements removed whole, other tags stripped, `<` escaped), and drops `javascript:`/`vbscript:`/`data:` links; user messages remain plain `<p>`. Label changed from "AIME REVIEW AGENT" to "AIME".
+- Root `package.json` gained react-markdown ^10.1.0, remark-gfm ^4.0.1, vitest ^5.0.1 and `"test": "vitest run"`; CI frontend job runs `npm test`.
+
+**Validation**
+- Backend `bun run typecheck` passed; `bun test`: 216 pass / 0 fail across 15 files (was 209/14; +7 new ELI-355 regressions).
+- New `tests/eli-355-session-routing.test.ts`: first-turn extraction→accepted→draft; capability answer without LLM calls and without echoing `FUYAO_KEY_XYZZY`/`IFIND_AUTH_XYZZY`/secret base URLs; CoT never persisted; confirmed review persists assistant summary AND tool activities while follow-up is MCP-free (fetch counter unchanged).
+- Frontend `npm test`: 5 pass (MarkdownText sanitization suite); `npm run build` (tsc -b && vite build) succeeded.
+- No secrets printed or committed; secrets/URLs asserted absent from capability output and activity JSON.
+
+**Human corrections**
+- None outstanding; prior-pr discipline: changes are limited to routing, chain-of-thought, capability status, frontend rendering, root package.json/test deps, CI, docs.
+
+**Residual risk / unresolved**
+- Provider capability is config-derived (`configured-unverified`), not proven by a live call on a credentialed host.
+- `docs/TEST_PLAN.md` unchanged: the new behavior is expressed as backend/frontend regression tests rather than a new manual case requirement.
+
 ## Initial project decisions — 2026-09-22
 
 **AI/tool used**

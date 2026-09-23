@@ -18,6 +18,8 @@ import { DecisionReviewAgent } from "../agents/decision-review.ts";
 import { DecisionExtractorAgent } from "../agents/decision-extractor.ts";
 import { LazyResilientProvider, type LLMCompletionRequest, type LLMCompletion, type ModelProvider } from "../providers/index.ts";
 import { OpenAICompatibleProvider } from "../providers/openai-compatible.ts";
+import { stripChainOfThought } from "../lib/chain-of-thought.ts";
+import { detectCapabilityQuestion, buildRuntimeStatus, formatRuntimeStatusMessage } from "../lib/capability-status.ts";
 import { attachUser, requireAuth, gateMustChangePassword, rejectClientUserIdHeader, type AuthEnv } from "../auth/middleware.ts";
 import { buildAuthRoutes } from "../auth/routes.ts";
 import { buildAdminRoutes } from "../auth/admin.ts";
@@ -290,11 +292,57 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   app.post("/api/sessions/:id/messages", async (c) => {
     const user = c.get("user")!; const id = c.req.param("id");
     if (!deps.repo.getSession(id, user.id)) return c.json({ error: "not_found" }, 404);
+    const body = (await c.req.json().catch(() => null)) as { content?: string; clientNow?: string; timezone?: string } | null;
+    const content = body?.content?.trim(); if (!content) return c.json({ error: "invalid_input", message: "请输入追问内容。" }, 400);
+
+    // ELI-355: capability/runtime-status questions are answered from config +
+    // provider state — never from the generic chat LLM, which cannot know the
+    // MCP wiring and would guess (or leak secrets). Also truthfully works when
+    // the model service itself is down.
+    if (detectCapabilityQuestion(content)) {
+      const userMessage = deps.repo.addMessage(id, user.id, "user", content);
+      deps.repo.updateMessageState(userMessage.id, id, user.id, "accepted");
+      const status = buildRuntimeStatus({ config, provider: providerForUser(user.id) });
+      const answer = formatRuntimeStatusMessage(status, content);
+      const assistant = deps.repo.addMessage(id, user.id, "assistant", answer);
+      return c.json({ sessionId: id, message: assistant, status: "answered", messages: deps.repo.listMessages(id, user.id), memories: deps.repo.listMemories(user.id), capabilities: { fuyao: status.fuyao, ifind: status.ifind }, activities: sessionActivities(deps.repo, deps.repo.listSessionDecisions(id, user.id)) }, 201);
+    }
+
     const userProvider = providerForUser(user.id); if (!providerReady(userProvider, user.id)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
-    const content = ((await c.req.json().catch(() => null)) as { content?: string } | null)?.content?.trim(); if (!content) return c.json({ error: "invalid_input", message: "请输入追问内容。" }, 400);
-    const userMessage = deps.repo.addMessage(id, user.id, "user", content); const decisions = deps.repo.listSessionDecisions(id, user.id); const memories = deps.repo.listMemories(user.id); const results = decisions.filter((d) => d.reviewId).map((d) => deps.repo.getResult(d.reviewId!));
+    const userMessage = deps.repo.addMessage(id, user.id, "user", content, "extracting");
+    const decisions = deps.repo.listSessionDecisions(id, user.id);
+
+    // ELI-355 first-turn routing: a session with no persisted structured
+    // decisions must enter the canonical extractor, exactly like
+    // POST /api/sessions. This makes a first trade narrative land in
+    // extraction → T0 confirmation → the real DecisionReviewAgent, instead of
+    // bouncing off the generic chat path.
+    if (decisions.length === 0) {
+      try {
+        const extracted = await new DecisionExtractorAgent(userProvider, deps.config.llm.extractorModel).extract(content, { clientNow: body?.clientNow || new Date().toISOString(), timezone: body?.timezone || "UTC" });
+        deps.repo.updateMessageState(userMessage.id, id, user.id, "accepted");
+        const stored = extracted.map((decision) => deps.repo.addSessionDecision({ ...decision, market: decision.market ?? "CN", quantity: decision.quantityShares, reason: decision.rationale, sessionId: id, userId: user.id }));
+        deps.repo.updateSession(id, user.id, "draft");
+        const statusMessage = deps.repo.addMessage(id, user.id, "status", `已识别 ${stored.length} 笔决策，请确认每笔 T0、方向与数量。`);
+        return c.json({ sessionId: id, message: statusMessage, status: "accepted", decisions: stored, messages: deps.repo.listMessages(id, user.id), memories: deps.repo.listMemories(user.id), activities: [] }, 201);
+      } catch {
+        const warning = "无法可靠识别投资决策：请补充标的、方向，以及成交/下单时间。";
+        deps.repo.updateMessageState(userMessage.id, id, user.id, "needs_input", warning);
+        deps.repo.updateSession(id, user.id, "needs_input");
+        return c.json({ sessionId: id, message: { ...userMessage, state: "needs_input", errorMessage: warning }, status: "needs_input", warning, decisions: [], messages: deps.repo.listMessages(id, user.id), memories: deps.repo.listMemories(user.id), activities: [] }, 201);
+      }
+    }
+
+    // Grounded follow-up: structured decisions already exist. The LLM answers
+    // from persisted decisions/results/memories only, and raw chain-of-thought
+    // is stripped before anything reaches conversation storage.
+    const memories = deps.repo.listMemories(user.id);
+    const results = decisions.filter((d) => d.reviewId).map((d) => deps.repo.getResult(d.reviewId!));
     const completion = await userProvider.complete({ system: "你是 AIME 投资决策复盘助手。只基于当前用户 session 的 decisions、T0 前后证据、findings 与 learning memory 回答；不要给出新的买卖指令。", user: JSON.stringify({ question: content, decisions, results, memories }), temperature: 0.2, maxOutputTokens: 900 });
-    const assistant = deps.repo.addMessage(id, user.id, "assistant", completion.text || "当前无法生成追问回复。"); return c.json({ message: assistant, messages: deps.repo.listMessages(id, user.id) }, 201);
+    const safeText = stripChainOfThought(completion.text || "").trim();
+    const assistant = deps.repo.addMessage(id, user.id, "assistant", safeText || "当前无法生成追问回复。");
+    deps.repo.updateMessageState(userMessage.id, id, user.id, "accepted");
+    return c.json({ sessionId: id, message: assistant, status: "answered", messages: deps.repo.listMessages(id, user.id), memories, activities: sessionActivities(deps.repo, decisions) }, 201);
   });
 
   app.patch("/api/sessions/:id/messages/:messageId", async (c) => {

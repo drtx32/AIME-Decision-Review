@@ -241,6 +241,25 @@ Expected:
 - after-hours/non-trading-day markers are not silently snapped to a wrong bar;
 - the right Findings/Evidence/Learning panel and stable composer remain intact.
 
+### T17b — First-turn routing, capability status, CoT hygiene
+Exercise:
+- first trade narrative via `POST /api/sessions/:id/messages` on a session
+  without structured decisions;
+- capability question ("MCP/Fuyao/iFinD 能不能用") on an empty session;
+- a provider response containing `<thinking>` chain-of-thought;
+- confirmed session followed by a follow-up question.
+
+Expected (covered by `apps/api/tests/eli-355-session-routing.test.ts`):
+- narrative transitions to extraction → confirmation state ("已识别 N 笔决策，
+  请确认每笔 T0、方向与数量"), never a generic follow-up chat reply;
+- capability questions are answered from runtime configuration without invoking
+  the LLM, mention Fuyao/iFinD, never demand a structured-data template, and
+  contain no secrets, URLs, or tool names;
+- raw chain-of-thought never appears in stored or returned conversation content;
+- confirmed sessions expose worklog activities (tool_completed/tool_updated/
+  reasoning_summary) alongside the persisted assistant review summary, and
+  follow-ups are grounded in stored results without new MCP calls.
+
 ## 10. Integration
 
 ### T18 — Real MCP minimal path

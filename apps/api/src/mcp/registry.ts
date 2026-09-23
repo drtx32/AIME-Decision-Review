@@ -52,10 +52,16 @@ export function buildMcpRegistry(cfg: AppConfig): McpRegistry {
   const fuyaoHasCreds = Boolean(cfg.fuyao.baseUrl && cfg.fuyao.apiKey);
   const ifindHasCreds = Boolean(cfg.ifind.baseUrl && cfg.ifind.authorization);
 
-  function fuyaoToolFor(intent: AdapterIntent): string | null {
+  function fuyaoToolFor(key: McpServerKey, intent: AdapterIntent): string | null {
+    if (Object.keys(cfg.fuyao.toolMapByServer ?? {}).length > 0) {
+      return cfg.fuyao.toolMapByServer?.[key as FuyaoServerKey]?.[intent] ?? null;
+    }
     return cfg.fuyao.toolMap[intent] ?? null;
   }
-  function ifindToolFor(intent: AdapterIntent): string | null {
+  function ifindToolFor(key: McpServerKey, intent: AdapterIntent): string | null {
+    if (Object.keys(cfg.ifind.toolMapByServer ?? {}).length > 0) {
+      return cfg.ifind.toolMapByServer?.[key as IFindServerKey]?.[intent] ?? null;
+    }
     return cfg.ifind.toolMap[intent] ?? null;
   }
 
@@ -70,7 +76,7 @@ export function buildMcpRegistry(cfg: AppConfig): McpRegistry {
             baseUrl: cfg.fuyao.baseUrl,
             apiKey: cfg.fuyao.apiKey,
           },
-          toolForIntent: fuyaoToolFor,
+          toolForIntent: (intent) => fuyaoToolFor(key, intent),
         });
       }
       return new MockFuyaoAdapter(key as FuyaoServerKey, {
@@ -88,7 +94,7 @@ export function buildMcpRegistry(cfg: AppConfig): McpRegistry {
             baseUrl: cfg.ifind.baseUrl,
             authorization: cfg.ifind.authorization,
           },
-          toolForIntent: ifindToolFor,
+          toolForIntent: (intent) => ifindToolFor(key, intent),
         });
       }
       return new MockIFindAdapter(key as IFindServerKey, {

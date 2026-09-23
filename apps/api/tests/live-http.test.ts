@@ -351,6 +351,20 @@ describe("schema-driven MCP arguments", () => {
       intent: "price", symbol: "600519.SH", T0: "2024-03-15T09:30:00Z",
     })).toEqual({ symbols: ["600519.SH"], start_date: "2024-03-15", end_date: "2024-03-15" });
   });
+
+  test("maps Fuyao historical start/end to a seven-day millisecond window", () => {
+    const T0 = "2024-09-15T01:35:00Z";
+    const t0Ms = Date.parse(T0);
+    expect(buildToolArgs({ properties: {
+      thscode: {}, start: {}, end: {}, interval: {}, adjust: {},
+    } }, { intent: "price", symbol: "600519.SH", T0 })).toEqual({
+      thscode: "600519.SH",
+      start: t0Ms - 7 * 24 * 60 * 60 * 1000,
+      end: t0Ms,
+      interval: "1d",
+      adjust: "forward",
+    });
+  });
 });
 
 // ─── Adapter-level tests ────────────────────────────────────────────────────
@@ -654,6 +668,7 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
         apiKey: "test-key",
         servers: ["a-share"],
         toolMap: {},
+        toolMapByServer: {},
         remoteSuffixMap: {},
       },
     });
@@ -671,6 +686,7 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
         apiKey: "test-key",
         servers: ["a-share"],
         toolMap: { price: "get_a_share_price" },
+        toolMapByServer: {},
         remoteSuffixMap: {},
       },
     });
@@ -682,13 +698,37 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
 
   test("no credentials → mock adapter still selected", () => {
     const cfg = makeTestConfig({
-      fuyao: { baseUrl: null, apiKey: null, servers: ["a-share"], toolMap: {}, remoteSuffixMap: {} },
+      fuyao: { baseUrl: null, apiKey: null, servers: ["a-share"], toolMap: {}, toolMapByServer: {}, remoteSuffixMap: {} },
     });
     const registry = buildMcpRegistry(cfg);
     const adapter = registry.resolve("a-share")!;
     // Mock adapter is intent-scoped.
     expect(adapter.canHandle("price")).toBe(true);
     expect(adapter.canHandle("news")).toBe(false);
+  });
+
+  test("per-server tool map restricts a shared price tool to one Fuyao server", () => {
+    const cfg = makeTestConfig({
+      fuyao: {
+        baseUrl: "http://example.test/fuyao",
+        apiKey: "test-key",
+        servers: ["meta", "a-share", "fund"],
+        toolMap: { price: "get_a_share_prices_snapshot" },
+        toolMapByServer: { "a-share": { price: "get_a_share_prices_snapshot" } },
+        remoteSuffixMap: {},
+      },
+      ifind: {
+        baseUrl: null,
+        authorization: null,
+        servers: [],
+        toolMap: {},
+        toolMapByServer: {},
+        remoteSuffixMap: {},
+      },
+    });
+    const adapters = buildMcpRegistry(cfg).resolveFor("price");
+    expect(adapters).toHaveLength(1);
+    expect(adapters[0].serverKey).toBe("a-share");
   });
 
   test("T18 vertical: real Fuyao + real iFinD via JSON-RPC side by side", async () => {
@@ -739,6 +779,7 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
         apiKey: "test-key",
         servers: ["a-share"],
         toolMap: { price: "get_a_share_price" },
+        toolMapByServer: {},
         remoteSuffixMap: {},
       },
       ifind: {
@@ -746,6 +787,7 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
         authorization: "Bearer ifind-token",
         servers: ["news"],
         toolMap: { news: "get_news" },
+        toolMapByServer: {},
         remoteSuffixMap: {},
       },
     });

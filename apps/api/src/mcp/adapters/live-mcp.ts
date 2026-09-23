@@ -196,15 +196,28 @@ export function buildToolArgs(schema: Record<string, unknown> | undefined, req: 
   const props = schema?.properties && typeof schema.properties === "object" ? schema.properties as Record<string, unknown> : null;
   if (!props) return { symbol: req.symbol, market: req.market ?? "CN", T0: req.T0, limit: req.limit ?? 5, intent: req.intent };
   const args: Record<string, unknown> = {};
+  const t0Ms = Date.parse(req.T0);
+  const validT0Ms = Number.isNaN(t0Ms) ? Date.now() : t0Ms;
+  const historicalStartMs = validT0Ms - 7 * 24 * 60 * 60 * 1000;
   for (const key of ["symbols", "codes", "tickers", "ths_codes"]) if (key in props) { args[key] = [req.symbol]; break; }
   if (!Object.keys(args).length) for (const key of ["symbol", "thscode", "ticker", "code", "stock_code", "security_id"]) if (key in props) { args[key] = req.symbol; break; }
   if ("T0" in props) args.T0 = req.T0;
+  if ("start" in props) args.start = historicalStartMs;
+  if ("end" in props) args.end = validT0Ms;
   if ("start_date" in props) args.start_date = req.T0.slice(0, 10);
   if ("startDate" in props) args.startDate = req.T0;
   if ("end_date" in props) args.end_date = req.T0.slice(0, 10);
   if ("endDate" in props) args.endDate = req.T0;
   if ("date" in props) args.date = req.T0.slice(0, 10);
   if ("trade_date" in props) args.trade_date = req.T0.slice(0, 10);
+  if ("interval" in props) args.interval = "1d";
+  if ("adjust" in props) args.adjust = "forward";
+  if ("metadata" in props) {
+    args.metadata = {
+      decisionT0: req.T0,
+      historicalWindow: { startMs: historicalStartMs, endMs: validT0Ms },
+    };
+  }
   if ("market" in props) args.market = req.market ?? "CN";
   if ("limit" in props) args.limit = req.limit ?? 5;
   if ("intent" in props) args.intent = req.intent;

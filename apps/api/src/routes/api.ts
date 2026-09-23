@@ -12,17 +12,24 @@ import { DecisionInputSchema } from "../types/index.ts";
 import type { AppConfig } from "../config.ts";
 import type { ReviewRepository } from "../db/sqlite.ts";
 import type { UserRepository } from "../auth/repository.ts";
+import type { SettingsRepository } from "../settings/repository.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
 import { DecisionReviewAgent } from "../agents/decision-review.ts";
 import type { ModelProvider } from "../providers/index.ts";
 import { attachUser, requireAuth, gateMustChangePassword, rejectClientUserIdHeader, type AuthEnv } from "../auth/middleware.ts";
 import { buildAuthRoutes } from "../auth/routes.ts";
 import { buildAdminRoutes } from "../auth/admin.ts";
+import {
+  buildSettingsRoutes,
+  buildUsageRoute,
+  buildCapabilitiesRoute,
+} from "../settings/routes.ts";
 
 export interface RouteDeps {
   config: AppConfig;
   repo: ReviewRepository;
   userRepo: UserRepository;
+  settingsRepo: SettingsRepository;
   registry: McpRegistry;
   provider: ModelProvider;
   /** Test hook — bypass background execution so specs stay deterministic. */
@@ -36,6 +43,9 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   const config = deps.config;
   const auth = buildAuthRoutes(deps.userRepo, config.isProduction);
   const admin = buildAdminRoutes(deps.userRepo);
+  const settings = buildSettingsRoutes({ settingsRepo: deps.settingsRepo });
+  const usage = buildUsageRoute({ settingsRepo: deps.settingsRepo });
+  const capabilities = buildCapabilitiesRoute();
 
   app.use("*", attachUser(deps.userRepo));
 
@@ -178,6 +188,14 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
 
   // Admin endpoints — guarded inside buildAdminRoutes.
   app.route("/api/admin", admin);
+
+  // Settings surface — required for ELI-336 (Settings experience).
+  // Model settings + usage + capabilities. Each route enforces its own
+  // mustChangePassword gate internally; we only require the user to be
+  // authenticated.
+  app.route("/api/settings", settings);
+  app.route("/api/usage", usage);
+  app.route("/api/models/capabilities", capabilities);
 
   return app;
 }

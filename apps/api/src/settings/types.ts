@@ -1,30 +1,13 @@
 /**
  * Settings / usage / model-capability contract types.
  *
- * These shapes are the public surface for ELI-336 (Settings experience).
- * The backend never returns an actual API key — only a boolean `hasApiKey`
- * and a short non-reversible `apiKeyFingerprint` so the operator can confirm
- * which key is on file without ever seeing the secret.
+ * ELI-360 — the AIME backend no longer accepts, stores, logs, echoes,
+ * or fingerprints a user-supplied API key. The `ModelSettingsPayload`
+ * type that used to carry `hasApiKey / apiKeyFingerprint` is gone.
+ * Browser-local BYOK lives entirely in the frontend (IndexedDB).
  */
 
 export type SettingsProvider = "openai-compatible" | "mock";
-
-/**
- * Public shape of GET /api/settings/model and the input shape of
- * PUT /api/settings/model. `apiKey` is the only write-only field — when
- * omitted on PUT the existing ciphertext is preserved; when supplied
- * the server stores the ciphertext and returns the masked shape.
- */
-export interface ModelSettingsPayload {
-  provider: SettingsProvider;
-  model: string;
-  baseUrl: string | null;
-  /** True iff a non-empty API key ciphertext is on file. Never the value itself. */
-  hasApiKey: boolean;
-  /** Short non-reversible prefix used for display in the Settings UI. */
-  apiKeyFingerprint: string | null;
-  updatedAt: string;
-}
 
 /**
  * Public shape of GET /api/usage.
@@ -82,7 +65,9 @@ export interface ModelCapabilitiesPayload {
 export interface ModelProviderCapabilities {
   id: SettingsProvider;
   displayName: string;
-  /** True if this provider can be configured at runtime (settings endpoint accepts it). */
+  /** True if this provider can be configured at runtime. After ELI-360
+   *  this is informational only — configuration happens in the browser,
+   *  not via this server. */
   configurable: boolean;
   models: ModelCapabilityRow[];
 }

@@ -5,6 +5,10 @@
  * naturally through the browser. Errors carry the parsed JSON body when
  * available so callers can distinguish invalid_credentials from
  * account_disabled, etc.
+ *
+ * ELI-360 — `modelConfig` (formerly hitting /api/auth/model for
+ * user-supplied BYOK) has been removed. BYOK now lives in the browser
+ * (see src/byok-store.ts); the AIME backend never sees the secret.
  */
 
 const apiBase =
@@ -31,7 +35,13 @@ export interface AdminCreateResponse {
   temporaryPassword: string;
 }
 
-export interface UserModelConfig { configured: boolean; provider: "openai-compatible"; baseUrl: string; model: string; keySuffix: string | null; verifiedAt: string | null; lastError: string | null; serverDefaultModel: string; }
+/** Read-only view of the server-managed LLM provider config. */
+export interface ServerModelInfo {
+  provider: string;
+  model: string;
+  baseUrl: string | null;
+  configured: boolean;
+}
 export interface UsageSummary { periodStart: string; inputTokens: number; outputTokens: number; totalTokens: number; model: string | null; provider: string | null; allowance: number | null; providerQuota: null; label: string; }
 
 export class ApiError extends Error {
@@ -130,10 +140,11 @@ export const adminUsers = {
 };
 
 export const modelConfig = {
-  async get(): Promise<UserModelConfig> { return request<UserModelConfig>("/auth/model"); },
-  async save(input: { baseUrl: string; model: string; apiKey?: string; verifiedAt?: string | null }): Promise<UserModelConfig> { return request<UserModelConfig>("/auth/model", { method: "POST", body: JSON.stringify({ provider: "openai-compatible", ...input }) }); },
-  async test(input: { baseUrl?: string; model?: string; apiKey?: string }): Promise<{ ok: boolean; model?: string; verifiedAt?: string; error?: string }> { return request<{ ok: boolean; model?: string; verifiedAt?: string; error?: string }>("/auth/model/test", { method: "POST", body: JSON.stringify(input) }, [200, 502]); },
-  async reset(): Promise<UserModelConfig> { return request<UserModelConfig>("/auth/model", { method: "DELETE" }); },
+  /** Read the server-managed LLM provider config (env-driven). Does NOT
+   *  expose any user-supplied BYOK — none is on the server anymore. */
+  async serverDefault(): Promise<ServerModelInfo> {
+    return request<ServerModelInfo>("/settings/server-model");
+  },
 };
 
 export const usage = { async get(): Promise<UsageSummary> { return request<UsageSummary>("/auth/usage"); } };

@@ -2,35 +2,26 @@
  * Settings + usage persistence (SQLite).
  *
  * Tables (one connection, one DB file):
- *   user_model_settings   — per-user provider / model / baseUrl / encrypted apiKey
- *   usage_events          — append-only token-usage rows
- *   usage_periods         — optional configured allowance per user (null = unknown)
+ *   usage_events   — append-only token-usage rows
+ *   usage_periods  — optional configured allowance per user (null = unknown)
  *
- * Schema design notes:
- *   - `user_model_settings.apiKeyCiphertext` is AES-256-GCM ciphertext only;
- *     the plaintext is never persisted, never logged, and never returned
- *     over the wire.
- *   - `usage_periods.allowanceTokens` is NULL when the operator has not
- *     configured a quota. The usage endpoint translates that into
- *     `allowance.source = "unknown"` and `remaining.known = false` so the
- *     UI can render "Unknown" instead of a fabricated number.
+ * ELI-360 — per-user BYOK persistence has been removed from the trust
+ * boundary. A legacy `user_model_settings` table may still exist on
+ * upgraded databases from before this change; the bootstrap migration
+ * renames it to `legacy_user_model_settings` and zeroes the
+ * apiKeyCiphertext / apiKeyFingerprint columns so no key material —
+ * ciphertext or fingerprint — persists server-side. The
+ * `UserModelSettingsRow` shape, `getModelSettings`, `saveModelSettings`,
+ * and the /api/settings/model surface that consumed them are GONE.
+ * Server-managed LLM provider config (LLM_PROVIDER / LLM_MODEL /
+ * LLM_BASE_URL / LLM_API_KEY) lives only in process env and never
+ * crosses the SQLite boundary.
  */
 
 import { Database } from "bun:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { randomUUID } from "node:crypto";
-import type { SettingsProvider } from "./types.ts";
-
-export interface UserModelSettingsRow {
-  userId: string;
-  provider: SettingsProvider;
-  model: string;
-  baseUrl: string | null;
-  apiKeyCiphertext: string | null;
-  apiKeyFingerprint: string | null;
-  updatedAt: string;
-}
 
 export interface UsageEventRow {
   id: string;
@@ -61,18 +52,49 @@ export class SettingsRepository {
 
   private bootstrap() {
     this.db.exec("PRAGMA journal_mode = WAL;");
+    // ELI-360 — defensive migration: if a legacy per-user BYOK table is
+    // present from a previous build, rename it out of the way AND wipe
+    // any apiKeyCiphertext / apiKeyFingerprint columns. We never want
+    // server-side ciphertext (or a fingerprint that lets an operator
+    // correlate accounts) to outlive the trust-boundary change. The
+    // renamed table is preserved (renamed, not dropped) so an operator
+    // who needs to audit a historical DB still has the row shape, minus
+    // any secret material.
+    const legacy = this.db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='user_model_settings'"
+      )
+      .get();
+    if (legacy) {
+      const scrubbedAt = new Date().toISOString();
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS legacy_user_model_settings (
+            userId TEXT PRIMARY KEY,
+            provider TEXT,
+            model TEXT,
+            baseUrl TEXT,
+            apiKeyCiphertext TEXT,
+            apiKeyFingerprint TEXT,
+            updatedAt TEXT,
+            scrubbedAt TEXT NOT NULL,
+            FOREIGN KEY(userId) REFERENCES users(id) ON DELETE CASCADE
+          );
+        `);
+        this.db
+          .prepare(
+            `INSERT OR IGNORE INTO legacy_user_model_settings
+               (userId, provider, model, baseUrl, apiKeyCiphertext, apiKeyFingerprint, updatedAt, scrubbedAt)
+             SELECT userId, provider, model, '' AS baseUrl,
+                    '' AS apiKeyCiphertext, '' AS apiKeyFingerprint,
+                    updatedAt, ? AS scrubbedAt
+             FROM user_model_settings`
+          )
+          .run(scrubbedAt);
+        this.db.exec("DROP TABLE user_model_settings");
+      })();
+    }
     this.db.exec(`
-      CREATE TABLE IF NOT EXISTS user_model_settings (
-        userId TEXT PRIMARY KEY,
-        provider TEXT NOT NULL CHECK (provider IN ('openai-compatible', 'mock')),
-        model TEXT NOT NULL,
-        baseUrl TEXT,
-        apiKeyCiphertext TEXT,
-        apiKeyFingerprint TEXT,
-        updatedAt TEXT NOT NULL,
-        FOREIGN KEY(userId) REFERENCES users(id) ON DELETE CASCADE
-      );
-
       CREATE TABLE IF NOT EXISTS usage_events (
         id TEXT PRIMARY KEY,
         userId TEXT NOT NULL,
@@ -95,73 +117,6 @@ export class SettingsRepository {
         FOREIGN KEY(userId) REFERENCES users(id) ON DELETE CASCADE
       );
     `);
-  }
-
-  // ── user_model_settings ───────────────────────────────────────────────────
-
-  getModelSettings(userId: string): UserModelSettingsRow | null {
-    const row = this.db
-      .prepare(
-        `SELECT userId, provider, model, baseUrl, apiKeyCiphertext, apiKeyFingerprint, updatedAt
-         FROM user_model_settings WHERE userId = ?`
-      )
-      .get(userId) as UserModelSettingsRow | undefined;
-    return row ?? null;
-  }
-
-  /**
-   * Upsert settings for the given user.
-   *
-   * `apiKeyCiphertext` and `apiKeyFingerprint` are written only when a
-   * non-null `apiKeyCiphertext` is supplied; `undefined` preserves the
-   * existing ciphertext (the Settings UI can rotate model/baseUrl without
-   * forcing a re-entry of the key); `null` clears it.
-   *
-   * Returns the persisted row.
-   */
-  saveModelSettings(input: {
-    userId: string;
-    provider: SettingsProvider;
-    model: string;
-    baseUrl: string | null;
-    apiKeyCiphertext?: string | null | undefined;
-    apiKeyFingerprint?: string | null | undefined;
-  }): UserModelSettingsRow {
-    const now = new Date().toISOString();
-    const existing = this.getModelSettings(input.userId);
-
-    const nextCiphertext: string | null =
-      input.apiKeyCiphertext === undefined
-        ? (existing?.apiKeyCiphertext ?? null)
-        : input.apiKeyCiphertext;
-    const nextFingerprint: string | null =
-      input.apiKeyCiphertext === undefined
-        ? (existing?.apiKeyFingerprint ?? null)
-        : (input.apiKeyFingerprint ?? null);
-
-    this.db
-      .prepare(
-        `INSERT INTO user_model_settings (userId, provider, model, baseUrl, apiKeyCiphertext, apiKeyFingerprint, updatedAt)
-         VALUES (?, ?, ?, ?, ?, ?, ?)
-         ON CONFLICT(userId) DO UPDATE SET
-           provider = excluded.provider,
-           model = excluded.model,
-           baseUrl = excluded.baseUrl,
-           apiKeyCiphertext = excluded.apiKeyCiphertext,
-           apiKeyFingerprint = excluded.apiKeyFingerprint,
-           updatedAt = excluded.updatedAt`
-      )
-      .run(
-        input.userId,
-        input.provider,
-        input.model,
-        input.baseUrl,
-        nextCiphertext,
-        nextFingerprint,
-        now
-      );
-
-    return this.getModelSettings(input.userId)!;
   }
 
   // ── usage_events ──────────────────────────────────────────────────────────
@@ -256,6 +211,17 @@ export class SettingsRepository {
     return row ?? null;
   }
 
+  /**
+   * Operator-configured per-user quota window. `allowanceTokens = null`
+   * means "no operator-supplied quota" — the usage endpoint surfaces that
+   * as `allowance.source = "unknown"` so the UI can render "Unknown"
+   * instead of a fabricated number.
+   *
+   * Persisted purely from server-operator intent (today: legacy
+   * /api/settings/model period migration path is gone — see ELI-360).
+   * Kept on the table for backwards-compatible migrations from prior
+   * builds; new code paths should treat this as read-only telemetry.
+   */
   upsertUsagePeriod(input: {
     userId: string;
     periodStart: string;

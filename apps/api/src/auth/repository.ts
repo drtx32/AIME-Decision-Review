@@ -4,9 +4,19 @@
  * Tables:
  *   users        — credentials and role flags
  *   sessions     — opaque server-issued session tokens
+ *   llm_usage    — append-only token-usage rows (server-managed provider only)
  *
  * Bootstrap: ensureBootstrapAdmin() creates the initial admin from env on
  * first startup and is idempotent (no-op if any admin already exists).
+ *
+ * ELI-360 — per-user BYOK has been removed from the trust boundary. A
+ * legacy `user_model_configs` table may still exist on upgraded databases
+ * from before this change; the bootstrap migration renames it to
+ * `legacy_user_model_configs` and zeroes the encrypted apiKey column so
+ * no plaintext-or-ciphertext key material persists server-side. The
+ * `StoredModelConfig` shape and the `getModelConfig/saveModelConfig/
+ * clearModelConfig` accessors are intentionally GONE — per-user BYOK now
+ * lives in the browser (IndexedDB) and never traverses this process.
  */
 
 import { Database } from "bun:sqlite";
@@ -34,16 +44,6 @@ export interface CreateUserInput {
   mustChangePassword: boolean;
 }
 
-export interface StoredModelConfig {
-  userId: string;
-  provider: "openai-compatible";
-  baseUrl: string;
-  model: string;
-  apiKeyEncrypted: string;
-  verifiedAt: string | null;
-  lastError: string | null;
-}
-
 export interface LlmUsageSummary {
   inputTokens: number;
   outputTokens: number;
@@ -63,6 +63,59 @@ export class UserRepository {
 
   private bootstrap() {
     this.db.exec("PRAGMA journal_mode = WAL;");
+    // ELI-360 — defensive migration: if a legacy per-user BYOK table is
+    // present from a previous build, rename it out of the way AND wipe
+    // any apiKeyEncrypted / verifiedAt / lastError columns. We never want
+    // server-side ciphertext to outlive the trust-boundary change. The
+    // renamed table is preserved (renamed, not dropped) so an operator
+    // who needs to audit a historical DB still has the row shape, minus
+    // any key material. baseUrl + model columns are zeroed too because
+    // those values were only meaningful when paired with a server-side
+    // decrypted key — keeping them risks accidentally re-surfacing a
+    // missing secret that the UI thinks is "configured".
+    const legacy = this.db
+      .prepare(
+        "SELECT name FROM sqlite_master WHERE type='table' AND name='user_model_configs'"
+      )
+      .get();
+    if (legacy) {
+      // Wipe secret-bearing columns before renaming. SQLite ALTER TABLE
+      // can't drop columns in older builds, so we rebuild. baseUrl +
+      // model columns are zeroed too because they were only meaningful
+      // when paired with a server-side decrypted key — leaving them risks
+      // accidentally re-surfacing a "configured" record with no usable
+      // secret. The renamed table is preserved so a historical audit can
+      // still see who had a config; only the secret-bearing / verifiedAt
+      // / lastError columns are scrubbed.
+      const scrubbedAt = new Date().toISOString();
+      this.db.transaction(() => {
+        this.db.exec(`
+          CREATE TABLE IF NOT EXISTS legacy_user_model_configs (
+            userId TEXT PRIMARY KEY,
+            provider TEXT,
+            baseUrl TEXT,
+            model TEXT,
+            apiKeyEncrypted TEXT,
+            verifiedAt TEXT,
+            lastError TEXT,
+            updatedAt TEXT,
+            scrubbedAt TEXT NOT NULL,
+            FOREIGN KEY(userId) REFERENCES users(id) ON DELETE CASCADE
+          );
+        `);
+        this.db
+          .prepare(
+            `INSERT OR IGNORE INTO legacy_user_model_configs
+               (userId, provider, baseUrl, model, apiKeyEncrypted, verifiedAt, lastError, updatedAt, scrubbedAt)
+             SELECT userId, provider, '' AS baseUrl, model,
+                    '' AS apiKeyEncrypted, NULL AS verifiedAt, NULL AS lastError,
+                    updatedAt, ? AS scrubbedAt
+             FROM user_model_configs`
+          )
+          .run(scrubbedAt);
+        this.db.exec("DROP TABLE user_model_configs");
+      })();
+    }
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS users (
         id TEXT PRIMARY KEY,
@@ -87,17 +140,6 @@ export class UserRepository {
       );
       CREATE INDEX IF NOT EXISTS idx_sessions_userId ON sessions(userId);
 
-      CREATE TABLE IF NOT EXISTS user_model_configs (
-        userId TEXT PRIMARY KEY,
-        provider TEXT NOT NULL,
-        baseUrl TEXT NOT NULL,
-        model TEXT NOT NULL,
-        apiKeyEncrypted TEXT NOT NULL,
-        verifiedAt TEXT,
-        lastError TEXT,
-        updatedAt TEXT NOT NULL,
-        FOREIGN KEY(userId) REFERENCES users(id) ON DELETE CASCADE
-      );
       CREATE TABLE IF NOT EXISTS llm_usage (
         id TEXT PRIMARY KEY,
         userId TEXT NOT NULL,
@@ -264,16 +306,6 @@ export class UserRepository {
   deleteSessionsForUser(userId: string): void {
     this.db.prepare(`DELETE FROM sessions WHERE userId = ?`).run(userId);
   }
-
-  getModelConfig(userId: string): StoredModelConfig | null {
-    return (this.db.prepare(`SELECT userId, provider, baseUrl, model, apiKeyEncrypted, verifiedAt, lastError FROM user_model_configs WHERE userId=?`).get(userId) as StoredModelConfig | undefined) ?? null;
-  }
-
-  saveModelConfig(input: Omit<StoredModelConfig, "updatedAt">): void {
-    this.db.prepare(`INSERT INTO user_model_configs (userId,provider,baseUrl,model,apiKeyEncrypted,verifiedAt,lastError,updatedAt) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(userId) DO UPDATE SET provider=excluded.provider,baseUrl=excluded.baseUrl,model=excluded.model,apiKeyEncrypted=excluded.apiKeyEncrypted,verifiedAt=excluded.verifiedAt,lastError=excluded.lastError,updatedAt=excluded.updatedAt`).run(input.userId,input.provider,input.baseUrl,input.model,input.apiKeyEncrypted,input.verifiedAt,input.lastError,new Date().toISOString());
-  }
-
-  clearModelConfig(userId: string): void { this.db.prepare(`DELETE FROM user_model_configs WHERE userId=?`).run(userId); }
 
   recordLlmUsage(userId: string, usage: { input: number; output: number; provider: string; model: string }): void {
     const input = Math.max(0, Math.floor(usage.input)); const output = Math.max(0, Math.floor(usage.output));

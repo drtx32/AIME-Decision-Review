@@ -906,3 +906,111 @@ a frontend wire-contract regression for the URL builder.
   briefly race the local list. Acceptable for the smoke path;
   pinning request sequencing is deferred.
 
+
+## ELI-360 BYOK trust boundary — browser-local only — 2026-09-23
+
+**AI/tool used**
+- Local CC with Bun 1.2.19 and TypeScript 5.9.3.
+
+**Task**
+- P0 security/product correction. User-supplied BYOK apiKey must remain
+  browser-local. The AIME backend must not persist, log, echo,
+  fingerprint, or even receive it as a settings payload. Server-managed
+  production credentials stay server-side via `LLM_*` env. The
+  DecisionReviewAgent runs server-side on operator env credentials;
+  browser-local BYOK is for tooling / ad-hoc testing only and never
+  feeds the review flow.
+
+**Output**
+- Backend (`apps/api/`):
+  - `src/config.ts` — removed `modelConfigSecret` from `AppConfig`. No
+    server-side ciphertext key is needed because there is no
+    user-supplied ciphertext to encrypt.
+  - `src/auth/repository.ts` — `user_model_configs` table no longer
+    created; bootstrap migration renames any legacy table to
+    `legacy_user_model_configs`, zeroes `apiKeyEncrypted`, `verifiedAt`,
+    `lastError`, and `baseUrl`, and stamps `scrubbedAt`. Removed
+    `StoredModelConfig` and all `getModelConfig / saveModelConfig /
+    clearModelConfig` methods.
+  - `src/settings/repository.ts` — same defensive migration against
+    `user_model_settings` → `legacy_user_model_settings` with
+    zeroed ciphertext + fingerprint + baseUrl. Removed
+    `UserModelSettingsRow`, `getModelSettings`, `saveModelSettings`.
+    Kept `usage_events` / `usage_periods` tables and the
+    `upsertUsagePeriod` helper (read-only telemetry).
+  - `src/settings/types.ts` — removed `ModelSettingsPayload` (which
+    exposed `hasApiKey` / `apiKeyFingerprint`).
+  - `src/settings/crypto.ts` — DELETED (AES-256-GCM helper).
+  - `src/settings/routes.ts` — removed `PUT /api/settings/model`.
+    Added `buildServerModelRoute()` for `GET /api/settings/server-model`
+    returning read-only `{ provider, model, baseUrl, configured }`.
+    Added `buildRemovedModelEndpoints()` mounted on the old paths.
+  - `src/routes/api.ts` — `providerForUser()` now wraps the
+    server-managed provider only (no user creds); removed
+    `/api/auth/model*` and `/api/settings/model` write routes;
+    removed `keyFor` / `encryptKey` / `decryptKey` helpers and the
+    `modelSecret` config wiring. `providerReady()` no longer takes a
+    `userId` argument. The wrapper's `configured` flag now mirrors the
+    inner provider so the ELI-326 "no LLM configured" failure path
+    still fires for production-with-mock mode after ELI-360.
+
+- Frontend (`src/`):
+  - `byok-store.ts` — new browser-local IndexedDB BYOK store
+    (`aime-byok` DB / `configs` store / `current` record). Exports
+    `browserByok.{load, loadSummary, save, reset, test}`. `test()`
+    hits the user-configured provider endpoint directly and labels
+    CORS-blocked fetches as `browserIncompatible` rather than falling
+    back to a server proxy.
+  - `auth-api.ts` — `modelConfig` adapter is now a read-only
+    `serverDefault()` pointing at `/api/settings/server-model`.
+  - `App.tsx` — `SettingsModalV2` rewired to the browser store with
+    copy "API key 仅保存在浏览器本地，从不发送到服务器". The
+    `SettingsModal` (v1) is preserved for legacy callers.
+
+- Tests:
+  - `apps/api/tests/settings.test.ts` rewritten to match the new
+    contract (no PUT model, 410 Gone on removed endpoints, no
+    fingerprint / keySuffix / hasApiKey on `server-model`,
+    admin-only mutations still 403, ELI-326 production-mock gate).
+  - `apps/api/tests/byok-segregation.test.ts` new — 11 cases covering
+    (a) every legacy endpoint answers 410 without echoing the secret,
+    (b) request surface never accepts an apiKey field, (c) response
+    surface never includes apiKey/fingerprint/keySuffix on
+    health/me/sessions/server-model/usage, (d) the legacy
+    `user_model_configs` and `user_model_settings` migrations are
+    atomic and zero all secret-bearing columns plus baseUrl, (e)
+    `SettingsRepository` exposes no apiKey-bearing method, (f)
+    `/api/settings/server-model` reflects operator env only and never
+    accepts user creds.
+
+**Validation**
+- `cd apps/api && bun test` → 222/222 pass, 994 expect() calls across
+  16 files (was 84/380; +138 tests / +614 expect() calls). No
+  regression in the existing ELI-313 / ELI-325 / ELI-326 / ELI-341
+  contracts; in particular the production-with-mock → 503 gate still
+  fires after the wrapper fix.
+- `cd apps/api && bun run typecheck` → 0 errors.
+- `npx tsc -b && vite build` (repo root) → 0 errors; production
+  bundle 845 kB / 30 kB CSS.
+- `node scripts/preflight.mjs` → 0 errors (1 expected dirty-tree
+  warning; secret scan still clean — no `sk-*`, no `Bearer …`).
+
+**Human corrections**
+- The first wrapper I shipped had `UsageTrackingProvider.configured =
+  true` hardcoded. That bypassed the ELI-326 readiness check on the
+  per-user path because `providerReady(userProvider)` only consulted
+  the wrapper, not the inner server-managed provider. Fixed by
+  delegating `configured` to the inner provider AND consolidating
+  `providerAvailability()` so production-mock gating applies
+  uniformly to both the raw and wrapped providers.
+- Initial migration code inserted into `legacy_user_model_settings`
+  without `CREATE TABLE IF NOT EXISTS` first, which failed on fresh
+  databases that had no pre-existing schema. Wrapped the whole
+  rename-and-zero in a `db.transaction()` with the schema preamble
+  so the migration is idempotent.
+
+**Branch / PR**
+- Branch: `fix/eli-360-browser-local-byok` (Local CC).
+- Backend-only + frontend-only + test-only diff. No Docker
+  deployment from this branch. No secrets, tokens, or MCP credentials
+  introduced to the repo, the issue, README, logs, or frontend.

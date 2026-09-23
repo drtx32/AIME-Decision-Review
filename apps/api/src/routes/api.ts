@@ -4,10 +4,18 @@
  * All non-auth, non-health endpoints require an authenticated session.
  * mustChangePassword users are blocked from review endpoints and admin
  * endpoints — they may only hit /api/auth/*.
+ *
+ * ELI-360 — per-user BYOK has been removed from the trust boundary. The
+ * server no longer accepts, stores, logs, echoes, or fingerprints a
+ * user-supplied API key. `providerForUser` is a thin alias for the
+ * server-managed `deps.provider` — the v0.1 Review Agent runs on the
+ * server operator's LLM env credentials. Browser-local BYOK, when the
+ * user wants to use their own provider for ad-hoc utilities, lives in
+ * IndexedDB and never traverses this process.
  */
 
 import { Hono } from "hono";
-import { randomUUID, createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import { DecisionInputSchema, type DecisionInput, type DecisionReviewResult, type ReviewStatus } from "../types/index.ts";
 import type { AppConfig } from "../config.ts";
 import type { ReviewRepository } from "../db/sqlite.ts";
@@ -16,7 +24,7 @@ import type { SettingsRepository } from "../settings/repository.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
 import { DecisionReviewAgent } from "../agents/decision-review.ts";
 import { DecisionExtractorAgent } from "../agents/decision-extractor.ts";
-import { LazyResilientProvider, type LLMCompletionRequest, type LLMCompletion, type ModelProvider } from "../providers/index.ts";
+import { LazyResilientProvider, type LLMCompletionRequest, type LLMCompletion, type ModelProvider, type ProviderAvailability } from "../providers/index.ts";
 import { OpenAICompatibleProvider } from "../providers/openai-compatible.ts";
 import { stripChainOfThought } from "../lib/chain-of-thought.ts";
 import { detectCapabilityQuestion, buildRuntimeStatus, formatRuntimeStatusMessage } from "../lib/capability-status.ts";
@@ -25,7 +33,13 @@ import { buildAuthRoutes } from "../auth/routes.ts";
 import { buildAdminRoutes } from "../auth/admin.ts";
 import { AttachmentService } from "../attachments/service.ts";
 import { buildAttachmentRoutes } from "../attachments/routes.ts";
-import { buildSettingsRoutes, buildUsageRoute, buildCapabilitiesRoute } from "../settings/routes.ts";
+import {
+  buildServerModelRoute,
+  buildUsageRoute,
+  buildCapabilitiesRoute,
+  buildRemovedModelEndpoints,
+  type ServerModelInfo,
+} from "../settings/routes.ts";
 import { ChartRequestSchema, type ChartResponse, type ChartSeries } from "../charts/contract.ts";
 import {
   fetchFuyaoKline,
@@ -51,9 +65,6 @@ export interface RouteDeps {
 
 type AppEnv = { Variables: AuthEnv["Variables"] };
 
-function keyFor(secret: string): Buffer { return createHash("sha256").update(secret).digest(); }
-function encryptKey(value: string, secret: string): string { const iv = randomBytes(12); const cipher = createCipheriv("aes-256-gcm", keyFor(secret), iv); const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]); return `enc:v1:${iv.toString("base64url")}:${cipher.getAuthTag().toString("base64url")}:${encrypted.toString("base64url")}`; }
-function decryptKey(value: string, secret: string): string | null { try { const [, version, ivRaw, tagRaw, dataRaw] = value.split(":"); if (version !== "v1" || !ivRaw || !tagRaw || !dataRaw) return null; const decipher = createDecipheriv("aes-256-gcm", keyFor(secret), Buffer.from(ivRaw, "base64url")); decipher.setAuthTag(Buffer.from(tagRaw, "base64url")); return Buffer.concat([decipher.update(Buffer.from(dataRaw, "base64url")), decipher.final()]).toString("utf8"); } catch { return null; } }
 function sanitizedError(error: unknown): string { const text = error instanceof Error ? error.message : String(error); return text.replace(/(authorization|api[-_ ]?key|bearer)\s*[:=]?\s*[^\s,;]+/gi, "$1 [redacted]").slice(0, 240); }
 
 function sessionActivities(repo: ReviewRepository, decisions: Array<{ id: string; symbol: string; reviewId: string | null }>): Array<Record<string, unknown>> {
@@ -87,8 +98,13 @@ function sessionActivities(repo: ReviewRepository, decisions: Array<{ id: string
 }
 
 class UsageTrackingProvider implements ModelProvider {
-  readonly id: string; readonly modelName: string; readonly configured = true;
-  constructor(private readonly inner: ModelProvider, private readonly userRepo: UserRepository, private readonly userId: string) { this.id = inner.id; this.modelName = inner.modelName; }
+  readonly id: string; readonly modelName: string;
+  /** ELI-360 — readiness still flows from the inner server-managed
+   *  provider; the wrapper must not paper over a missing-credentials
+   *  state with a hard `configured = true`, otherwise the
+   *  "no LLM configured" failure path (ELI-326) is bypassed. */
+  readonly configured: boolean;
+  constructor(private readonly inner: ModelProvider, private readonly userRepo: UserRepository, private readonly userId: string) { this.id = inner.id; this.modelName = inner.modelName; this.configured = inner.configured ?? false; }
   availability() { return this.inner.availability?.() ?? { state: "ready" as const, providerId: this.id, model: this.modelName, lastError: null, requestedMode: "openai-compatible" as const, degraded: false }; }
   async complete(request: LLMCompletionRequest): Promise<LLMCompletion> { const result = await this.inner.complete(request); if (result.usage) this.userRepo.recordLlmUsage(this.userId, { ...result.usage, provider: this.id, model: this.modelName }); return result; }
 }
@@ -104,32 +120,45 @@ function canPersistDecisionLessons(result: DecisionReviewResult | null, status: 
 export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const config = deps.config;
-  const modelSecret = config.modelConfigSecret || config.initialAdmin.password || "aime-model-config-local-secret";
   const auth = buildAuthRoutes(deps.userRepo, config.isProduction);
   const admin = buildAdminRoutes(deps.userRepo);
-  const settings = buildSettingsRoutes({ settingsRepo: deps.settingsRepo });
+  const serverModel: ServerModelInfo = {
+    provider: config.llm.provider,
+    model: config.llm.model,
+    baseUrl: config.llm.baseUrl,
+    configured: Boolean(config.llm.baseUrl && config.llm.apiKey),
+  };
+  const serverModelRoute = buildServerModelRoute({ resolve: () => serverModel });
   const usage = buildUsageRoute({ settingsRepo: deps.settingsRepo });
   const capabilities = buildCapabilitiesRoute();
+  // ELI-360 — these paths return 410 Gone so a stale frontend bundle
+  // cannot silently "succeed" against the removed BYOK endpoints.
+  const removedModel = buildRemovedModelEndpoints();
   const modelUnavailable = "当前未配置可用的大模型服务，请联系管理员。";
-  const providerForUser = (userId: string): ModelProvider => {
-    const saved = deps.userRepo.getModelConfig(userId);
-    if (!saved) return new UsageTrackingProvider(deps.provider, deps.userRepo, userId);
-    const apiKey = decryptKey(saved.apiKeyEncrypted, modelSecret);
-    if (!apiKey) return new UsageTrackingProvider({ id: "openai-compatible", modelName: saved.model, configured: false, complete: async () => { throw new Error("Stored model credential is unavailable"); }, availability: () => ({ state: "error", providerId: "openai-compatible", model: saved.model, lastError: null, requestedMode: "openai-compatible", degraded: true }) }, deps.userRepo, userId);
-    const live = new LazyResilientProvider({ id: "openai-compatible", modelName: saved.model, build: () => new OpenAICompatibleProvider({ baseUrl: saved.baseUrl, modelName: saved.model, apiKey }) });
-    return new UsageTrackingProvider(live, deps.userRepo, userId);
-  };
+  // ELI-360 — there is no per-user BYOK anymore. Every authenticated user
+  // shares the server-managed provider (operator env credential). The
+  // wrapper still records per-user usage so quota dashboards keep working.
+  const providerForUser = (_userId: string): ModelProvider =>
+    new UsageTrackingProvider(deps.provider, deps.userRepo, _userId);
   // Provider availability is the single readiness contract. In particular,
   // real-provider mode with missing credentials must never be treated as a
   // mock-backed configured provider by route pre-flight or /health.
-  const providerAvailability = () => {
-    const base = deps.provider.availability?.() ?? {
-    state: deps.provider.configured ? "ready" : "unconfigured",
-    providerId: deps.provider.id,
-    model: deps.provider.modelName,
-    lastError: null,
-    requestedMode: "mock" as const,
-    degraded: !deps.provider.configured,
+  // ELI-360 — the contract is the same whether we ask the raw provider or
+  // the per-user UsageTrackingProvider wrapper: production must never let a
+  // mock-backed provider through as ready.
+  const providerAvailability = (provider: ModelProvider = deps.provider): ProviderAvailability => {
+    const inner = provider === deps.provider
+      ? provider
+      : // Unwrap UsageTrackingProvider so the production-mock override
+        // below applies to the underlying server-managed provider.
+        (provider as { inner?: ModelProvider }).inner ?? provider;
+    const base = inner.availability?.() ?? {
+      state: inner.configured ? "ready" : "unconfigured",
+      providerId: inner.id,
+      model: inner.modelName,
+      lastError: null,
+      requestedMode: "mock" as const,
+      degraded: !inner.configured,
     };
     // Explicit mock mode is a development/demo capability. A production
     // process must not present a mock-backed report as model-ready.
@@ -138,9 +167,8 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     }
     return base;
   };
-  const providerReady = (provider: ModelProvider = deps.provider, userId?: string) => {
-    if (provider === deps.provider || (userId && !deps.userRepo.getModelConfig(userId))) return providerAvailability().state === "ready";
-    return (provider.availability?.().state ?? (provider.configured ? "ready" : "unconfigured")) === "ready";
+  const providerReady = (provider: ModelProvider = deps.provider) => {
+    return providerAvailability(provider).state === "ready";
   };
 
   app.use("*", attachUser(deps.userRepo));
@@ -171,24 +199,13 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   // Public auth endpoints (login + change-password self-service) live here.
   app.route("/api/auth", auth);
 
-  app.get("/api/auth/model", requireAuth(deps.userRepo), (c) => {
-    const user = c.get("user")!; const saved = deps.userRepo.getModelConfig(user.id);
-    return c.json({ configured: Boolean(saved), provider: saved?.provider ?? "openai-compatible", baseUrl: saved?.baseUrl ?? "", model: saved?.model ?? config.llm.model, keySuffix: saved ? (decryptKey(saved.apiKeyEncrypted, modelSecret)?.slice(-4) ?? null) : null, verifiedAt: saved?.verifiedAt ?? null, lastError: saved?.lastError ?? null, serverDefaultModel: config.llm.model });
-  });
   app.get("/api/auth/usage", requireAuth(deps.userRepo), (c) => { const user = c.get("user")!; const start = new Date(); start.setUTCDate(1); start.setUTCHours(0,0,0,0); const summary = deps.userRepo.getLlmUsageSummary(user.id, start.toISOString()); return c.json({ periodStart: start.toISOString(), ...summary, allowance: null, providerQuota: null, label: "App usage" }); });
-  app.post("/api/auth/model/test", requireAuth(deps.userRepo), async (c) => {
-    const user = c.get("user")!; const body = await c.req.json().catch(() => ({})) as { baseUrl?: string; model?: string; apiKey?: string };
-    const saved = deps.userRepo.getModelConfig(user.id); const baseUrl = body.baseUrl?.trim() || saved?.baseUrl; const model = body.model?.trim() || saved?.model || config.llm.model; const apiKey = body.apiKey?.trim() || (saved ? decryptKey(saved.apiKeyEncrypted, modelSecret) : null);
-    if (!baseUrl || !apiKey) return c.json({ ok: false, error: "请填写 Base URL 和 API key" }, 400);
-    try { const response = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, { headers: { Authorization: `Bearer ${apiKey}` } }); if (!response.ok) throw new Error(`远端返回 HTTP ${response.status}`); return c.json({ ok: true, model, verifiedAt: new Date().toISOString() }); } catch (error) { return c.json({ ok: false, error: sanitizedError(error) }, 502); }
-  });
-  app.post("/api/auth/model", requireAuth(deps.userRepo), async (c) => {
-    const user = c.get("user")!; const body = await c.req.json().catch(() => ({})) as { provider?: string; baseUrl?: string; model?: string; apiKey?: string; verifiedAt?: string | null };
-    const saved = deps.userRepo.getModelConfig(user.id); const baseUrl = body.baseUrl?.trim(); const model = body.model?.trim(); const apiKey = body.apiKey?.trim() || (saved ? decryptKey(saved.apiKeyEncrypted, modelSecret) : null);
-    if (body.provider && body.provider !== "openai-compatible") return c.json({ error: "仅支持 OpenAI-compatible" }, 400); if (!baseUrl || !model || !apiKey) return c.json({ error: "Base URL、model、API key 均为必填" }, 400);
-    deps.userRepo.saveModelConfig({ userId: user.id, provider: "openai-compatible", baseUrl, model, apiKeyEncrypted: encryptKey(apiKey, modelSecret), verifiedAt: body.verifiedAt ?? null, lastError: null }); return c.json({ configured: true, provider: "openai-compatible", baseUrl, model, keySuffix: apiKey.slice(-4), verifiedAt: body.verifiedAt ?? null, lastError: null, serverDefaultModel: config.llm.model });
-  });
-  app.delete("/api/auth/model", requireAuth(deps.userRepo), (c) => { deps.userRepo.clearModelConfig(c.get("user")!.id); return c.json({ configured: false, provider: "openai-compatible", baseUrl: "", model: config.llm.model, keySuffix: null, verifiedAt: null, lastError: null, serverDefaultModel: config.llm.model }); });
+
+  // ELI-360 — the /api/auth/model* and /api/settings/model surfaces were
+  // removed. Mount 410 Gone so stale bundles / scripts see an explicit
+  // failure instead of a silent 404 that hides the contract change.
+  app.route("/api/auth/model", removedModel);
+  app.route("/api/auth/model/test", removedModel);
 
   const sessionAuth = [requireAuth(deps.userRepo), gateMustChangePassword()];
   if (deps.attachments) {
@@ -216,7 +233,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     const body = await c.req.json().catch(() => null) as { message?: string; scope?: string; clientNow?: string; timezone?: string } | null;
     const message = body?.message?.trim();
     if (!message) return c.json({ error: "invalid_input", message: "请输入一段历史决策描述。" }, 400);
-    const userProvider = providerForUser(user.id); if (!providerReady(userProvider, user.id)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
+    const userProvider = providerForUser(user.id); if (!providerReady(userProvider)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
     const sessionId = deps.repo.createSession(user.id, "新建复盘", body?.scope ?? "single");
     const userMessage = deps.repo.addMessage(sessionId, user.id, "user", message, "extracting");
     let decisions;
@@ -254,7 +271,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   app.post("/api/sessions/:id/confirm", async (c) => {
     const user = c.get("user")!; const id = c.req.param("id");
     if (!deps.repo.getSession(id, user.id)) return c.json({ error: "not_found" }, 404);
-    const userProvider = providerForUser(user.id); if (!providerReady(userProvider, user.id)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
+    const userProvider = providerForUser(user.id); if (!providerReady(userProvider)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
     const decisions = deps.repo.listSessionDecisions(id, user.id);
     if (!decisions.length) return c.json({ error: "invalid_input", message: "没有可复盘的决策。" }, 400);
     // An evidence-grounded approximate T0 may proceed after the user clears
@@ -308,7 +325,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
       return c.json({ sessionId: id, message: assistant, status: "answered", messages: deps.repo.listMessages(id, user.id), memories: deps.repo.listMemories(user.id), capabilities: { fuyao: status.fuyao, ifind: status.ifind }, activities: sessionActivities(deps.repo, deps.repo.listSessionDecisions(id, user.id)) }, 201);
     }
 
-    const userProvider = providerForUser(user.id); if (!providerReady(userProvider, user.id)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
+    const userProvider = providerForUser(user.id); if (!providerReady(userProvider)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
     const userMessage = deps.repo.addMessage(id, user.id, "user", content, "extracting");
     const decisions = deps.repo.listSessionDecisions(id, user.id);
 
@@ -348,7 +365,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   app.patch("/api/sessions/:id/messages/:messageId", async (c) => {
     const user = c.get("user")!; const id = c.req.param("id"); const body = await c.req.json().catch(() => ({})) as { content?: string };
     const content = body.content?.trim(); if (!content) return c.json({ error: "invalid_input", message: "消息不能为空。" }, 400);
-    const userProvider = providerForUser(user.id); if (!providerReady(userProvider, user.id)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
+    const userProvider = providerForUser(user.id); if (!providerReady(userProvider)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
     const message = deps.repo.updateMessageAndInvalidate(c.req.param("messageId"), id, user.id, content); if (!message) return c.json({ error: "not_found" }, 404);
     try {
       const decisions = await new DecisionExtractorAgent(userProvider, deps.config.llm.extractorModel).extract(content, { clientNow: new Date().toISOString(), timezone: "UTC" });
@@ -430,7 +447,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
         422
       );
     }
-    const userProvider = providerForUser(user.id); if (!providerReady(userProvider, user.id)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
+    const userProvider = providerForUser(user.id); if (!providerReady(userProvider)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
     const id = `rev_${randomUUID()}`;
     const T0 = decision.executedAt;
     deps.repo.createRun(id, decision, T0);
@@ -688,7 +705,11 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   // Admin endpoints — guarded inside buildAdminRoutes.
   app.route("/api/admin", admin);
 
-  app.route("/api/settings", settings);
+  // ELI-360 — server-model endpoint is read-only and returns the
+  // operator env config; the old /api/settings/model that accepted
+  // user-supplied apiKey is mounted as 410 Gone.
+  app.route("/api/settings/server-model", serverModelRoute);
+  app.route("/api/settings/model", removedModel);
   app.route("/api/usage", usage);
   app.route("/api/models/capabilities", capabilities);
 

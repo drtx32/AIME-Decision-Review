@@ -14,3 +14,112 @@
 .message-row.error .message-avatar{background:#fff1ee;color:#ad655a}.message-row.error .message-bubble{border-color:#efd2cb;background:#fffaf8}.message-row.error .message-bubble>span{color:#ad655a}
 #app{background:#f7f8f7}#app:before{opacity:.04}.sidebar,.context-panel{background:#fbfcfb}.main-shell{background:#f7f8f7}.conversation-top{border-color:#e5e8e5}.message-avatar{background:#eef1ee;color:#68746c}.user .message-avatar{background:#e8ece9;color:#3e4d44}.user .message-bubble{background:#f1f3f1;border-color:#e2e6e2}.status-message{border-color:#e1e6e1;background:#f5f7f5;color:#647068}.status-message p{color:#7e8881}.composer-add{background:#f0f2f0;color:#606b63}.composer-send{background:#343b37}.nav-item:hover,.nav-item.active,.context-tabs button:hover,.context-tabs button.active{background:#eef1ee;color:#303a34}.side-note{border-color:#e5e8e5}
 .inline-charts{display:grid;gap:12px;margin:12px 0 24px}.chart-card{border:1px solid var(--line);border-radius:9px;background:var(--surface);overflow:hidden;box-shadow:0 6px 20px #315e3809}.chart-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;border-bottom:1px solid var(--line)}.chart-title{font-size:11px;font-weight:700}.chart-head-meta{display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end}.chart-pill{border-radius:4px;padding:2px 6px;font:500 9px 'DM Mono';color:#607067;background:#eef3ed}.chart-pill-fuyao{color:#477b4c;background:#e7f3e5}.chart-pill-ifind{color:#765b91;background:#f0e9f7}.chart-pill-fallback{color:#9a7638;background:#fff4dc}.chart-pill-unavailable,.chart-pill-transient_error,.chart-pill-permanent_error{color:#a65449;background:#fff0ed}.chart-toggle{display:flex;align-items:center;gap:3px;border:0;border-radius:4px;background:transparent;color:#607067;padding:3px 5px;font-size:10px}.chart-toggle:hover{background:#eef3ed}.chart-canvas{height:300px;width:100%}.chart-card.expanded{position:relative;z-index:3}.chart-card.expanded .chart-canvas{height:min(62vh,560px)}.chart-foot{display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap;padding:7px 12px;color:#89968d;font-size:9px;border-top:1px solid var(--line)}.chart-foot-t0{color:#765b91}.chart-message{margin:0;padding:12px;color:#718077;font-size:11px}.chart-meta{display:block;padding:0 12px 12px;color:#9a7638}.chart-loading{display:flex;align-items:center;gap:8px;padding:16px;color:#718077;font-size:11px}.chart-loading-spinner{width:12px;height:12px;border:2px solid #cfe0ce;border-top-color:#5a9863;border-radius:50%;animation:spin 1s linear infinite}.chart-markers{padding:0 12px 10px;color:#718077;font-size:10px}.chart-markers summary{cursor:pointer;display:flex;align-items:center;gap:5px}.chart-markers ul{display:grid;gap:4px;margin:8px 0 0;padding:0;list-style:none}.chart-markers li{display:flex;gap:7px}.chart-markers .marker-ex_ante b{color:#5b8d61}.chart-markers .marker-ex_post b{color:#a65449}
+
+/* 2026-09-23 polish: warnings are message status, not a form control. */
+.message-row.user{position:relative;overflow:visible}
+.message-warning-gutter{
+  position:absolute;
+  left:-30px;
+  top:16px;
+  z-index:8;
+  display:inline-flex;
+  align-items:center;
+}
+.message-warning{
+  display:grid;
+  place-items:center;
+  width:22px;
+  height:22px;
+  padding:0;
+  border:0;
+  border-radius:50%;
+  background:transparent;
+  color:#b7791f;
+  cursor:help;
+  box-shadow:none;
+}
+.message-warning:hover,.message-warning:focus-visible{
+  background:#fff7e6;
+  color:#9a650f;
+  outline:none;
+}
+.message-warning-tooltip{
+  position:absolute;
+  right:calc(100% + 8px);
+  top:50%;
+  width:max-content;
+  max-width:320px;
+  transform:translateY(-50%) translateX(4px);
+  padding:8px 10px;
+  border:1px solid #e4e8ee;
+  border-radius:8px;
+  background:#171c24;
+  color:#f6f7f9;
+  box-shadow:0 8px 28px rgba(18,24,32,.18);
+  font-size:11px;
+  line-height:1.55;
+  white-space:normal;
+  opacity:0;
+  visibility:hidden;
+  pointer-events:none;
+  transition:opacity .12s ease,transform .12s ease,visibility .12s;
+}
+.message-warning-gutter:hover .message-warning-tooltip,
+.message-warning-gutter:focus-within .message-warning-tooltip,
+.message-warning-tooltip.open{
+  opacity:1;
+  visibility:visible;
+  transform:translateY(-50%) translateX(0);
+}
+
+/* Remove native-input visual residue from sidebar search. */
+.session-search{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  height:34px;
+  margin:3px 4px 5px;
+  padding:0 10px;
+  border:1px solid #344257;
+  border-radius:8px;
+  background:#202c3d;
+  color:#8f9caf;
+  box-shadow:none;
+}
+.session-search:focus-within{
+  border-color:#5579b6;
+  background:#233146;
+  color:#c8d4e4;
+  box-shadow:0 0 0 2px rgba(85,121,182,.16);
+}
+.session-search input{
+  appearance:none;
+  -webkit-appearance:none;
+  min-width:0;
+  width:100%;
+  height:100%;
+  padding:0;
+  border:0 !important;
+  border-radius:0;
+  outline:0 !important;
+  background:transparent !important;
+  color:#edf2f7;
+  box-shadow:none !important;
+  font:500 11px Manrope,ui-sans-serif,system-ui,sans-serif;
+}
+.session-search input::placeholder{color:#7f8da1}
+.session-search input::-webkit-search-cancel-button{-webkit-appearance:none}
+
+/* Keep secondary controls visually quiet and modern. */
+.message-actions button,.context-tabs button,.account-actions button,.collapse-panel,.panel-close{
+  appearance:none;
+  -webkit-appearance:none;
+  box-shadow:none;
+}
+@media(max-width:700px){
+  .message-warning-gutter{left:-24px;top:14px}
+  .message-warning-tooltip{right:auto;left:0;top:28px;transform:none;max-width:min(280px,72vw)}
+  .message-warning-gutter:hover .message-warning-tooltip,
+  .message-warning-gutter:focus-within .message-warning-tooltip,
+  .message-warning-tooltip.open{transform:none}
+}

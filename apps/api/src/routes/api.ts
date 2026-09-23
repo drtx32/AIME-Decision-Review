@@ -178,15 +178,21 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     const message = body?.message?.trim();
     if (!message) return c.json({ error: "invalid_input", message: "请输入一段历史决策描述。" }, 400);
     const userProvider = providerForUser(user.id); if (!providerReady(userProvider, user.id)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
+    const sessionId = deps.repo.createSession(user.id, "新建复盘", body?.scope ?? "single");
+    const userMessage = deps.repo.addMessage(sessionId, user.id, "user", message, "extracting");
     let decisions;
     try {
       decisions = await new DecisionExtractorAgent(userProvider, deps.config.llm.extractorModel).extract(message, { clientNow: body?.clientNow || new Date().toISOString(), timezone: body?.timezone || "UTC" });
-    } catch { return c.json({ error: "DECISION_EXTRACTION_FAILED", message: "无法可靠识别决策，请补充标的、方向与成交时间后重试。" }, 422); }
-    const sessionId = deps.repo.createSession(user.id, decisions.length > 1 ? `${decisions.length} 笔投资决策` : `${decisions[0]?.symbol ?? "新"} 决策复盘`, body?.scope ?? (decisions.length > 1 ? "custom" : "single"));
-    deps.repo.addMessage(sessionId, user.id, "user", message);
+    } catch {
+      const warning = "无法可靠识别投资决策：请补充标的、方向，以及成交/下单时间。";
+      deps.repo.updateMessageState(userMessage.id, sessionId, user.id, "needs_input", warning);
+      deps.repo.updateSession(sessionId, user.id, "needs_input");
+      return c.json({ sessionId, status: "needs_input", warning, decisions: [], messages: deps.repo.listMessages(sessionId, user.id), memories: deps.repo.listMemories(user.id) }, 201);
+    }
+    deps.repo.updateMessageState(userMessage.id, sessionId, user.id, "accepted");
     const stored = decisions.map((decision) => deps.repo.addSessionDecision({ ...decision, market: decision.market ?? "CN", quantity: decision.quantityShares, reason: decision.rationale, sessionId, userId: user.id }));
     deps.repo.addMessage(sessionId, user.id, "status", `已识别 ${stored.length} 笔决策，请确认每笔 T0、方向与数量。`);
-    return c.json({ sessionId, decisions: stored, messages: deps.repo.listMessages(sessionId, user.id), memories: deps.repo.listMemories(user.id) }, 201);
+    return c.json({ sessionId, status: "accepted", decisions: stored, messages: deps.repo.listMessages(sessionId, user.id), memories: deps.repo.listMemories(user.id) }, 201);
   });
 
   app.get("/api/sessions/:id", (c) => {
@@ -254,8 +260,21 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   app.patch("/api/sessions/:id/messages/:messageId", async (c) => {
     const user = c.get("user")!; const id = c.req.param("id"); const body = await c.req.json().catch(() => ({})) as { content?: string };
     const content = body.content?.trim(); if (!content) return c.json({ error: "invalid_input", message: "消息不能为空。" }, 400);
+    const userProvider = providerForUser(user.id); if (!providerReady(userProvider, user.id)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
     const message = deps.repo.updateMessageAndInvalidate(c.req.param("messageId"), id, user.id, content); if (!message) return c.json({ error: "not_found" }, 404);
-    return c.json({ message, messages: deps.repo.listMessages(id, user.id) });
+    try {
+      const decisions = await new DecisionExtractorAgent(userProvider, deps.config.llm.extractorModel).extract(content, { clientNow: new Date().toISOString(), timezone: "UTC" });
+      deps.repo.updateMessageState(message.id, id, user.id, "accepted");
+      const stored = decisions.map((decision) => deps.repo.addSessionDecision({ ...decision, market: decision.market ?? "CN", quantity: decision.quantityShares, reason: decision.rationale, sessionId: id, userId: user.id }));
+      deps.repo.updateSession(id, user.id, "draft");
+      deps.repo.addMessage(id, user.id, "status", `已重新识别 ${stored.length} 笔决策，请确认每笔 T0、方向与数量。`);
+      return c.json({ message, status: "accepted", decisions: stored, messages: deps.repo.listMessages(id, user.id) });
+    } catch {
+      const warning = "无法可靠识别投资决策：请补充标的、方向，以及成交/下单时间。";
+      deps.repo.updateMessageState(message.id, id, user.id, "needs_input", warning);
+      deps.repo.updateSession(id, user.id, "needs_input");
+      return c.json({ message: { ...message, state: "needs_input", errorMessage: warning }, status: "needs_input", warning, decisions: [], messages: deps.repo.listMessages(id, user.id) });
+    }
   });
   app.delete("/api/sessions/:id/messages/:messageId", (c) => {
     const user = c.get("user")!; const id = c.req.param("id"); if (!deps.repo.softDeleteMessageAndInvalidate(c.req.param("messageId"), id, user.id)) return c.json({ error: "not_found" }, 404);

@@ -117,9 +117,67 @@ export default function App() {
   </div>;
 }
 
+function splitLegacyThinking(content: string): { content: string; reasoning: string | null } {
+  const parts: string[] = [];
+  const visible = String(content || '').replace(/<think>([\s\S]*?)<\/think>/gi, (_match, inner: string) => {
+    const cleaned = String(inner || '').trim();
+    if (cleaned) parts.push(cleaned);
+    return '';
+  }).trim();
+  return { content: visible, reasoning: parts.length ? parts.join('\n\n') : null };
+}
+
+function InlineMarkdown({ text }: { text: string }) {
+  const tokens = String(text || '').split(/(\*\*[^*]+\*\*|`[^`]+`|\[[^\]]+\]\([^)]+\))/g).filter(Boolean);
+  return <>{tokens.map((token, index) => {
+    if (token.startsWith('**') && token.endsWith('**')) return <strong key={index}>{token.slice(2, -2)}</strong>;
+    if (token.startsWith('`') && token.endsWith('`')) return <code key={index}>{token.slice(1, -1)}</code>;
+    const link = token.match(/^\[([^\]]+)\]\((https?:\/\/[^)]+)\)$/);
+    if (link) return <a key={index} href={link[2]} target="_blank" rel="noreferrer">{link[1]}</a>;
+    return <span key={index}>{token}</span>;
+  })}</>;
+}
+
+function MarkdownText({ text }: { text: string }) {
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  const blocks: any[] = [];
+  let i = 0;
+  while (i < lines.length) {
+    const line = lines[i];
+    if (!line.trim()) { i += 1; continue; }
+    if (/^\s*```/.test(line)) {
+      const lang = line.trim().slice(3).trim(); const code: string[] = []; i += 1;
+      while (i < lines.length && !/^\s*```/.test(lines[i])) { code.push(lines[i]); i += 1; }
+      if (i < lines.length) i += 1;
+      blocks.push(<pre className="markdown-code" key={blocks.length}><code data-lang={lang || undefined}>{code.join('\n')}</code></pre>); continue;
+    }
+    if (i + 1 < lines.length && line.includes('|') && /^\s*\|?\s*:?-{3,}/.test(lines[i + 1])) {
+      const splitRow = (row: string) => row.trim().replace(/^\||\|$/g, '').split('|').map((cell) => cell.trim());
+      const head = splitRow(line); i += 2; const rows: string[][] = [];
+      while (i < lines.length && lines[i].includes('|') && lines[i].trim()) { rows.push(splitRow(lines[i])); i += 1; }
+      blocks.push(<div className="markdown-table-wrap" key={blocks.length}><table><thead><tr>{head.map((cell, j) => <th key={j}><InlineMarkdown text={cell}/></th>)}</tr></thead><tbody>{rows.map((row, r) => <tr key={r}>{row.map((cell, j) => <td key={j}><InlineMarkdown text={cell}/></td>)}</tr>)}</tbody></table></div>); continue;
+    }
+    if (/^\s*[-*]\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*[-*]\s+/, '')); i += 1; }
+      blocks.push(<ul key={blocks.length}>{items.map((item, j) => <li key={j}><InlineMarkdown text={item}/></li>)}</ul>); continue;
+    }
+    if (/^\s*\d+[.)]\s+/.test(line)) {
+      const items: string[] = [];
+      while (i < lines.length && /^\s*\d+[.)]\s+/.test(lines[i])) { items.push(lines[i].replace(/^\s*\d+[.)]\s+/, '')); i += 1; }
+      blocks.push(<ol key={blocks.length}>{items.map((item, j) => <li key={j}><InlineMarkdown text={item}/></li>)}</ol>); continue;
+    }
+    const heading = line.match(/^\s*(#{1,3})\s+(.+)$/);
+    if (heading) { const level = heading[1].length; const body = heading[2]; blocks.push(level === 1 ? <h3 key={blocks.length}><InlineMarkdown text={body}/></h3> : level === 2 ? <h4 key={blocks.length}><InlineMarkdown text={body}/></h4> : <h5 key={blocks.length}><InlineMarkdown text={body}/></h5>); i += 1; continue; }
+    const para: string[] = [line.trim()]; i += 1;
+    while (i < lines.length && lines[i].trim() && !/^\s*([-*]\s+|\d+[.)]\s+|```|#{1,3}\s+)/.test(lines[i])) { if (lines[i].includes('|') && i + 1 < lines.length && /^\s*\|?\s*:?-{3,}/.test(lines[i + 1])) break; para.push(lines[i].trim()); i += 1; }
+    blocks.push(<p key={blocks.length}><InlineMarkdown text={para.join(' ')}/></p>);
+  }
+  return <div className="markdown-body">{blocks}</div>;
+}
 function Message({ message, copyNotice, onCopy, onEdit, onDelete, onRetry }: { message: SessionMessage; copyNotice: boolean; onCopy: (message: SessionMessage) => void; onEdit?: (message: SessionMessage) => void; onDelete: (message: SessionMessage) => void; onRetry?: (message: SessionMessage) => void }) {
-  const status = message.role === 'status' || message.role === 'error'; const isWelcome = message.id === 'welcome'; const needsInput = message.role === 'user' && message.state === 'needs_input'; const [warningOpen, setWarningOpen] = useState(false); const warningId = `${message.id}-warning`;
-  return <div className={`message-row ${message.role} ${isWelcome ? 'welcome-message' : ''} ${needsInput ? 'needs-input' : ''}`}><div className="message-avatar">{message.role === 'assistant' ? <Sparkles size={14}/> : message.role === 'status' ? <span className="status-mark"/> : message.role === 'error' ? <CircleAlert size={14}/> : '景'}</div>{needsInput && <div className="message-warning-gutter"><button type="button" className="message-warning" aria-label="该消息需要补充信息" aria-describedby={warningId} aria-expanded={warningOpen} onClick={() => setWarningOpen((open) => !open)}><CircleAlert size={14}/></button><div id={warningId} role="tooltip" className={`message-warning-popover ${warningOpen ? 'open' : ''}`}><span>{message.errorMessage || '无法可靠识别投资决策：请补充标的、方向，以及成交/下单时间。'}</span>{onEdit && <button type="button" onClick={() => onEdit(message)}>补充信息</button>}</div></div>}<div className="message-bubble">{isWelcome ? <><h2>{message.content}</h2><p>用自然语言描述历史决策，AIME 会帮你还原当时的信息环境。</p></> : <><span>{message.role === 'assistant' ? 'AIME REVIEW AGENT' : message.role === 'status' ? 'REVIEW STATUS' : message.role === 'error' ? 'TURN ERROR' : 'YOU'}</span><p className={status ? 'status-copy' : ''}>{message.content}</p>{message.role !== 'error' && <div className="message-actions"><button type="button" aria-label="复制消息" onClick={() => onCopy(message)}>{copyNotice ? '已复制' : '复制'}</button>{onEdit && <button type="button" aria-label="编辑消息" onClick={() => onEdit(message)}>编辑</button>}{onRetry && <button type="button" aria-label="重试消息" onClick={() => onRetry(message)}>重试</button>}<button type="button" aria-label="删除消息" onClick={() => void onDelete(message)}>删除</button></div>}</>}</div></div>;
+  const status = message.role === 'status' || message.role === 'error'; const isWelcome = message.id === 'welcome'; const needsInput = message.role === 'user' && message.state === 'needs_input'; const [warningOpen, setWarningOpen] = useState(false); const warningId = `${message.id}-warning`; const legacy = splitLegacyThinking(message.content); const reasoning = message.reasoning || legacy.reasoning; const visibleContent = legacy.content;
+  return <div className={`message-row ${message.role} ${isWelcome ? 'welcome-message' : ''} ${needsInput ? 'needs-input' : ''}`}><div className="message-avatar">{message.role === 'assistant' ? <Sparkles size={14}/> : message.role === 'status' ? <span className="status-mark"/> : message.role === 'error' ? <CircleAlert size={14}/> : '景'}</div>{needsInput && <div className="message-warning-gutter"><button type="button" className="message-warning" aria-label="该消息需要补充信息" aria-describedby={warningId} aria-expanded={warningOpen} onClick={() => setWarningOpen((open) => !open)}><CircleAlert size={14}/></button><div id={warningId} role="tooltip" className={`message-warning-popover ${warningOpen ? 'open' : ''}`}><span>{message.errorMessage || '无法可靠识别投资决策：请补充标的、方向，以及成交/下单时间。'}</span>{onEdit && <button type="button" onClick={() => onEdit(message)}>补充信息</button>}</div></div>}<div className="message-bubble">{isWelcome ? <><h2>{message.content}</h2><p>用自然语言描述历史决策，AIME 会帮你还原当时的信息环境。</p></> : <><span>{message.role === 'assistant' ? 'AIME REVIEW AGENT' : message.role === 'status' ? 'REVIEW STATUS' : message.role === 'error' ? 'TURN ERROR' : 'YOU'}</span>{reasoning && message.role === 'assistant' && <details className="reasoning-disclosure"><summary><Sparkles size={12}/> 思考过程</summary><MarkdownText text={reasoning}/></details>}{status ? <p className="status-copy">{visibleContent}</p> : <MarkdownText text={visibleContent}/>} {message.role !== 'error' && <div className="message-actions"><button type="button" aria-label="复制消息" onClick={() => onCopy(message)}>{copyNotice ? '已复制' : '复制'}</button>{onEdit && <button type="button" aria-label="编辑消息" onClick={() => onEdit(message)}>编辑</button>}{onRetry && <button type="button" aria-label="重试消息" onClick={() => onRetry(message)}>重试</button>}<button type="button" aria-label="删除消息" onClick={() => void onDelete(message)}>删除</button></div>}</>}</div></div>;
 }
 function StarterPrompts({ onSelect }: { onSelect: (prompt: string) => void }) { return <div className="starter-prompts" data-testid="starter-prompts"><span className="eyebrow">START WITH A REVIEW</span><div>{starterPrompts.map((prompt, index) => <button type="button" key={prompt} data-testid={`starter-prompt-${index + 1}`} onClick={() => onSelect(prompt)}>{prompt}<ArrowRight size={14}/></button>)}</div></div>; }
 function ActivityAnchor({ events, active, open, onToggle, onStop }: { events: ActivityEvent[]; active: boolean; open: boolean; onToggle: () => void; onStop: () => void }) {

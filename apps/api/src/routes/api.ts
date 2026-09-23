@@ -195,13 +195,14 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     for (const item of decisions) {
       const runId = `rev_${randomUUID()}`; const decision: DecisionInput = { symbol: item.symbol, market: item.market as "CN" | "HK" | "US", action: item.action, executedAt: item.executedAt!, timePrecision: item.timePrecision, price: item.price ?? undefined, quantity: item.quantityShares ?? item.quantity ?? undefined, userReason: item.reason, notes: item.notes };
       deps.repo.createRun(runId, decision, item.executedAt!, id, user.id); deps.repo.linkDecisionReview(item.id, user.id, runId); runIds.push(runId);
-      const execute = async () => { try { await agent.run(runId, decision); const result = deps.repo.getResult(runId); if (result && canPersistDecisionLessons(result, deps.repo.getRun(runId)?.status)) for (const lesson of result.lessons) { const text = lesson.trim(); if (text) deps.repo.addMemory(user.id, text, "lesson", id, item.id); } deps.repo.addMessage(id, user.id, "status", `${item.symbol} 已完成 T0 对齐与证据复盘。`); } catch (error) { deps.repo.updateStatus(runId, "failed", { errorMessage: error instanceof Error ? error.message : String(error), finishedAt: new Date().toISOString() }); deps.repo.addMessage(id, user.id, "status", `${item.symbol} 复盘失败，已保留会话上下文。`); } };
+      const execute = async () => { try { await agent.run(runId, decision); if (deps.repo.isCancelled(runId)) return; const result = deps.repo.getResult(runId); if (result && canPersistDecisionLessons(result, deps.repo.getRun(runId)?.status)) for (const lesson of result.lessons) { const text = lesson.trim(); if (text) deps.repo.addMemory(user.id, text, "lesson", id, item.id); } deps.repo.addMessage(id, user.id, "status", `${item.symbol} 已完成 T0 对齐与证据复盘。`); } catch (error) { if (deps.repo.isCancelled(runId)) return; deps.repo.updateStatus(runId, "failed", { errorMessage: error instanceof Error ? error.message : String(error), finishedAt: new Date().toISOString() }); deps.repo.addMessage(id, user.id, "status", `${item.symbol} 复盘失败，已保留会话上下文。`); } };
       if (deps.runSync) await execute(); else pending.push(execute());
     }
     const finalizeSession = () => {
       const runs = runIds.map((runId) => deps.repo.getRun(runId));
       const failed = runs.some((run) => run?.status === "failed");
       const partial = runs.some((run) => run?.status === "partial" || run?.status === "created" || run?.status === "retrieving");
+      if (deps.repo.getSession(id, user.id)?.status === "cancelled") return;
       const status = failed ? "failed" : partial ? "partial" : "completed";
       deps.repo.updateSession(id, user.id, status);
       const results = runIds.map((runId) => deps.repo.getResult(runId)).filter(Boolean) as any[];
@@ -224,6 +225,18 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     const completion = await userProvider.complete({ system: "你是 AIME 投资决策复盘助手。只基于当前用户 session 的 decisions、T0 前后证据、findings 与 learning memory 回答；不要给出新的买卖指令。", user: JSON.stringify({ question: content, decisions, results, memories }), temperature: 0.2, maxOutputTokens: 900 });
     const assistant = deps.repo.addMessage(id, user.id, "assistant", completion.text || "当前无法生成追问回复。"); return c.json({ message: assistant, messages: deps.repo.listMessages(id, user.id) }, 201);
   });
+
+  app.patch("/api/sessions/:id/messages/:messageId", async (c) => {
+    const user = c.get("user")!; const id = c.req.param("id"); const body = await c.req.json().catch(() => ({})) as { content?: string };
+    const content = body.content?.trim(); if (!content) return c.json({ error: "invalid_input", message: "消息不能为空。" }, 400);
+    const message = deps.repo.updateMessageAndInvalidate(c.req.param("messageId"), id, user.id, content); if (!message) return c.json({ error: "not_found" }, 404);
+    return c.json({ message, messages: deps.repo.listMessages(id, user.id) });
+  });
+  app.delete("/api/sessions/:id/messages/:messageId", (c) => {
+    const user = c.get("user")!; const id = c.req.param("id"); if (!deps.repo.softDeleteMessageAndInvalidate(c.req.param("messageId"), id, user.id)) return c.json({ error: "not_found" }, 404);
+    return c.json({ messages: deps.repo.listMessages(id, user.id) });
+  });
+  app.post("/api/sessions/:id/cancel", (c) => { const user = c.get("user")!; const id = c.req.param("id"); if (!deps.repo.getSession(id, user.id)) return c.json({ error: "not_found" }, 404); deps.repo.cancelSessionRuns(id, user.id); return c.json({ sessionId: id, status: "cancelled" }); });
 
   // Review endpoints — require an authenticated, non-mustChangePassword user.
   app.use("/api/reviews/*", requireAuth(deps.userRepo), gateMustChangePassword());

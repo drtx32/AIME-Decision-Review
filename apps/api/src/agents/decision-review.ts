@@ -54,6 +54,8 @@ export interface AgentRunOutcome {
   reflectionFlags: ReflectionFlag[];
 }
 
+export class ReviewCancelledError extends Error { constructor() { super("Review cancelled"); this.name = "ReviewCancelledError"; } }
+
 export class DecisionReviewAgent {
   constructor(
     private readonly deps: {
@@ -102,6 +104,7 @@ export class DecisionReviewAgent {
     );
 
     repo.insertEvidence(reviewId, evidence);
+    if (repo.isCancelled(reviewId)) throw new ReviewCancelledError();
 
     // ── analyzing ──────────────────────────────────────────────────────────
     repo.updateStatus(reviewId, "analyzing");
@@ -122,6 +125,7 @@ export class DecisionReviewAgent {
     // ── reflecting ─────────────────────────────────────────────────────────
     repo.updateStatus(reviewId, "reflecting");
     const draft = await this.compose(reviewId, decision, T0, exAnte, exPost, toolStatuses, emit);
+    if (repo.isCancelled(reviewId)) throw new ReviewCancelledError();
     const flags = reflect({ result: draft, rawEvidence: evidence });
     if (flags.length > 0) {
       emit("reflection", `Reflection produced ${flags.length} flag(s).`, {

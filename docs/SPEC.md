@@ -71,6 +71,16 @@ provider configuration, MCP endpoints, and authorization material are
 server/operator concerns; normal users must not see raw secrets or endpoint
 configuration. Sanitized provider status is acceptable.
 
+First narrative turns: when a conversation message arrives on a session without
+structured decisions, the backend extracts candidate decisions for T0/direction/
+quantity confirmation instead of producing a generic follow-up chat reply.
+Capability/status questions ("MCP/Fuyao/iFinD 能不能用") are answered by the
+backend from runtime configuration without invoking the LLM and never demand a
+structured-data template. Follow-up chat answers are grounded in the stored
+review results, are never served as if they were MCP evidence, and never render
+provider chain-of-thought verbatim. Assistant/status messages render through a
+sanitized standard Markdown pipeline (raw HTML stripped, safe links only).
+
 ## 3. Review correctness
 
 The review accepts one or multiple historical decisions and aligns, where

@@ -35,9 +35,11 @@ missing.
 | `docs/DEPLOYMENT.md`              | Production deployment guide                       |
 | `submission/MANIFEST.md`          | This file                                         |
 | `submission/README.md`            | Submission skeleton overview                      |
+| `submission/PROJECT_DESCRIPTION.md` | Submission-facing 1–2 page summary               |
+| `submission/DEMO_SCRIPT.md`        | 60–180s demo-video storyboard                     |
 | `submission/DEPLOYMENT_EVIDENCE.template.md` | Deployment evidence template            |
 | `submission/LICENSE_INVENTORY.md`   | Third-party attribution                           |
-| `submission/TEST_NOTES.md`        | Known boundaries + test status                    |
+| `submission/TEST_NOTES.md`        | Known boundaries + test status + golden-path matrix |
 | `submission/AI_VALIDATION_RECORD.md` | AI usage record (fixture vs real)               |
 | `scripts/preflight.mjs`           | Submission preflight script (Node)                |
 | `scripts/preflight.sh`            | Submission preflight wrapper (POSIX)              |

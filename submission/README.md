@@ -17,11 +17,13 @@ tests, and timestamps, the template is replaced with a populated
 | File                                       | Purpose                                                |
 |--------------------------------------------|--------------------------------------------------------|
 | `MANIFEST.md`                              | Required artefacts, forbidden patterns, ZIP naming      |
+| `PROJECT_DESCRIPTION.md`                   | Submission-facing 1–2 page summary (Problem / Solution / Key Features / Agent Workflow / MCP+data / canonical example / technical highlights / known limitations) |
+| `DEMO_SCRIPT.md`                           | 60–180s demo-video storyboard (no recording is fabricated) |
 | `DEPLOYMENT_EVIDENCE.template.md`          | Deployment evidence template (fill in after deploy)     |
 | `LICENSE_INVENTORY.md`                     | Third-party attribution + inspiration/copy distinctions|
-| `TEST_NOTES.md`                            | Known boundaries + test status by `TEST_PLAN.md` case   |
+| `TEST_NOTES.md`                            | Known boundaries + test status by `TEST_PLAN.md` case, golden-path matrix |
 | `AI_VALIDATION_RECORD.md`                  | AI usage record, separating fixture vs real validation |
-| `BUILD_INFO.txt` (generated)               | Commit SHA + dirty state + builder timestamp            |
+| `BUILD_INFO.txt` (generated)                | Commit SHA + dirty state + builder timestamp            |
 
 ## How to use
 

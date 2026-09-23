@@ -100,6 +100,118 @@ cookie. This guard is covered by `apps/api/tests/auth.test.ts`.
 Strings and labels in `src/App.tsx` and `src/styles.css` are simplified
 Chinese. Localization to English is out of MVP scope.
 
+## Golden-path matrix (final candidate)
+
+The matrix below is the **submission-facing view** of the test surface.
+Every row points to the corresponding canonical `docs/TEST_PLAN.md`
+case and to the evidence entry in `docs/AI_VALIDATION.md`. Rows that
+are not `✅` / `🟡` / `🧪` are intentionally explicit `⛔` (real-credential
+validation pending) or `🚫` (out of MVP scope) — they are not silent
+omissions.
+
+| #  | Scenario                                                  | Status | Source case(s)         | Notes                                                                                                                |
+|----|-----------------------------------------------------------|--------|------------------------|---------------------------------------------------------------------------------------------------------------------|
+| 1  | Exact T0 — Maotai 2024-03-15 buy                          | ✅      | T01, T01a, T01b, T02   | Fixture (`LLM_PROVIDER=mock`); full session → confirm → Review Agent → MCP → assistant reply; T0 split renders.       |
+| 2  | Approximate T0 — "around March 2024"                      | 🟡      | T03                    | Extractor returns `timePrecision: "approximate"`, `executedAt: null`; reviewer UI shows the original phrase + `approximate` tag; Review Agent alignment uses `publishedAt` only. |
+| 3  | Multi-security — two buy candidates in one message        | 🧪      | T01                    | Extractor returns two `DecisionCandidate` rows; user confirms both; review runs once per candidate; both appear on the result panel. |
+| 4  | Repeated unfilled orders — "queued NVDA three days, none filled" | 🧪 | T01                    | Extractor returns three rows with `executedAt: null` per day and `notes: attempted/unfilled`; they are not merged.      |
+| 5  | WEB session → confirm → Review Agent → MCP → assistant reply | ✅    | T01, T01a, T01b        | End-to-end mock path; trace events stream through SSE; right-panel Findings / Evidence / Learning populates.       |
+| 6  | Markdown / `<think>` / tool activity in trace             | ✅      | T13                    | `<think>` is stripped at the provider boundary; tool events are the fixed product-level set (`docs/SPEC.md` §15).  |
+| 7  | MCP transient failure → partial review                    | 🧪      | T05                    | `simulateTransientFailure` flag in `decision-review.ts`; review downgrades to `partial`; gap surfaces in `uncertainties`. |
+| 8  | MCP permanent failure → partial review (no fabrication)   | 🧪      | T06                    | `simulatePermanent` flag; no retry; review status `partial`.                                                       |
+| 9  | LLM provider failure → transient / bounded retry          | 🧪      | T05 (LLM analogue)     | Provider returns `transient_error`; bounded retry (one extra attempt); if still failing, review becomes `partial`.   |
+| 10 | Persistence / reload — review survives API restart        | ✅      | T19                    | SQLite `reviews` table persists in `api-data` volume; reload via `GET /api/reviews/:id/result` rehydrates the panel. |
+| 11 | Persistence / reload — review survives browser reload     | ✅      | T01b                   | Session id restored from browser storage; rehydrated via session API.                                              |
+| 12 | Production smoke — health endpoints from a clean host     | ⛔      | T19                    | Pending the production deploy step (out of scope for ELI-340). See `submission/DEPLOYMENT_EVIDENCE.template.md`.     |
+| 13 | Real LLM call (openai-compatible / MiniMax)               | ⛔      | T18a                   | Provider plumbed; no credentialed run recorded.                                                                    |
+| 14 | Real Fuyao MCP call                                       | ⛔      | T18                    | HTTP branch wired; no credentialed run recorded.                                                                   |
+| 15 | Real iFinD MCP call                                       | ⛔      | T18                    | HTTP branch wired; no credentialed run recorded.                                                                   |
+| 16 | T0 leakage reflection — ex-post contaminates ex-ante?     | ✅      | T09, T10               | Reflection pass flags outcome contamination when present; deterministic in code; asserted in `apps/api/tests/agent.test.ts`. |
+| 17 | Non-compliant request (guaranteed return / direct trade)  | ✅      | T11                    | API returns HTTP 422 `{ error: "non_compliant_request" }`; no review created.                                       |
+| 18 | Secret scan — no populated credentials in repo / build    | ✅      | T12                    | `scripts/preflight.mjs` plus `tests/preflight/`; `docs/AI_VALIDATION.md` exempted with a documented reason.          |
+| 19 | Trace redaction — no `Authorization`, no cookies in trace  | 🟡      | T13                    | Events do not include request bodies or headers; no automated test yet (manual code review only).                   |
+| 20 | Mock-only frontend demo (no backend)                      | ✅      | T14                    | Default `VITE_API_BASE_URL` is unset → in-process mock adapter drives Home → Running → Result.                     |
+| 21 | Responsive desktop layout                                 | ⛔      | T15                    | Visual verification pending; no Playwright/Cypress harness in this slice.                                          |
+| 22 | Auth required on every review endpoint                    | ✅      | T12 (subset)           | All review routes require an authenticated cookie session; bootstrap admin must change password on first login.    |
+| 23 | Identity contract — client `x-user-id` rejected           | ✅      | T12 (subset)           | Headers are ignored on every protected route; identity is always derived from the session cookie.                  |
+| 24 | Normative-message fidelity for approximate / unknown T0     | 🟡      | T03                    | Extractor never invents `executedAt`; UI surfaces the original text; the result explicitly labels time-precision.   |
+
+### Per-row deep dives
+
+#### 1. Exact T0 (Maotai 2024-03-15 buy)
+
+- Input: `我 2024-03-15 在 ¥1,720 买了 600519（贵州茅台）。当时看了 2023 年报，现金流稳定，估值回到五年中枢。`
+- Pipeline: `DecisionExtractorAgent` returns one `DecisionCandidate`
+  with `timePrecision: "exact"`, `executedAt: "2024-03-15T…Z"`,
+  `action: "buy"`, `price: 1720`, `confidence: 0.91`. User confirms.
+- `DecisionReviewAgent` enters `planning`, selects
+  `fuyao:a-share`, `fuyao:a-share-index`, `ifind:news`, `ifind:edb`,
+  `ifind:enterprise` (depending on the configured intent map).
+- Result: `status: completed`, `decisionQuality` reasoned on
+  `exAnteEvidence` only, `outcome` reasoned on `exPostEvidence` only,
+  lessons grounded.
+
+#### 4. Repeated unfilled orders
+
+- Input: "I queued NVDA at $X on 2024-03-13, 2024-03-14, and 2024-03-15.
+  None filled."
+- Pipeline: `DecisionExtractorAgent` returns **three** `DecisionCandidate`
+  rows, one per day, each with `executedAt: null`,
+  `quantityShares: <quantity>`, `notes: "attempted/unfilled"`,
+  `timePrecision: "exact"` (the dates are exact).
+- Review runs once per candidate. Each result surfaces the same T0,
+  marks the candidate as unfilled in the result, and includes the
+  candidate in the `missedEvidence` review (the unfilled order itself
+  is a documented data point).
+
+#### 6. Markdown / `<think>` / tool activity
+
+- The browser SSE consumer receives only product-level trace events.
+  `<think>` blocks produced by the LLM are stripped at the provider
+  boundary (`parseJson` in `decision-extractor.ts`; analogous logic in
+  `decision-review.ts`).
+- Tool activity is rendered as a fixed list of events: `plan.ready`,
+  `market_data_retrieved`, `index_sector_context_retrieved`,
+  `news_events_retrieved`,
+  `evidence_time_aligned`, `fact_consistency_checked`,
+  `reflection`, `final_review_generated`.
+- The reflection event does not include the underlying CoT; it carries
+  only the structured flags (`T0_leakage`, `numeric_grounding`,
+  `counter_evidence_ignored`, `outcome_contamination`) and a boolean
+  outcome.
+
+#### 10. Persistence / reload — API restart
+
+- `apps/api/src/db/sqlite.ts` uses `bun:sqlite` per-process; the SQLite
+  file lives in the named `api-data` Docker volume. Restarting the API
+  container does not lose review rows.
+- After restart, `GET /api/reviews/:id/result` returns the persisted
+  `DecisionReviewResult`.
+
+#### 11. Persistence / reload — browser reload
+
+- The composer draft and the active session id are restored from
+  browser storage; the conversation panel rehydrates from the session
+  API after the reload. Stopped / partial runs do not persist normal
+  Findings / Learning (per the Hermes adaptation boundary; see
+  `docs/HERMES_ADAPTATION.md`).
+
+#### 12. Production smoke
+
+- Pending. The current submission explicitly defers production deploy
+  evidence to a follow-up PR. `submission/DEPLOYMENT_EVIDENCE.template.md`
+  remains the unfilled template; the public Web URL placeholder and
+  the exact final deployed SHA are `UNKNOWN` until the deploy step
+  lands (out of scope for ELI-340).
+
+#### 13–15. Real LLM / Fuyao / iFinD validation
+
+- See `submission/AI_VALIDATION_RECORD.md` §"Real validation" for the
+  code paths and the evidence required to upgrade each entry from
+  `⛔ Unvalidated` to `Real`.
+
+---
+
 ## Pre-submit checklist (mirrors `docs/TEST_PLAN.md`)
 
 - [ ] Web URL works in a clean browser session (deferred — production deploy not in this issue).
@@ -111,3 +223,5 @@ Chinese. Localization to English is out of MVP scope.
 - [x] Compliance boundary tested (T11).
 - [x] Secrets absent from repo, build, logs.
 - [x] Known limitations documented (this file).
+- [x] Golden-path matrix documented above (final session → real-credential
+      runs remain ⛔ by design; see `submission/AI_VALIDATION_RECORD.md`).

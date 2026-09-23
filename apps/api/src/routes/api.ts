@@ -529,3 +529,116 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
         const baseline = await fetchFuyaoKline(baselineReq, credentials.fuyao);
         if (baseline.status === "ok") {
           const pctPrimary = toPercentLine(fetched.series!);
+          const pctBaseline = toPercentLine(baseline.series!);
+          primary = {
+            status: "ok",
+            series: {
+              source: "mixed",
+              symbol: req.symbol,
+              market: req.market ?? "CN",
+              timezone: fetched.series!.timezone,
+              unit: "%",
+              retrievedAt: new Date().toISOString(),
+              line: pctPrimary,
+              baseline: pctBaseline,
+              markers: fetched.series!.markers,
+            },
+          };
+        } else {
+          primary = fetched;
+        }
+      } else {
+        primary = fetched;
+      }
+    } else if (req.type === "valuation" || req.type === "financial") {
+      // Provider-field gap: we deliberately do NOT fabricate values
+      // here. SPEC §6.6 — analyst/consensus targets must come from a
+      // real provider or remain absent.
+      primary = {
+        status: "unavailable",
+        message:
+          "估值/财务时序字段未在直连接口中暴露，请改用 K 线 + 财务事件的组合。",
+      };
+    }
+
+    // Decision / event markers: derive from the review's stored evidence
+    // if the user asked for `timeline`. We never surface a marker
+    // without its `relationToDecision` label, and ex_post markers cannot
+    // justify the original decision.
+    const reviewId = c.req.query("reviewId");
+    if (reviewId && primary?.series) {
+      const events = deps.repo.getEvents(reviewId);
+      const decision = deps.repo.getDecision(reviewId);
+      const T0 = decision?.T0;
+      const markers = events
+        .filter((e) => e.at)
+        .slice(0, 12)
+        .map((e) => ({
+          t: e.at,
+          label: e.message.slice(0, 40),
+          relationToDecision:
+            T0 && Date.parse(e.at) > Date.parse(T0)
+              ? ("ex_post" as const)
+              : ("ex_ante" as const),
+        }));
+      primary = {
+        status: primary.status,
+        series: withMarkers(primary.series, markers),
+        message: primary.message,
+        errorCode: primary.errorCode,
+      };
+    }
+
+    const response: ChartResponse = {
+      status: primary?.status ?? "permanent_error",
+      type: req.type,
+      series: primary?.series,
+      retrievedAt: new Date().toISOString(),
+      message: primary?.message,
+      error:
+        primary?.status && primary.status !== "ok" && primary.errorCode
+          ? {
+              code: primary.errorCode,
+              message: primary.message ?? "图表数据获取失败。",
+              retryable: primary.status === "transient_error",
+            }
+          : undefined,
+    };
+    return c.json(response);
+  });
+
+  // Admin endpoints — guarded inside buildAdminRoutes.
+  app.route("/api/admin", admin);
+
+  app.route("/api/settings", settings);
+  app.route("/api/usage", usage);
+  app.route("/api/models/capabilities", capabilities);
+
+  return app;
+}
+
+function toPercentLine(series: ChartSeries): Array<{ t: string; value: number }> {
+  if (!series.line?.length && !series.candles?.length) return [];
+  const points = series.line ?? series.candles!.map((c) => ({ t: c.t, value: c.close }));
+  const start = points[0]?.value;
+  if (!start) return [];
+  return points.map((p) => ({ t: p.t, value: ((p.value - start) / start) * 100 }));
+}
+
+const NON_COMPLIANT_PATTERNS: Array<{ re: RegExp; label: string }> = [
+  { re: /\bguaranteed?\s+(return|profit|income|return[s]?)/i, label: "guaranteed return" },
+  { re: /\b100\s*%\s*(safe|return|profit)/i, label: "100% return" },
+  { re: /\b确定性(涨跌|收益|回报)/, label: "确定性收益" },
+  { re: /\b直接(买入|卖出)指令/, label: "直接买卖指令" },
+  { re: /\bsure\s+thing\b/i, label: "sure thing" },
+  { re: /\b(predict|tell me)\s+(the\s+)?(next\s+)?(price|stock|move)/i, label: "predict next price" },
+];
+
+function nonCompliantReasonFor(decision: { userReason?: string | null; notes?: string | null }): string | null {
+  const text = `${decision.userReason ?? ""} ${decision.notes ?? ""}`.trim();
+  if (!text) return null;
+  for (const { re, label } of NON_COMPLIANT_PATTERNS) {
+    if (re.test(text)) return label;
+  }
+  return null;
+}

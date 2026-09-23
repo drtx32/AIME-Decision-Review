@@ -24,6 +24,16 @@ import { buildAdminRoutes } from "../auth/admin.ts";
 import { AttachmentService } from "../attachments/service.ts";
 import { buildAttachmentRoutes } from "../attachments/routes.ts";
 import { buildSettingsRoutes, buildUsageRoute, buildCapabilitiesRoute } from "../settings/routes.ts";
+import { ChartRequestSchema, type ChartResponse, type ChartSeries } from "../charts/contract.ts";
+import {
+  fetchFuyaoKline,
+  fetchIFindKline,
+  fallbackKlineSeries,
+  providerAvailability as chartProviderAvailability,
+  withMarkers,
+  type ChartFetchCredentials,
+  type ChartFetchResult,
+} from "../charts/adapters.ts";
 
 export interface RouteDeps {
   config: AppConfig;
@@ -374,6 +384,157 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     return c.json({ id, status: run.status, result });
   });
 
+  // Chart endpoint — direct structured data path for inline ECharts.
+  // Requires an authenticated, non-mustChangePassword user, same gate as
+  // the review surface. Server-side only: provider credentials never
+  // leave this process and the response never echoes them.
+  app.use(
+    "/api/chart-data",
+    requireAuth(deps.userRepo),
+    gateMustChangePassword()
+  );
+
+  app.get("/api/chart-data", async (c) => {
+    const parsed = ChartRequestSchema.safeParse({
+      symbol: c.req.query("symbol"),
+      market: c.req.query("market") ?? undefined,
+      type: c.req.query("type"),
+      period: c.req.query("period") ?? undefined,
+      start: c.req.query("start") ?? undefined,
+      end: c.req.query("end") ?? undefined,
+      compareSymbol: c.req.query("compareSymbol") ?? undefined,
+    });
+    if (!parsed.success) {
+      return c.json(
+        { error: "invalid_input", issues: parsed.error.issues },
+        400
+      );
+    }
+    const req = parsed.data;
+    const credentials: ChartFetchCredentials = {
+      fuyao: {
+        baseUrl: config.fuyao.baseUrl,
+        apiKey: config.fuyao.apiKey,
+      },
+      ifind: {
+        baseUrl: config.ifind.baseUrl,
+        authorization: config.ifind.authorization,
+      },
+      timeoutMs: 8000,
+    };
+
+    const availability = chartProviderAvailability(credentials);
+    let primary: ChartFetchResult | null = null;
+
+    // Default path: Fuyao direct API. Only fall through to iFinD on a
+    // retryable / capability gap, never on a synthetic blank chart.
+    if (req.type === "kline" || req.type === "timeline") {
+      primary = await fetchFuyaoKline(req, credentials.fuyao);
+      if (
+        primary.status === "unavailable" ||
+        primary.status === "transient_error"
+      ) {
+        const fallback = await fetchIFindKline(req, credentials.ifind);
+        if (fallback.status === "ok") primary = fallback;
+        // If iFinD also fails, keep the Fuyao envelope — it carries the
+        // more useful diagnostic copy.
+      }
+      if (!availability.fuyao && !availability.ifind && primary?.status !== "ok") {
+        // No live provider wired — fall back to a synthetic series that
+        // is explicitly labelled `source: "fallback"` so the UI can
+        // show the disclaimer. We never silently invent an "ok" response.
+        const synthetic = fallbackKlineSeries(req);
+        primary = { status: "ok", series: synthetic };
+      }
+    } else if (req.type === "compare") {
+      // Comparison series: fetch the primary and the baseline, then
+      // combine them into a `mixed`-source envelope. We only enable
+      // this path when the primary is a kline request with a baseline.
+      const primaryReq = { ...req, type: "kline" as const };
+      const fetched = await fetchFuyaoKline(primaryReq, credentials.fuyao);
+      if (fetched.status === "ok" && req.compareSymbol) {
+        const baselineReq = { ...primaryReq, symbol: req.compareSymbol };
+        const baseline = await fetchFuyaoKline(baselineReq, credentials.fuyao);
+        if (baseline.status === "ok") {
+          const pctPrimary = toPercentLine(fetched.series!);
+          const pctBaseline = toPercentLine(baseline.series!);
+          primary = {
+            status: "ok",
+            series: {
+              source: "mixed",
+              symbol: req.symbol,
+              market: req.market ?? "CN",
+              timezone: fetched.series!.timezone,
+              unit: "%",
+              retrievedAt: new Date().toISOString(),
+              line: pctPrimary,
+              baseline: pctBaseline,
+              markers: fetched.series!.markers,
+            },
+          };
+        } else {
+          primary = fetched;
+        }
+      } else {
+        primary = fetched;
+      }
+    } else if (req.type === "valuation" || req.type === "financial") {
+      // Provider-field gap: we deliberately do NOT fabricate values
+      // here. SPEC §6.6 — analyst/consensus targets must come from a
+      // real provider or remain absent.
+      primary = {
+        status: "unavailable",
+        message:
+          "估值/财务时序字段未在直连接口中暴露，请改用 K 线 + 财务事件的组合。",
+      };
+    }
+
+    // Decision / event markers: derive from the review's stored evidence
+    // if the user asked for `timeline`. We never surface a marker
+    // without its `relationToDecision` label, and ex_post markers cannot
+    // justify the original decision.
+    const reviewId = c.req.query("reviewId");
+    if (reviewId && primary?.series) {
+      const events = deps.repo.getEvents(reviewId);
+      const decision = deps.repo.getDecision(reviewId);
+      const T0 = decision?.T0;
+      const markers = events
+        .filter((e) => e.at)
+        .slice(0, 12)
+        .map((e) => ({
+          t: e.at,
+          label: e.message.slice(0, 40),
+          relationToDecision:
+            T0 && Date.parse(e.at) > Date.parse(T0)
+              ? ("ex_post" as const)
+              : ("ex_ante" as const),
+        }));
+      primary = {
+        status: primary.status,
+        series: withMarkers(primary.series, markers),
+        message: primary.message,
+        errorCode: primary.errorCode,
+      };
+    }
+
+    const response: ChartResponse = {
+      status: primary?.status ?? "permanent_error",
+      type: req.type,
+      series: primary?.series,
+      retrievedAt: new Date().toISOString(),
+      message: primary?.message,
+      error:
+        primary?.status && primary.status !== "ok" && primary.errorCode
+          ? {
+              code: primary.errorCode,
+              message: primary.message ?? "图表数据获取失败。",
+              retryable: primary.status === "transient_error",
+            }
+          : undefined,
+    };
+    return c.json(response);
+  });
+
   // Admin endpoints — guarded inside buildAdminRoutes.
   app.route("/api/admin", admin);
 
@@ -382,6 +543,14 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   app.route("/api/models/capabilities", capabilities);
 
   return app;
+}
+
+function toPercentLine(series: ChartSeries): Array<{ t: string; value: number }> {
+  if (!series.line?.length && !series.candles?.length) return [];
+  const points = series.line ?? series.candles!.map((c) => ({ t: c.t, value: c.close }));
+  const start = points[0]?.value;
+  if (!start) return [];
+  return points.map((p) => ({ t: p.t, value: ((p.value - start) / start) * 100 }));
 }
 
 const NON_COMPLIANT_PATTERNS: Array<{ re: RegExp; label: string }> = [

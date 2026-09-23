@@ -8,7 +8,7 @@
 
 import { Hono } from "hono";
 import { randomUUID } from "node:crypto";
-import { DecisionInputSchema, type DecisionInput } from "../types/index.ts";
+import { DecisionInputSchema, type DecisionInput, type DecisionReviewResult, type ReviewStatus } from "../types/index.ts";
 import type { AppConfig } from "../config.ts";
 import type { ReviewRepository } from "../db/sqlite.ts";
 import type { UserRepository } from "../auth/repository.ts";
@@ -31,6 +31,14 @@ export interface RouteDeps {
 }
 
 type AppEnv = { Variables: AuthEnv["Variables"] };
+
+/** Durable investment learning is reserved for a completed, grounded run. */
+function canPersistDecisionLessons(result: DecisionReviewResult | null, status: ReviewStatus | undefined): boolean {
+  if (!result || status !== "completed" || result.exAnteEvidence.length === 0) return false;
+  if (!["poor", "fair", "good", "strong"].includes(result.decisionQuality.rating)) return false;
+  const exAnteIds = new Set(result.exAnteEvidence.map((item) => item.id));
+  return result.attribution.some((item) => item.evidenceIds.length > 0 && item.evidenceIds.every((id) => exAnteIds.has(id)));
+}
 
 export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
@@ -143,7 +151,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     for (const item of decisions) {
       const runId = `rev_${randomUUID()}`; const decision: DecisionInput = { symbol: item.symbol, market: item.market as "CN" | "HK" | "US", action: item.action, executedAt: item.executedAt!, timePrecision: item.timePrecision, price: item.price ?? undefined, quantity: item.quantityShares ?? item.quantity ?? undefined, userReason: item.reason, notes: item.notes };
       deps.repo.createRun(runId, decision, item.executedAt!, id, user.id); deps.repo.linkDecisionReview(item.id, user.id, runId); runIds.push(runId);
-      const execute = async () => { try { await agent.run(runId, decision); const result = deps.repo.getResult(runId); for (const lesson of result?.lessons ?? []) { const text = lesson.trim(); if (text) deps.repo.addMemory(user.id, text, "lesson", id, item.id); } deps.repo.addMessage(id, user.id, "status", `${item.symbol} 已完成 T0 对齐与证据复盘。`); } catch (error) { deps.repo.updateStatus(runId, "failed", { errorMessage: error instanceof Error ? error.message : String(error), finishedAt: new Date().toISOString() }); deps.repo.addMessage(id, user.id, "status", `${item.symbol} 复盘失败，已保留会话上下文。`); } };
+      const execute = async () => { try { await agent.run(runId, decision); const result = deps.repo.getResult(runId); if (result && canPersistDecisionLessons(result, deps.repo.getRun(runId)?.status)) for (const lesson of result.lessons) { const text = lesson.trim(); if (text) deps.repo.addMemory(user.id, text, "lesson", id, item.id); } deps.repo.addMessage(id, user.id, "status", `${item.symbol} 已完成 T0 对齐与证据复盘。`); } catch (error) { deps.repo.updateStatus(runId, "failed", { errorMessage: error instanceof Error ? error.message : String(error), finishedAt: new Date().toISOString() }); deps.repo.addMessage(id, user.id, "status", `${item.symbol} 复盘失败，已保留会话上下文。`); } };
       if (deps.runSync) await execute(); else pending.push(execute());
     }
     const finalizeSession = () => {

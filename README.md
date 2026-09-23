@@ -10,7 +10,8 @@ All agents and contributors MUST read the repository docs before implementation 
 - `docs/AI_VALIDATION.md` — AI usage and validation log
 - `docs/TEST_PLAN.md` — required test coverage and evidence
 - `docs/AUTOMATION.md` — GitHub Actions → Multica supervision
-- `docs/DEPLOYMENT.md` — canonical production path, Compose pinning, secrets, health checks, backup, and rollback\n- `docs/THIRD_PARTY.md` — third-party licenses and reference-code attribution boundary
+- `docs/DEPLOYMENT.md` — canonical production path, Compose pinning, secrets, health checks, backup, and rollback
+- `docs/THIRD_PARTY.md` — third-party licenses and reference-code attribution boundary
 
 If an Issue conflicts with `docs/SPEC.md`, the explicit newer Issue instruction wins; otherwise follow the docs.
 

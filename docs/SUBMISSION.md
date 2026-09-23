@@ -4,7 +4,7 @@
 
 - **Submission-prep PR:** [PR #8](https://github.com/drtx32/AIME-Decision-Review/pull/8), Draft
 - **Branch:** `agent/oracle-codex/5c4465503faf`
-- **Current head:** `2183476` (rebased on `main@38818eb`)
+- **Current head:** `7f2c694` (rebased on `main@38818eb`)
 - **Public URL:** `https://10jqka-aime.tong-xiao.top` (deployment health and public review POST previously verified)
 - **Canonical startup:** root `.env` from `.env.example`, then `docker compose up -d --build`; web-only `13608:80`, API internal `api:3000`, named SQLite volume, `restart: unless-stopped`.
 

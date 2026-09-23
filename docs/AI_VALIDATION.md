@@ -553,3 +553,21 @@ unmerged candidate as current `main`.
   rerun evidence is therefore pending. Real provider evidence above is
   candidate evidence, not a claim that the public deployment or this PR's
   `main` base has switched to it.
+
+## Submission preflight and attribution — 2026-09-23
+
+- `scripts/submission-preflight.sh` passed: `git diff --check`, root frontend
+  build, Compose config with an unset bootstrap password, repository populated
+  key/bearer scan, tracked-files-only archive construction, archive forbidden
+  path scan, and archive secret scan.
+- The resulting draft archive contains 65 tracked entries and is 109,468 bytes
+  (`aime-decision-review-submission-7f2c694.tar.gz`); it includes `.env.example`
+  and excludes runtime `.env`, databases/WAL/SHM, dependency/build caches,
+  logs, backups, and `.git`.
+- `docs/THIRD_PARTY.md` records direct dependency license identifiers, Google
+  Fonts OFL attribution, external Fuyao/iFinD/MiniMax boundaries, and the
+  negative Hermes/vendored-source check. No third-party source or proprietary
+  asset was copied into the repository.
+- This is a reproducible **draft** preflight only. It does not convert pending
+  PR #7/ELI-333/ELI-318 evidence, manual browser checks, or missing demo
+  evidence into completion.

@@ -38,6 +38,36 @@ function encryptKey(value: string, secret: string): string { const iv = randomBy
 function decryptKey(value: string, secret: string): string | null { try { const [, version, ivRaw, tagRaw, dataRaw] = value.split(":"); if (version !== "v1" || !ivRaw || !tagRaw || !dataRaw) return null; const decipher = createDecipheriv("aes-256-gcm", keyFor(secret), Buffer.from(ivRaw, "base64url")); decipher.setAuthTag(Buffer.from(tagRaw, "base64url")); return Buffer.concat([decipher.update(Buffer.from(dataRaw, "base64url")), decipher.final()]).toString("utf8"); } catch { return null; } }
 function sanitizedError(error: unknown): string { const text = error instanceof Error ? error.message : String(error); return text.replace(/(authorization|api[-_ ]?key|bearer)\s*[:=]?\s*[^\s,;]+/gi, "$1 [redacted]").slice(0, 240); }
 
+function sessionActivities(repo: ReviewRepository, decisions: Array<{ id: string; symbol: string; reviewId: string | null }>): Array<Record<string, unknown>> {
+  const events: Array<Record<string, unknown>> = [];
+  const labels: Record<string, { type: string; label: string; purpose: string; provider?: string }> = {
+    review_created: { type: "lifecycle_status", label: "正在理解这次决策", purpose: "建立复盘任务" },
+    evidence_time_aligned: { type: "reasoning_summary", label: "正在核对成交时间", purpose: "对齐 T0 前后时间边界" },
+    market_data_retrieved: { type: "tool_completed", label: "获取行情数据", purpose: "核对成交附近的市场数据", provider: "行情数据" },
+    index_sector_context_retrieved: { type: "tool_completed", label: "检索行业与指数背景", purpose: "补充当时可见的市场环境", provider: "Fuyao" },
+    news_events_retrieved: { type: "tool_completed", label: "检索当日事件", purpose: "核对事前可知信息", provider: "iFinD" },
+    fact_consistency_checked: { type: "reasoning_summary", label: "正在核对事实一致性", purpose: "检查决策与证据是否一致" },
+    reflection: { type: "reasoning_summary", label: "正在生成复盘归因", purpose: "区分过程质量与结果" },
+    final_review_generated: { type: "terminal_status", label: "复盘已完成", purpose: "整理证据、结论与学习" },
+    tool_status: { type: "tool_updated", label: "数据源状态已更新", purpose: "汇总工具返回状态" },
+    error: { type: "terminal_status", label: "复盘遇到数据源问题", purpose: "保留已获得的上下文" },
+  };
+  for (const decision of decisions) {
+    if (!decision.reviewId) continue;
+    const run = repo.getRun(decision.reviewId);
+    for (const event of repo.getEvents(decision.reviewId)) {
+      const mapped = labels[event.kind] ?? labels.tool_status;
+      const metadata = event.metadata ?? {};
+      const count = typeof metadata.sourceCount === "number" ? metadata.sourceCount : typeof metadata.evidenceCount === "number" ? metadata.evidenceCount : undefined;
+      events.push({ id: event.id, type: mapped.type, label: `${decision.symbol} · ${mapped.label}`, purpose: mapped.purpose, provider: mapped.provider, sourceCount: count, status: event.kind === "error" ? "error" : event.kind === "final_review_generated" ? "completed" : "completed", startedAt: event.at, completedAt: event.at });
+    }
+    if (run && !["completed", "partial", "failed"].includes(run.status)) events.push({ id: `${decision.reviewId}:active`, type: "lifecycle_status", label: `${decision.symbol} · 正在复原这次决策`, purpose: "正在检索与核对证据", status: "active", startedAt: run.createdAt });
+    if (run?.status === "partial") events.push({ id: `${decision.reviewId}:partial`, type: "terminal_status", label: `${decision.symbol} · 部分完成`, purpose: "部分数据源不可用，保留已获证据", status: "degraded", completedAt: run.finishedAt ?? run.updatedAt });
+    if (run?.status === "failed") events.push({ id: `${decision.reviewId}:failed`, type: "terminal_status", label: `${decision.symbol} · 复盘失败`, purpose: "未写入不完整的学习结论", status: "error", completedAt: run.finishedAt ?? run.updatedAt });
+  }
+  return events.sort((a, b) => String(a.startedAt).localeCompare(String(b.startedAt)));
+}
+
 class UsageTrackingProvider implements ModelProvider {
   readonly id: string; readonly modelName: string; readonly configured = true;
   constructor(private readonly inner: ModelProvider, private readonly userRepo: UserRepository, private readonly userId: string) { this.id = inner.id; this.modelName = inner.modelName; }
@@ -162,19 +192,19 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
       const warning = "无法可靠识别投资决策：请补充标的、方向，以及成交/下单时间。";
       deps.repo.updateMessageState(userMessage.id, sessionId, user.id, "needs_input", warning);
       deps.repo.updateSession(sessionId, user.id, "needs_input");
-      return c.json({ sessionId, status: "needs_input", warning, decisions: [], messages: deps.repo.listMessages(sessionId, user.id), memories: deps.repo.listMemories(user.id) }, 201);
+      return c.json({ sessionId, status: "needs_input", warning, decisions: [], messages: deps.repo.listMessages(sessionId, user.id), memories: deps.repo.listMemories(user.id), activities: [] }, 201);
     }
     deps.repo.updateMessageState(userMessage.id, sessionId, user.id, "accepted");
     const stored = decisions.map((decision) => deps.repo.addSessionDecision({ ...decision, market: decision.market ?? "CN", quantity: decision.quantityShares, reason: decision.rationale, sessionId, userId: user.id }));
     deps.repo.addMessage(sessionId, user.id, "status", `已识别 ${stored.length} 笔决策，请确认每笔 T0、方向与数量。`);
-    return c.json({ sessionId, status: "accepted", decisions: stored, messages: deps.repo.listMessages(sessionId, user.id), memories: deps.repo.listMemories(user.id) }, 201);
+    return c.json({ sessionId, status: "accepted", decisions: stored, messages: deps.repo.listMessages(sessionId, user.id), memories: deps.repo.listMemories(user.id), activities: [] }, 201);
   });
 
   app.get("/api/sessions/:id", (c) => {
     const user = c.get("user")!; const id = c.req.param("id");
     const session = deps.repo.getSession(id, user.id); if (!session) return c.json({ error: "not_found" }, 404);
     const decisions = deps.repo.listSessionDecisions(id, user.id);
-    return c.json({ session, decisions, messages: deps.repo.listMessages(id, user.id), memories: deps.repo.listMemories(user.id), results: decisions.filter((d) => d.reviewId).map((d) => ({ decisionId: d.id, reviewId: d.reviewId, status: deps.repo.getRun(d.reviewId!)?.status ?? "unknown", result: deps.repo.getResult(d.reviewId!) })) });
+    return c.json({ session, decisions, messages: deps.repo.listMessages(id, user.id), memories: deps.repo.listMemories(user.id), activities: sessionActivities(deps.repo, decisions), results: decisions.filter((d) => d.reviewId).map((d) => ({ decisionId: d.id, reviewId: d.reviewId, status: deps.repo.getRun(d.reviewId!)?.status ?? "unknown", result: deps.repo.getResult(d.reviewId!) })) });
   });
 
   app.patch("/api/sessions/:id/decisions/:decisionId", async (c) => {

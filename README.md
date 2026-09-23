@@ -2,6 +2,8 @@
 
 AI-native historical investment decision review product for the AIME test.
 
+> Chinese version: [【README-zh.md / 中文】](./README-zh.md)
+
 ## Problem
 
 A retail or research investor looking back on a single past investment
@@ -121,10 +123,18 @@ Never commit API keys, Authorization headers, MCP credentials, cookies, or other
 Production deploys must run from:
 
 ```bash
-~/projects/aime-decision-review
+/root/projects/aime-decision-review
 ```
 
 Do not run production from `/root/multica_workspaces/...` or another transient agent/issue workspace. See `docs/DEPLOYMENT.md` for migration, SQLite-volume preservation, and rollback details.
+
+## LLM provider
+
+The production LLM provider is **MiniMax-M3**, reached via the
+`openai-compatible` adapter in `apps/api/src/providers/`. Credentials
+(`LLM_BASE_URL`, `LLM_API_KEY`, `LLM_MODEL=MiniMax-M3`) are loaded from the
+server `.env` only — they never enter the repository. The mock provider
+is the default for fixture / CI runs.
 
 ## Run with Docker Compose
 
@@ -189,7 +199,7 @@ Hono (apps/api, Bun runtime)
   ├─ mcp/adapters/*         MockFuyao / MockIFind / LiveMcp (JSON-RPC 2.0
   │                         when credentials + intent→tool map are set)
   ├─ providers/             thin LLM provider abstraction (mock +
-  │                         openai-compatible)
+  │                         openai-compatible, MiniMax-M3 in prod)
   ├─ db/sqlite              ReviewRepository + UserRepository (bun:sqlite)
   └─ config.ts              env parsing with documented fail-fast for missing secrets
 ```

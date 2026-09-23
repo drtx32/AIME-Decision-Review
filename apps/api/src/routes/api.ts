@@ -53,6 +53,16 @@ function keyFor(secret: string): Buffer { return createHash("sha256").update(sec
 function encryptKey(value: string, secret: string): string { const iv = randomBytes(12); const cipher = createCipheriv("aes-256-gcm", keyFor(secret), iv); const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]); return `enc:v1:${iv.toString("base64url")}:${cipher.getAuthTag().toString("base64url")}:${encrypted.toString("base64url")}`; }
 function decryptKey(value: string, secret: string): string | null { try { const [, version, ivRaw, tagRaw, dataRaw] = value.split(":"); if (version !== "v1" || !ivRaw || !tagRaw || !dataRaw) return null; const decipher = createDecipheriv("aes-256-gcm", keyFor(secret), Buffer.from(ivRaw, "base64url")); decipher.setAuthTag(Buffer.from(tagRaw, "base64url")); return Buffer.concat([decipher.update(Buffer.from(dataRaw, "base64url")), decipher.final()]).toString("utf8"); } catch { return null; } }
 function sanitizedError(error: unknown): string { const text = error instanceof Error ? error.message : String(error); return text.replace(/(authorization|api[-_ ]?key|bearer)\s*[:=]?\s*[^\s,;]+/gi, "$1 [redacted]").slice(0, 240); }
+function splitAssistantCompletion(text: string): { content: string; reasoning: string | null } {
+  const raw = String(text || "");
+  const reasoningParts: string[] = [];
+  const content = raw.replace(/<think>([\s\S]*?)<\/think>/gi, (_match, inner: string) => {
+    const cleaned = String(inner || "").trim();
+    if (cleaned) reasoningParts.push(cleaned);
+    return "";
+  }).trim();
+  return { content: content || "当前无法生成追问回复。", reasoning: reasoningParts.length ? reasoningParts.join("\n\n") : null };
+}
 
 function sessionActivities(repo: ReviewRepository, decisions: Array<{ id: string; symbol: string; reviewId: string | null }>): Array<Record<string, unknown>> {
   const events: Array<Record<string, unknown>> = [];
@@ -284,7 +294,8 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     const content = ((await c.req.json().catch(() => null)) as { content?: string } | null)?.content?.trim(); if (!content) return c.json({ error: "invalid_input", message: "请输入追问内容。" }, 400);
     const userMessage = deps.repo.addMessage(id, user.id, "user", content); const decisions = deps.repo.listSessionDecisions(id, user.id); const memories = deps.repo.listMemories(user.id); const results = decisions.filter((d) => d.reviewId).map((d) => deps.repo.getResult(d.reviewId!));
     const completion = await userProvider.complete({ system: "你是 AIME 投资决策复盘助手。只基于当前用户 session 的 decisions、T0 前后证据、findings 与 learning memory 回答；不要给出新的买卖指令。", user: JSON.stringify({ question: content, decisions, results, memories }), temperature: 0.2, maxOutputTokens: 900 });
-    const assistant = deps.repo.addMessage(id, user.id, "assistant", completion.text || "当前无法生成追问回复。"); return c.json({ message: assistant, messages: deps.repo.listMessages(id, user.id) }, 201);
+    const parsedCompletion = splitAssistantCompletion(completion.text || "");
+    const assistant = deps.repo.addMessage(id, user.id, "assistant", parsedCompletion.content, "accepted", null, parsedCompletion.reasoning); return c.json({ message: assistant, messages: deps.repo.listMessages(id, user.id) }, 201);
   });
 
   app.patch("/api/sessions/:id/messages/:messageId", async (c) => {
@@ -518,116 +529,3 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
         const baseline = await fetchFuyaoKline(baselineReq, credentials.fuyao);
         if (baseline.status === "ok") {
           const pctPrimary = toPercentLine(fetched.series!);
-          const pctBaseline = toPercentLine(baseline.series!);
-          primary = {
-            status: "ok",
-            series: {
-              source: "mixed",
-              symbol: req.symbol,
-              market: req.market ?? "CN",
-              timezone: fetched.series!.timezone,
-              unit: "%",
-              retrievedAt: new Date().toISOString(),
-              line: pctPrimary,
-              baseline: pctBaseline,
-              markers: fetched.series!.markers,
-            },
-          };
-        } else {
-          primary = fetched;
-        }
-      } else {
-        primary = fetched;
-      }
-    } else if (req.type === "valuation" || req.type === "financial") {
-      // Provider-field gap: we deliberately do NOT fabricate values
-      // here. SPEC §6.6 — analyst/consensus targets must come from a
-      // real provider or remain absent.
-      primary = {
-        status: "unavailable",
-        message:
-          "估值/财务时序字段未在直连接口中暴露，请改用 K 线 + 财务事件的组合。",
-      };
-    }
-
-    // Decision / event markers: derive from the review's stored evidence
-    // if the user asked for `timeline`. We never surface a marker
-    // without its `relationToDecision` label, and ex_post markers cannot
-    // justify the original decision.
-    const reviewId = c.req.query("reviewId");
-    if (reviewId && primary?.series) {
-      const events = deps.repo.getEvents(reviewId);
-      const decision = deps.repo.getDecision(reviewId);
-      const T0 = decision?.T0;
-      const markers = events
-        .filter((e) => e.at)
-        .slice(0, 12)
-        .map((e) => ({
-          t: e.at,
-          label: e.message.slice(0, 40),
-          relationToDecision:
-            T0 && Date.parse(e.at) > Date.parse(T0)
-              ? ("ex_post" as const)
-              : ("ex_ante" as const),
-        }));
-      primary = {
-        status: primary.status,
-        series: withMarkers(primary.series, markers),
-        message: primary.message,
-        errorCode: primary.errorCode,
-      };
-    }
-
-    const response: ChartResponse = {
-      status: primary?.status ?? "permanent_error",
-      type: req.type,
-      series: primary?.series,
-      retrievedAt: new Date().toISOString(),
-      message: primary?.message,
-      error:
-        primary?.status && primary.status !== "ok" && primary.errorCode
-          ? {
-              code: primary.errorCode,
-              message: primary.message ?? "图表数据获取失败。",
-              retryable: primary.status === "transient_error",
-            }
-          : undefined,
-    };
-    return c.json(response);
-  });
-
-  // Admin endpoints — guarded inside buildAdminRoutes.
-  app.route("/api/admin", admin);
-
-  app.route("/api/settings", settings);
-  app.route("/api/usage", usage);
-  app.route("/api/models/capabilities", capabilities);
-
-  return app;
-}
-
-function toPercentLine(series: ChartSeries): Array<{ t: string; value: number }> {
-  if (!series.line?.length && !series.candles?.length) return [];
-  const points = series.line ?? series.candles!.map((c) => ({ t: c.t, value: c.close }));
-  const start = points[0]?.value;
-  if (!start) return [];
-  return points.map((p) => ({ t: p.t, value: ((p.value - start) / start) * 100 }));
-}
-
-const NON_COMPLIANT_PATTERNS: Array<{ re: RegExp; label: string }> = [
-  { re: /\bguaranteed?\s+(return|profit|income|return[s]?)/i, label: "guaranteed return" },
-  { re: /\b100\s*%\s*(safe|return|profit)/i, label: "100% return" },
-  { re: /\b确定性(涨跌|收益|回报)/, label: "确定性收益" },
-  { re: /\b直接(买入|卖出)指令/, label: "直接买卖指令" },
-  { re: /\bsure\s+thing\b/i, label: "sure thing" },
-  { re: /\b(predict|tell me)\s+(the\s+)?(next\s+)?(price|stock|move)/i, label: "predict next price" },
-];
-
-function nonCompliantReasonFor(decision: { userReason?: string | null; notes?: string | null }): string | null {
-  const text = `${decision.userReason ?? ""} ${decision.notes ?? ""}`.trim();
-  if (!text) return null;
-  for (const { re, label } of NON_COMPLIANT_PATTERNS) {
-    if (re.test(text)) return label;
-  }
-  return null;
-}

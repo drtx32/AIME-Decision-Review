@@ -11,6 +11,13 @@ Before implementation, and whenever context is uncertain, read:
 3. `docs/AI_VALIDATION.md` — AI usage, validation, and human corrections
 4. `README.md` — project entry point and security rules
 
+`docs/SPEC.md` is the canonical product contract: read its conversation-first
+shell, attachment/web-source policy, chart/provenance rules, and review
+correctness boundaries before changing product behavior. Use
+`docs/TEST_PLAN.md` for required regression coverage and
+`docs/AI_VALIDATION.md` to distinguish fixture evidence from credentialed
+provider validation.
+
 Instruction precedence:
 
 1. Newer explicit Issue instruction

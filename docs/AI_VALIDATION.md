@@ -19,6 +19,32 @@ than a successful validation result.
 
 This file records how AI tools are used in the project, what they generated, how outputs were checked, and what humans corrected.
 
+## ELI-318 credentialed canonical-host smoke — 2026-09-23
+
+**AI/tool used**
+- Oracle Codex with the canonical host Compose deployment, authenticated MCP Streamable HTTP, and the merged `main` SHA `de426576227fb8bdded73bb5008ee9f36e91de3e`.
+
+**Task**
+- Revalidate the production path after PR #27 merge, using only the canonical `/root/projects/aime-decision-review/.env`.
+
+**Output**
+- Canonical `.env` was missing server-specific maps. After adding only verified mappings, Fuyao `a-share` successfully advertised and called `get_a_share_prices_historical` and `get_a_share_corporate_actions_adjustment_factors`.
+- Fuyao `meta` advertised 2 tools. iFinD `index` advertised 3 tools on one probe; iFinD `stock` timed out and `news` returned 404 on the guessed suffix probe, so no iFinD news success is claimed.
+- The merged code initially returned `empty` for real Fuyao rows because `date_ms`/`ex_date_ms` and parent `thscode` were not normalized. A follow-up candidate fix adds row-level timestamps, inherited identity, and announcement typing without using retrieval time as publication time.
+
+**Validation**
+- Canonical public `/api/health` after redeploy: `provider=openai-compatible`, `provider_configured=true`, `provider_status=ready`, `degraded=false`.
+- Authenticated Fuyao probes used `initialize → tools/list → tools/call`; historical A-share call returned rows dated before T0, and corporate-action call returned dated event rows. No guessed-tool 403 occurred.
+- Candidate agent run with real LLM + real Fuyao on the schema-fix branch persisted 41 evidence items: price and announcement tool statuses were `success`; all evidence retained `source`, row-level `publishedAt`, and `retrievedAt`, and no mock adapter was used.
+- Candidate focused MCP suite: `bun run typecheck` and 39 tests passed. The earlier full suite on the same merge base passed 223 tests / 948 expectations before the final timestamp-field refinement; the final refinement passed its targeted regression suite.
+
+**Human corrections**
+- Production source was not edited. Only sanitized server-specific map names were added to the canonical `.env`; credentials remained untouched.
+- Current web-session login with the canonical `.env` bootstrap credentials returned 401 because the persisted production admin password has already diverged from the bootstrap env value. No password reset or database mutation was attempted.
+
+**Residual risk / unresolved**
+- The production container still runs merged `main`; the schema-fix candidate must be merged and redeployed before the real evidence can be accepted through the browser session path. Web `session → confirm → persisted assistant review` remains blocked by the existing admin session credential and candidate deployment.
+
 ## ELI-318 MCP routing hardening — 2026-09-23
 
 **AI/tool used**
@@ -806,7 +832,6 @@ committing runtime secrets or build output.
 - Soft-deleted sessions keep their attached `review_runs` and
   evidence rows for audit; a hard-delete maintenance path is not in
   v0.1.
-
 ## ELI-358 — P0 archived-vs-active scope regression (PR #26)
 
 **AI / tool used**
@@ -880,5 +905,4 @@ a frontend wire-contract regression for the URL builder.
   React state; concurrent toggles during an in-flight request could
   briefly race the local list. Acceptable for the smoke path;
   pinning request sequencing is deferred.
-
 

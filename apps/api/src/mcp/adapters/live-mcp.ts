@@ -133,7 +133,7 @@ export class LiveMcpAdapter implements EvidenceAdapter {
       if (items.length === 0) {
         return wrapEmpty(retrievedAt, Date.now() - start);
       }
-      const evidence = normalizeItems(items, retrievedAt, this.provider, this.serverKey, req.T0);
+      const evidence = normalizeItems(items, retrievedAt, this.provider, this.serverKey, req.T0, req.intent);
       if (evidence.length === 0) {
         return wrapEmpty(retrievedAt, Date.now() - start);
       }
@@ -275,39 +275,26 @@ export function parseToolContent(
       const envelope = unwrapEnvelope(obj);
       const envelopeTs = envelope ? readEnvelopeTimestamp(obj) : null;
       const canUseEnvelopeTimestamp = intent === "price";
+      const envelopeData = obj.data && typeof obj.data === "object" && !Array.isArray(obj.data)
+        ? obj.data as Record<string, unknown>
+        : undefined;
       if (envelope) {
         for (const child of envelope) {
-          if (child && typeof child === "object" && envelopeTs !== null && canUseEnvelopeTimestamp) {
-            items.push(decorateWithPublishedAt(child as Record<string, unknown>, envelopeTs));
-          } else {
-            items.push(child);
-          }
+          items.push(normalizeGatewayChild(child, envelopeTs, canUseEnvelopeTimestamp, envelopeData));
         }
         continue;
       }
       if (Array.isArray(obj.items)) {
         for (const child of obj.items) {
-          if (child && typeof child === "object" && envelopeTs !== null && canUseEnvelopeTimestamp) {
-            items.push(decorateWithPublishedAt(child as Record<string, unknown>, envelopeTs));
-          } else {
-            items.push(child);
-          }
+          items.push(normalizeGatewayChild(child, envelopeTs, canUseEnvelopeTimestamp, envelopeData));
         }
       } else if (Array.isArray(obj.data)) {
         for (const child of obj.data) {
-          if (child && typeof child === "object" && envelopeTs !== null && canUseEnvelopeTimestamp) {
-            items.push(decorateWithPublishedAt(child as Record<string, unknown>, envelopeTs));
-          } else {
-            items.push(child);
-          }
+          items.push(normalizeGatewayChild(child, envelopeTs, canUseEnvelopeTimestamp, envelopeData));
         }
       } else if (Array.isArray(obj.results)) {
         for (const child of obj.results) {
-          if (child && typeof child === "object" && envelopeTs !== null && canUseEnvelopeTimestamp) {
-            items.push(decorateWithPublishedAt(child as Record<string, unknown>, envelopeTs));
-          } else {
-            items.push(child);
-          }
+          items.push(normalizeGatewayChild(child, envelopeTs, canUseEnvelopeTimestamp, envelopeData));
         }
       } else {
         items.push(obj);
@@ -344,13 +331,58 @@ function readEpochMs(v: unknown): number | null {
   return null;
 }
 
+/** Fields suffixed `_ms` are already milliseconds, including pre-2001 dates. */
+function readEpochMsField(v: unknown): number | null {
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : null;
+}
+
+function readItemTimestamp(item: Record<string, unknown>): number | null {
+  return readEpochMsField(item.date_ms)
+    ?? readEpochMsField(item.ex_date_ms)
+    ?? readEpochMsField(item.event_date_ms)
+    ?? readEpochMs(item.timestamp);
+}
+
+function normalizeGatewayChild(
+  child: unknown,
+  envelopeTs: number | null,
+  canUseEnvelopeTimestamp: boolean,
+  context?: Record<string, unknown>
+): unknown {
+  if (!child || typeof child !== "object") return child;
+  const item = child as Record<string, unknown>;
+  const ownEpochMs = readItemTimestamp(item);
+  if (ownEpochMs !== null || (canUseEnvelopeTimestamp && envelopeTs !== null)) {
+    return decorateWithPublishedAt(item, ownEpochMs ?? envelopeTs!, context);
+  }
+  return inheritIdentity(item, context);
+}
+
 /** Stamp an item with a publishedAt derived from the envelope's timestamp. */
 function decorateWithPublishedAt(
   item: Record<string, unknown>,
-  epochMs: number
+  epochMs: number,
+  context?: Record<string, unknown>
 ): Record<string, unknown> {
   if (typeof item.publishedAt === "string" || typeof item.publish_time === "string") return item;
-  return { ...item, publishedAt: new Date(epochMs).toISOString() };
+  const ownEpochMs = readItemTimestamp(item);
+  return {
+    ...inheritIdentity(item, context),
+    publishedAt: new Date(ownEpochMs ?? epochMs).toISOString(),
+  };
+}
+
+/** Carry only stable instrument identity from a gateway envelope to its rows. */
+function inheritIdentity(
+  item: Record<string, unknown>,
+  context?: Record<string, unknown>
+): Record<string, unknown> {
+  if (!context) return item;
+  const out = { ...item };
+  for (const key of ["thscode", "ticker", "symbol", "code"]) {
+    if (out[key] === undefined && context[key] !== undefined) out[key] = context[key];
+  }
+  return out;
 }
 
 /**
@@ -362,7 +394,8 @@ export function normalizeItems(
   retrievedAt: string,
   provider: "fuyao" | "ifind",
   serverKey: McpServerKey,
-  T0?: string
+  T0?: string,
+  intent: AdapterIntent = "price"
 ): Evidence[] {
   const t0Ms = T0 ? Date.parse(T0) : Number.NaN;
   const useT0 = T0 !== undefined && !Number.isNaN(t0Ms);
@@ -377,7 +410,7 @@ export function normalizeItems(
           ? item.publish_time
           : typeof item.pub_time === "string"
             ? item.pub_time
-            : typeof item.time === "string"
+        : typeof item.time === "string"
               ? item.time
               : null;
     const title =
@@ -404,7 +437,7 @@ export function normalizeItems(
     const type =
       typeof item.type === "string" && item.type
         ? (item.type as Evidence["type"])
-        : inferType(String(serverKey), provider);
+        : inferType(String(serverKey), provider, intent);
     const source =
       typeof item.source === "string" && item.source
         ? item.source
@@ -508,7 +541,9 @@ function deriveContent(item: Record<string, unknown>): string | null {
   return parts.join("; ");
 }
 
-function inferType(serverKey: string, provider: "fuyao" | "ifind"): Evidence["type"] {
+function inferType(serverKey: string, provider: "fuyao" | "ifind", intent: AdapterIntent = "price"): Evidence["type"] {
+  if (intent === "news") return "news";
+  if (intent === "announcement") return "announcement";
   const k = serverKey.toLowerCase();
   if (k.includes("news")) return "news";
   if (k.includes("announce")) return "announcement";

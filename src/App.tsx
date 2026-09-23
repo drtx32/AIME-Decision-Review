@@ -12,6 +12,8 @@ const starterPrompts = [
   '帮我复盘一笔交易，把当时能知道的信息和事后结果分开看。',
   '看看我过去的复盘里，有没有重复出现的决策偏差或经验。',
 ] as const;
+const allowedAttachmentExtensions = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'docx', 'xlsx', 'csv', 'pdf']);
+const sessionStorageKey = (userId: string) => `aime:current-session:${userId}`;
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>('compose');
@@ -40,12 +42,29 @@ export default function App() {
 
   const applySnapshot = (next: SessionSnapshot) => { setSnapshot(next); setMessages(next.messages); setDecisions(next.decisions); setMemories(next.memories); };
   useEffect(() => { void (async () => { try { const me = await auth.me(); if (!me) { setAuthScreen('login'); return; } setUser(me.user); setAuthScreen(me.mustChangePassword ? 'change-password' : 'home'); } catch (e) { setBootError(e instanceof Error ? e.message : '无法连接到后端'); setAuthScreen('login'); } })(); }, []);
-  useEffect(() => { if (authScreen === 'home' && user) reviewApi.listSessions().then(setSessions).catch(() => undefined); }, [authScreen, user]);
+  useEffect(() => {
+    if (authScreen !== 'home' || !user) return;
+    void (async () => {
+      try {
+        const listed = await reviewApi.listSessions();
+        setSessions(listed);
+        const savedId = window.localStorage.getItem(sessionStorageKey(user.id));
+        if (savedId) {
+          const saved = await reviewApi.getSession(savedId);
+          setSessionId(savedId);
+          applySnapshot(saved);
+          setPhase(saved.results.length ? 'review' : saved.decisions.length ? 'confirm' : 'compose');
+        }
+      } catch {
+        window.localStorage.removeItem(sessionStorageKey(user.id));
+      }
+    })();
+  }, [authScreen, user]);
 
   const logout = async () => { try { await auth.logout(); } catch { /* local logout still clears the workspace */ } setUser(null); setAuthScreen('login'); newReview(); };
 
-  const newReview = () => { setSessionId(''); setSnapshot(null); setMessages([welcome]); setDecisions([]); setMemories([]); setDraft(''); setAttachments([]); setEditingMessageId(null); setError(''); setPhase('compose'); setTab('decisions'); setMobileSidebar(false); };
-  const openSession = async (id: string) => { try { const next = await reviewApi.getSession(id); setSessionId(id); applySnapshot(next); setPhase(next.results.length ? 'review' : next.decisions.length ? 'confirm' : 'compose'); setMobileSidebar(false); } catch (e) { setError(e instanceof Error ? e.message : '无法恢复会话。'); } };
+  const newReview = () => { if (user) window.localStorage.removeItem(sessionStorageKey(user.id)); setSessionId(''); setSnapshot(null); setMessages([welcome]); setDecisions([]); setMemories([]); setDraft(''); setAttachments([]); setEditingMessageId(null); setError(''); setPhase('compose'); setTab('decisions'); setMobileSidebar(false); };
+  const openSession = async (id: string) => { try { const next = await reviewApi.getSession(id); if (user) window.localStorage.setItem(sessionStorageKey(user.id), id); setSessionId(id); applySnapshot(next); setPhase(next.results.length ? 'review' : next.decisions.length ? 'confirm' : 'compose'); setMobileSidebar(false); } catch (e) { setError(e instanceof Error ? e.message : '无法恢复会话。'); } };
 
   const copyMessage = async (message: SessionMessage) => { try { await navigator.clipboard.writeText(message.content); setCopyNotice(message.id); window.setTimeout(() => setCopyNotice(null), 1400); } catch { setCopyNotice(null); } };
   const editMessage = (message: SessionMessage) => { setEditingMessageId(message.id); setDraft(message.content); };
@@ -56,7 +75,7 @@ export default function App() {
     event.preventDefault(); const content = draft.trim(); if (!content || phase === 'running') return; setError('');
     try {
       if (editingMessageId && sessionId) { await reviewApi.updateMessage(sessionId, editingMessageId, content); const next = await reviewApi.getSession(sessionId); applySnapshot(next); setEditingMessageId(null); setDraft(''); return; }
-      if (!sessionId) { const created = await reviewApi.createSession(content); setSessionId(created.sessionId); setMessages(created.messages); setDecisions(created.decisions); setMemories(created.memories); setSessions(await reviewApi.listSessions()); setPhase('confirm'); setDraft(''); return; }
+      if (!sessionId) { const created = await reviewApi.createSession(content); if (user) window.localStorage.setItem(sessionStorageKey(user.id), created.sessionId); setSessionId(created.sessionId); setMessages(created.messages); setDecisions(created.decisions); setMemories(created.memories); setSessions(await reviewApi.listSessions()); setPhase('confirm'); setDraft(''); return; }
       const controller = new AbortController(); activeRequest.current = controller; const message = await reviewApi.sendMessage(sessionId, content, controller.signal); setMessages((items) => [...items, message]); setDraft('');
     } catch (e) { if ((e as Error).name !== 'AbortError') setError(e instanceof Error ? e.message : '消息发送失败。'); }
     finally { activeRequest.current = null; }
@@ -84,7 +103,7 @@ export default function App() {
     </aside>
     <main className="main-shell"><div className="conversation-top"><div><span className="eyebrow">AIME / REVIEW SESSION</span><h1>{snapshot?.session.title || '从一次决策开始'}</h1></div><div className="private-badge"><span/> PRIVATE WORKSPACE</div></div>
       <section className={`conversation-stream ${!sessionId && messages.length === 1 && messages[0].id === 'welcome' ? 'empty-state' : ''}`}>{messages.filter((message) => !hiddenMessageIds.has(message.id)).map((message, index) => <Message key={message.id || index} message={message} copyNotice={copyNotice === message.id} onCopy={copyMessage} onEdit={message.role === 'user' ? editMessage : undefined} onDelete={deleteMessage} onRetry={message.role === 'assistant' ? retryMessage : undefined}/>)}{!sessionId && messages.length === 1 && messages[0].id === 'welcome' && <StarterPrompts onSelect={setDraft}/>} {phase === 'confirm' && decisions.length > 0 && <DecisionConfirm decisions={decisions} onConfirm={confirm} onChange={(id, patch) => { setDecisions((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item)); if (sessionId) void reviewApi.updateDecision(sessionId, id, patch); }}/>} {phase === 'running' && <div className="status-message"><span className="pulse"/><div><b>LIVE REVIEW STATUS</b><p>正在重建每笔决策各自的 T0 前信息环境…</p></div></div>}{phase === 'review' && <ReviewStatus status={snapshot?.session.status}/>}</section>
-      <div className="composer-dock"><div className="composer-notice-stack">{phase === 'running' && <button type="button" className="stop-generating" onClick={() => void stopGeneration()}>停止生成</button>}{error && <div className="composer-notice" role="status"><CircleAlert size={14}/><span>{error}</span><button type="button" aria-label="关闭提示" onClick={() => setError('')}><X size={13}/></button></div>}{attachments.length > 0 && <div className="attachment-chips">{attachments.map((attachment) => <span key={attachment.id}>{attachment.name}<button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => setAttachments((items) => items.filter((item) => item.id !== attachment.id))}>×</button></span>)}</div>}{editingMessageId && <button type="button" className="cancel-edit" onClick={() => { setEditingMessageId(null); setDraft(''); }}>取消编辑</button>}</div><form className="composer" onSubmit={submit}><div className="composer-input-row"><button type="button" className="composer-add" aria-label="添加内容" onClick={() => attachmentPicker.current?.click()}>+</button><input ref={attachmentPicker} className="attachment-picker" type="file" multiple onChange={(event) => { const files = Array.from(event.target.files ?? []); setAttachments((items) => [...items, ...files.map((file) => ({ id: `${file.name}-${file.lastModified}`, name: file.name }))]); event.currentTarget.value = ''; }}/><textarea value={draft} onChange={(e) => setDraft(e.target.value)} disabled={phase === 'running'} placeholder={phase === 'review' ? '继续追问这次复盘…' : '描述一笔或多笔投资决策…'}/><button className="composer-send" type="submit" aria-label="发送" disabled={phase === 'running' || !draft.trim()}><Send size={15}/></button></div></form></div>
+      <div className="composer-dock"><div className="composer-notice-stack">{phase === 'running' && <button type="button" className="stop-generating" onClick={() => void stopGeneration()}>停止生成</button>}{error && <div className="composer-notice" role="status"><CircleAlert size={14}/><span>{error}</span><button type="button" aria-label="关闭提示" onClick={() => setError('')}><X size={13}/></button></div>}{attachments.length > 0 && <div className="attachment-chips">{attachments.map((attachment) => <span key={attachment.id}>{attachment.name}<button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => setAttachments((items) => items.filter((item) => item.id !== attachment.id))}>×</button></span>)}</div>}{editingMessageId && <button type="button" className="cancel-edit" onClick={() => { setEditingMessageId(null); setDraft(''); }}>取消编辑</button>}</div><form className="composer" onSubmit={submit}><div className="composer-input-row"><button type="button" className="composer-add" aria-label="添加附件" onClick={() => attachmentPicker.current?.click()}>+</button><input ref={attachmentPicker} className="attachment-picker" type="file" multiple accept=".png,.jpg,.jpeg,.webp,.gif,.docx,.xlsx,.csv,.pdf" onChange={(event) => { const files = Array.from(event.target.files ?? []); const accepted = files.filter((file) => allowedAttachmentExtensions.has(file.name.split('.').pop()?.toLowerCase() ?? '')); if (accepted.length !== files.length) setError('仅支持 PNG/JPG/WEBP/GIF、DOCX、XLSX、CSV 和 PDF 附件。'); setAttachments((items) => [...items, ...accepted.map((file) => ({ id: `${file.name}-${file.lastModified}`, name: file.name }))]); event.currentTarget.value = ''; }}/><textarea value={draft} onChange={(e) => setDraft(e.target.value)} disabled={phase === 'running'} placeholder={phase === 'review' ? '继续追问这次复盘…' : '描述一笔或多笔投资决策…'}/><button className="composer-send" type="submit" aria-label="发送" disabled={phase === 'running' || !draft.trim()}><Send size={15}/></button></div></form></div>
     </main>
     <aside className={mobilePanel ? 'context-panel open' : 'context-panel'}><div className="context-head"><span><FileText size={14}/> SESSION CONTEXT</span><div className="context-actions"><button className="collapse-panel" aria-label="收起右侧 Context 面板" onClick={() => setPanelCollapsed(true)}><ChevronRight size={13}/> 收起</button><button className="panel-close" onClick={() => setMobilePanel(false)}><X size={15}/></button></div></div><div className="context-tabs">{(['decisions','timeline','evidence','findings','learning'] as PanelTab[]).map((item) => <button className={tab === item ? 'active' : ''} key={item} onClick={() => setTab(item)}>{item}</button>)}</div><ContextPanel tab={tab} decisions={decisions} messages={messages} memories={memories} results={results}/></aside>
     <button className="context-rail" type="button" aria-label="展开右侧 Context 面板" onClick={() => setPanelCollapsed(false)}><ChevronLeft size={15}/><span>Context</span></button>

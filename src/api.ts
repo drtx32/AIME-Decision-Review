@@ -1,7 +1,7 @@
 export type Input = { symbol: string; market: string; side: 'buy' | 'sell'; executedAt: string; price: string; quantity: string; reason: string; notes: string };
 export type Result = { id: string; decisionId: string; status: string; input: Input; summary: string; ante: string[]; post: string[]; raw: any };
 export type SessionDecision = { id: string; symbol: string; name?: string | null; market: string; action: 'buy' | 'sell'; executedAt: string | null; executedAtText?: string; timePrecision?: 'exact' | 'approximate' | 'unknown'; price: number | null; quantity: number | null; quantityShares?: number | null; quantityText?: string | null; confidence?: number; needsConfirmation?: string[]; reason: string; notes: string; reviewId: string | null; confirmed: boolean };
-export type SessionMessage = { id: string; sessionId: string; userId: string; role: 'user' | 'assistant' | 'status'; content: string; createdAt: string };
+export type SessionMessage = { id: string; sessionId: string; userId: string; role: 'user' | 'assistant' | 'status' | 'error'; content: string; createdAt: string };
 export type LearningMemory = { id: string; text: string; kind: string; sourceSessionId: string; sourceDecisionId: string | null; strength: number; active: boolean };
 export type SessionSnapshot = { session: { id: string; title: string; scope: string; status: string }; decisions: SessionDecision[]; messages: SessionMessage[]; memories: LearningMemory[]; results: Array<{ decisionId: string; reviewId: string; status: string; result: any }> };
 const apiBase = import.meta.env.VITE_API_BASE_URL as string | undefined;

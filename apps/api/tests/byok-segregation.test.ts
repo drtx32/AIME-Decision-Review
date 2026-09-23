@@ -538,3 +538,129 @@ describe("BYOK segregation — provider / agent path (ELI-360)", () => {
     }
   });
 });
+
+describe("BYOK segregation — server env never shadowed by legacy per-user row (ELI-360)", () => {
+  // Functional root-cause of the user-reported "当前未配置可用的大模型服务"
+  // after a valid canonical .env: providerForUser() used to decrypt and prefer
+  // a stale per-user row. After ELI-360, providerForUser() is a thin alias
+  // for deps.provider. The tests below pin the contract end-to-end: a stale
+  // legacy_user_model_configs row must never change provider readiness.
+
+  function seedLegacyRow(sqlitePath: string): void {
+    const db = new Database(sqlitePath);
+    try {
+      db.exec(`
+        CREATE TABLE IF NOT EXISTS legacy_user_model_configs (
+          userId TEXT PRIMARY KEY,
+          provider TEXT,
+          baseUrl TEXT,
+          model TEXT,
+          apiKeyEncrypted TEXT,
+          verifiedAt TEXT,
+          lastError TEXT,
+          scrubbedAt TEXT,
+          updatedAt TEXT
+        );
+      `);
+      db.prepare(
+        `INSERT OR REPLACE INTO legacy_user_model_configs
+           (userId, provider, baseUrl, model, apiKeyEncrypted, verifiedAt, lastError, scrubbedAt, updatedAt)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+      ).run(
+        "usr_alice",
+        "openai-compatible",
+        "https://attacker.example.invalid/v1",
+        "evil-model-that-should-never-be-used",
+        "base64:this-is-a-stale-ciphertext-DO-NOT-LEAK",
+        "2026-08-01T00:00:00Z",
+        "stale",
+        "2026-09-23T00:00:00Z",
+        "2026-08-01T00:00:00Z"
+      );
+    } finally {
+      db.close();
+    }
+  }
+
+  test("valid server env + stale legacy_user_model_configs row => /health reflects deps.provider, not the legacy row", async () => {
+    const ctx = makeTestServer();
+    try {
+      const before = (await (await ctx.app.request("/health")).json()) as {
+        provider: string;
+        provider_configured: boolean;
+        provider_status: string;
+      };
+      seedLegacyRow(ctx.cfg.sqlitePath);
+      const after = (await (await ctx.app.request("/health")).json()) as {
+        provider: string;
+        provider_configured: boolean;
+        provider_status: string;
+      };
+      expect(after.provider).toBe(before.provider);
+      expect(after.provider_configured).toBe(before.provider_configured);
+      expect(after.provider_status).toBe(before.provider_status);
+      const text = JSON.stringify(after);
+      expect(text.includes("attacker.example.invalid")).toBe(false);
+      expect(text.includes("evil-model-that-should-never-be-used")).toBe(false);
+      expect(text.includes("base64:this-is-a-stale-ciphertext")).toBe(false);
+    } finally {
+      ctx.cleanup();
+    }
+  });
+
+  test("valid server env + stale legacy row => /api/sessions POST uses deps.provider (never echoes legacy model)", async () => {
+    const ctx = makeTestServer();
+    try {
+      seedLegacyRow(ctx.cfg.sqlitePath);
+      const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "alice", "alice-pass-12345");
+      const r = await ctx.app.request("/api/sessions", {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({
+          message: "我今天买了 100 股 NVDA，准备 6 个月持有。",
+        }),
+      });
+      const text = await r.text();
+      expect(text.includes("attacker.example.invalid")).toBe(false);
+      expect(text.includes("evil-model-that-should-never-be-used")).toBe(false);
+      expect(text.includes("base64:this-is-a-stale-ciphertext")).toBe(false);
+      // If env itself is unconfigured (mock with no key), the only acceptable
+      // failure is the env-driven MODEL_NOT_CONFIGURED path — never anything
+      // originating from the legacy row.
+      if (r.status === 503) {
+        const body = JSON.parse(text) as { error: string };
+        expect(body.error).toBe("MODEL_NOT_CONFIGURED");
+      }
+    } finally {
+      ctx.cleanup();
+    }
+  });
+
+  test("no per-user row => /api/sessions POST uses deps.provider (same readiness contract)", async () => {
+    const ctx = makeTestServer();
+    try {
+      const before = (await (await ctx.app.request("/health")).json()) as {
+        provider: string;
+        provider_status: string;
+      };
+      const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "alice", "alice-pass-12345");
+      const r = await ctx.app.request("/api/sessions", {
+        method: "POST",
+        headers: { cookie, "content-type": "application/json" },
+        body: JSON.stringify({
+          message: "我今天买了 100 股 NVDA，准备 6 个月持有。",
+        }),
+      });
+      const text = await r.text();
+      if (r.status === 503) {
+        const body = JSON.parse(text) as { error: string; provider_status?: string };
+        expect(body.error).toBe("MODEL_NOT_CONFIGURED");
+        expect(body.provider_status).toBe(before.provider_status);
+      } else {
+        expect([200, 201]).toContain(r.status);
+      }
+    } finally {
+      ctx.cleanup();
+    }
+  });
+});

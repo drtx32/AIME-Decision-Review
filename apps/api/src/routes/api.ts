@@ -281,9 +281,42 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     const user = c.get("user")!; const id = c.req.param("id");
     if (!deps.repo.getSession(id, user.id)) return c.json({ error: "not_found" }, 404);
     const userProvider = providerForUser(user.id); if (!providerReady(userProvider, user.id)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
-    const content = ((await c.req.json().catch(() => null)) as { content?: string } | null)?.content?.trim(); if (!content) return c.json({ error: "invalid_input", message: "请输入追问内容。" }, 400);
-    const userMessage = deps.repo.addMessage(id, user.id, "user", content); const decisions = deps.repo.listSessionDecisions(id, user.id); const memories = deps.repo.listMemories(user.id); const results = decisions.filter((d) => d.reviewId).map((d) => deps.repo.getResult(d.reviewId!));
-    const completion = await userProvider.complete({ system: "你是 AIME 投资决策复盘助手。只基于当前用户 session 的 decisions、T0 前后证据、findings 与 learning memory 回答；不要给出新的买卖指令。", user: JSON.stringify({ question: content, decisions, results, memories }), temperature: 0.2, maxOutputTokens: 900 });
+    const body = (await c.req.json().catch(() => null)) as { content?: string; clientNow?: string; timezone?: string } | null;
+    const content = body?.content?.trim(); if (!content) return c.json({ error: "invalid_input", message: "请输入追问内容。" }, 400);
+    const userMessage = deps.repo.addMessage(id, user.id, "user", content, "extracting");
+    let decisions = deps.repo.listSessionDecisions(id, user.id);
+
+    // If a session has no structured decision yet, a natural-language trade
+    // description is not a generic chat question: it is the product input.
+    // Extract it first so AIME can reconstruct public context instead of asking
+    // the user to manually supply market/news/outcome data.
+    if (decisions.length === 0) {
+      try {
+        const extracted = await new DecisionExtractorAgent(userProvider, deps.config.llm.extractorModel).extract(content, {
+          clientNow: body?.clientNow || new Date().toISOString(),
+          timezone: body?.timezone || "UTC",
+        });
+        const stored = extracted.map((decision) => deps.repo.addSessionDecision({ ...decision, market: decision.market ?? "CN", quantity: decision.quantityShares, reason: decision.rationale, sessionId: id, userId: user.id }));
+        deps.repo.updateMessageState(userMessage.id, id, user.id, "accepted");
+        deps.repo.updateSession(id, user.id, "draft");
+        decisions = stored;
+        const assistant = deps.repo.addMessage(id, user.id, "assistant", `我先从这段话还原出 ${stored.length} 个决策/下单事件。请只确认成交/下单时间、方向和数量是否正确；行情、新闻、板块环境、价格路径和事后表现会由 AIME 在确认后自己检索并按 T0 前后分开。只有公开数据无法还原的个人理由或成交细节，我才会再向你确认。`);
+        return c.json({ message: assistant, status: "accepted", decisions: stored, messages: deps.repo.listMessages(id, user.id) }, 201);
+      } catch {
+        deps.repo.updateMessageState(userMessage.id, id, user.id, "accepted");
+        const assistant = deps.repo.addMessage(id, user.id, "assistant", "可以，公开可还原的部分本来就应该由我来做。你不需要先整理市场环境、新闻、板块情绪或后续走势；只要告诉我你实际做了什么——标的、买/卖、大概时间、数量，记不清的可以直接说不确定。");
+        return c.json({ message: assistant, status: "guidance", decisions: [], messages: deps.repo.listMessages(id, user.id) }, 201);
+      }
+    }
+
+    deps.repo.updateMessageState(userMessage.id, id, user.id, "accepted");
+    const memories = deps.repo.listMemories(user.id); const results = decisions.filter((d) => d.reviewId).map((d) => deps.repo.getResult(d.reviewId!));
+    const completion = await userProvider.complete({
+      system: "你是 AIME 投资决策复盘助手。你的职责是主动还原历史决策，而不是把可检索工作推回给用户。严格基于当前 session 的 decisions、T0 前后证据、findings 与 learning memory 回答，不给出新的买卖指令。不要要求用户补充市场环境、板块情绪、新闻公告、价格路径、盈亏结果等可由行情/新闻/MCP/复盘结果获得的信息；这些应由 AIME 自己检索。只有个人不可观测信息（例如当时主观理由）或公开数据无法可靠确定的实际成交时间/价格，才可以提出最小化澄清。results 为空时，不要说“没有数据所以不能做”；应说明确认 decisions 后系统会自行检索并复盘。回答直接、自然，不要自我介绍，不要列职责边界表格。",
+      user: JSON.stringify({ question: content, decisions, results, memories }),
+      temperature: 0.2,
+      maxOutputTokens: 900
+    });
     const assistant = deps.repo.addMessage(id, user.id, "assistant", completion.text || "当前无法生成追问回复。"); return c.json({ message: assistant, messages: deps.repo.listMessages(id, user.id) }, 201);
   });
 
@@ -518,116 +551,3 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
         const baseline = await fetchFuyaoKline(baselineReq, credentials.fuyao);
         if (baseline.status === "ok") {
           const pctPrimary = toPercentLine(fetched.series!);
-          const pctBaseline = toPercentLine(baseline.series!);
-          primary = {
-            status: "ok",
-            series: {
-              source: "mixed",
-              symbol: req.symbol,
-              market: req.market ?? "CN",
-              timezone: fetched.series!.timezone,
-              unit: "%",
-              retrievedAt: new Date().toISOString(),
-              line: pctPrimary,
-              baseline: pctBaseline,
-              markers: fetched.series!.markers,
-            },
-          };
-        } else {
-          primary = fetched;
-        }
-      } else {
-        primary = fetched;
-      }
-    } else if (req.type === "valuation" || req.type === "financial") {
-      // Provider-field gap: we deliberately do NOT fabricate values
-      // here. SPEC §6.6 — analyst/consensus targets must come from a
-      // real provider or remain absent.
-      primary = {
-        status: "unavailable",
-        message:
-          "估值/财务时序字段未在直连接口中暴露，请改用 K 线 + 财务事件的组合。",
-      };
-    }
-
-    // Decision / event markers: derive from the review's stored evidence
-    // if the user asked for `timeline`. We never surface a marker
-    // without its `relationToDecision` label, and ex_post markers cannot
-    // justify the original decision.
-    const reviewId = c.req.query("reviewId");
-    if (reviewId && primary?.series) {
-      const events = deps.repo.getEvents(reviewId);
-      const decision = deps.repo.getDecision(reviewId);
-      const T0 = decision?.T0;
-      const markers = events
-        .filter((e) => e.at)
-        .slice(0, 12)
-        .map((e) => ({
-          t: e.at,
-          label: e.message.slice(0, 40),
-          relationToDecision:
-            T0 && Date.parse(e.at) > Date.parse(T0)
-              ? ("ex_post" as const)
-              : ("ex_ante" as const),
-        }));
-      primary = {
-        status: primary.status,
-        series: withMarkers(primary.series, markers),
-        message: primary.message,
-        errorCode: primary.errorCode,
-      };
-    }
-
-    const response: ChartResponse = {
-      status: primary?.status ?? "permanent_error",
-      type: req.type,
-      series: primary?.series,
-      retrievedAt: new Date().toISOString(),
-      message: primary?.message,
-      error:
-        primary?.status && primary.status !== "ok" && primary.errorCode
-          ? {
-              code: primary.errorCode,
-              message: primary.message ?? "图表数据获取失败。",
-              retryable: primary.status === "transient_error",
-            }
-          : undefined,
-    };
-    return c.json(response);
-  });
-
-  // Admin endpoints — guarded inside buildAdminRoutes.
-  app.route("/api/admin", admin);
-
-  app.route("/api/settings", settings);
-  app.route("/api/usage", usage);
-  app.route("/api/models/capabilities", capabilities);
-
-  return app;
-}
-
-function toPercentLine(series: ChartSeries): Array<{ t: string; value: number }> {
-  if (!series.line?.length && !series.candles?.length) return [];
-  const points = series.line ?? series.candles!.map((c) => ({ t: c.t, value: c.close }));
-  const start = points[0]?.value;
-  if (!start) return [];
-  return points.map((p) => ({ t: p.t, value: ((p.value - start) / start) * 100 }));
-}
-
-const NON_COMPLIANT_PATTERNS: Array<{ re: RegExp; label: string }> = [
-  { re: /\bguaranteed?\s+(return|profit|income|return[s]?)/i, label: "guaranteed return" },
-  { re: /\b100\s*%\s*(safe|return|profit)/i, label: "100% return" },
-  { re: /\b确定性(涨跌|收益|回报)/, label: "确定性收益" },
-  { re: /\b直接(买入|卖出)指令/, label: "直接买卖指令" },
-  { re: /\bsure\s+thing\b/i, label: "sure thing" },
-  { re: /\b(predict|tell me)\s+(the\s+)?(next\s+)?(price|stock|move)/i, label: "predict next price" },
-];
-
-function nonCompliantReasonFor(decision: { userReason?: string | null; notes?: string | null }): string | null {
-  const text = `${decision.userReason ?? ""} ${decision.notes ?? ""}`.trim();
-  if (!text) return null;
-  for (const { re, label } of NON_COMPLIANT_PATTERNS) {
-    if (re.test(text)) return label;
-  }
-  return null;
-}

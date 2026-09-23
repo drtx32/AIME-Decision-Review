@@ -8,14 +8,12 @@ services:
       SQLITE_PATH: ${SQLITE_PATH:-/var/lib/aime/decision-review.db}
       LOG_LEVEL: ${LOG_LEVEL:-info}
       # Bootstrap admin — created on first startup if no admin exists,
-      # forced to change the password at first login. The password MUST
-      # be supplied via the host environment / .env file (set as a
-      # GitHub Secret in CI); there is intentionally no Compose default
-      # so a misconfigured deployment fails fast instead of running with
-      # a public credential. INITIAL_ADMIN_USERNAME is a public label and
-      # defaults to "admin".
+      # forced to change the password at first login. The API validates
+      # missing credentials only when a fresh DB needs bootstrapping;
+      # existing databases must be restartable without the old password.
+      # INITIAL_ADMIN_USERNAME is a public label and defaults to "admin".
       INITIAL_ADMIN_USERNAME: ${INITIAL_ADMIN_USERNAME:-admin}
-      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:?INITIAL_ADMIN_PASSWORD is required (set it in .env or the deployment secret store)}
+      INITIAL_ADMIN_PASSWORD: ${INITIAL_ADMIN_PASSWORD:-}
       LLM_PROVIDER: ${LLM_PROVIDER:-mock}
       LLM_MODEL: ${LLM_MODEL:-mvp-mock-model}
       LLM_BASE_URL: ${LLM_BASE_URL:-}
@@ -36,6 +34,7 @@ services:
       timeout: 3s
       retries: 12
       start_period: 5s
+    restart: unless-stopped
 
   web:
     build:
@@ -48,6 +47,7 @@ services:
         condition: service_healthy
     ports:
       - "${WEB_PORT:-13608}:80"
+    restart: unless-stopped
 
 volumes:
   api-data:

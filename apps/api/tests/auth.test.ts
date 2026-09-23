@@ -110,7 +110,25 @@ describe("Auth bootstrap", () => {
     expect(row2!.passwordHash).toBe(originalHash);
   });
 
-  test("ensureBootstrapAdmin refuses empty credentials", async () => {
+  test("existing admin database restarts successfully without bootstrap password", async () => {
+    await ctx.userRepo.ensureBootstrapAdmin({
+      initialAdminUsername: "admin",
+      initialAdminPassword: TEST_PASSWORD,
+    });
+    const before = ctx.userRepo.findByUsername("admin")!;
+
+    const result = await ctx.userRepo.ensureBootstrapAdmin({
+      initialAdminUsername: "admin",
+      initialAdminPassword: "",
+    });
+
+    expect(result.created).toBe(false);
+    const after = ctx.userRepo.findByUsername("admin")!;
+    expect(after.passwordHash).toBe(before.passwordHash);
+    expect(after.username).toBe(before.username);
+  });
+
+  test("fresh database refuses empty bootstrap credentials", async () => {
     await expect(
       ctx.userRepo.ensureBootstrapAdmin({
         initialAdminUsername: "",

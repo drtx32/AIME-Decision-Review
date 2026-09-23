@@ -30,6 +30,12 @@ chmod 600 .env
 docker compose up -d --build
 ```
 
+Both services use `restart: unless-stopped`. Compose passes an unset
+`INITIAL_ADMIN_PASSWORD` through as empty; this keeps an existing SQLite-backed
+deployment restartable. The API itself refuses startup with a clear error only
+when a fresh database has no admin to bootstrap, so the initial password must
+still be supplied for first provisioning.
+
 Future deployments should update and restart from the same directory:
 
 ```bash
@@ -91,6 +97,12 @@ curl -fsS https://10jqka-aime.tong-xiao.top/api/health
 ```
 
 Oracle host deployment evidence confirms the public homepage and `/api/health` returned 200, and public POST `/api/reviews` returned 202. Nginx forwards only to `http://127.0.0.1:13608`; it never targets the internal API port directly. The public URL is verified. Credentialed LLM/Fuyao/iFinD provider smoke remains pending.
+
+On 2026-09-23 00:57–00:58 UTC, both containers were found exited with restart
+policy `no`, causing local refusal and public 502 health responses. Recovery
+used the deployment environment gate without removing the named volume; data
+remained intact. The canonical Compose contract now uses `unless-stopped`, and
+post-recovery API and web health checks returned 200.
 
 A missing/unavailable LLM must not be treated as process death. Service health and model/provider readiness are separate concerns; provider configuration failures must degrade review creation without taking down the API process.
 

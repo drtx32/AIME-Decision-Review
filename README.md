@@ -45,7 +45,7 @@ curl -fsS http://127.0.0.1:13608/health
 curl -fsS http://127.0.0.1:13608/api/health
 ```
 
-Set `WEB_PORT` in the root `.env` only if the host web port must change. Backend credentials are passed only to the API container and are never exposed to the frontend build.
+Set `WEB_PORT` in the root `.env` only if the host web port must change. Backend credentials are passed only to the API container and are never exposed to the frontend build. `INITIAL_ADMIN_PASSWORD` is required when bootstrapping a fresh database; Compose passes it empty when absent so an existing database can restart without changing its admin credentials. Both Compose services use `restart: unless-stopped`.
 
 For frontend-only development, `npm install && npm run dev` may use the explicit development mock adapter unless `VITE_API_BASE_URL` is set. The root `.env.example` is the only runtime configuration template; do not create an app-local `.env.example`.
 

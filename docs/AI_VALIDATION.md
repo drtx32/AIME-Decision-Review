@@ -433,9 +433,10 @@ to `main`.
     is empty/missing, log a clear error and `process.exit(1)` before
     binding the HTTP listener.
 - `docker-compose.yml`:
-  - `INITIAL_ADMIN_PASSWORD` now uses shell `${VAR:?msg}` so a missing
-    value fails Compose startup with the documented message — verified
-    by `docker compose config`.
+  - `INITIAL_ADMIN_PASSWORD` is passed through as empty/unset when absent,
+    so `docker compose config` remains usable for an existing SQLite volume;
+    the API still refuses a truly fresh database without the password.
+  - Both `api` and `web` use `restart: unless-stopped`.
 - `.env.example`:
   - Removed the default-mention paragraph from the comment block;
     added an explicit "password has no default — it MUST be supplied"
@@ -458,9 +459,8 @@ to `main`.
   - No `sk-*`, `Bearer …`, or `Authorization: Bearer` patterns in
     source.
 - `docker compose config` against an environment without
-  `INITIAL_ADMIN_PASSWORD` correctly errors out:
-  `required variable INITIAL_ADMIN_PASSWORD is missing a value`
-  with the documented message.
+  `INITIAL_ADMIN_PASSWORD` succeeds and renders an empty API value; fresh-DB
+  refusal is enforced by `apps/api/src/index.ts`, not Compose interpolation.
 
 **Residual risk / unresolved**
 - The test file imports `TEST_PASSWORD` from `tests/helpers.ts`; the
@@ -468,3 +468,49 @@ to `main`.
   placeholder never appears in stored hashes or any response body,
   preserving the signal that any real credential-shaped string would
   leak the same way.
+
+## ELI-319 restart outage follow-up — 2026-09-23
+
+**Observed incident and causal fix**
+- At 2026-09-23 00:57–00:58 UTC, both AIME containers were exited while Docker
+  and host Nginx remained active; both containers had restart policy `no`.
+  Local `127.0.0.1:13608` refused and the public health paths returned 502.
+- Recovery was non-destructive: supplying the deployment environment gate
+  restored the existing Compose stack; the SQLite named volume and data stayed
+  intact. No volume removal or destructive Docker command was used.
+- `api` and `web` now use `restart: unless-stopped`. Compose passes an absent
+  `INITIAL_ADMIN_PASSWORD` as empty; API startup rejects only a fresh database
+  with no admin, while an existing admin database restarts without changing
+  credentials.
+
+**Regression evidence**
+- Fresh DB + missing bootstrap password: API emits a clear
+  `INITIAL_ADMIN_PASSWORD is required for a fresh database` error and refuses
+  startup; repository tests cover the empty credential rejection.
+- Existing DB + missing password: idempotent bootstrap returns `created=false`
+  and preserves the existing password hash; a dedicated auth regression covers
+  this restart contract.
+- Compose restart smoke: after non-destructive recovery, API health and web
+  `/health` plus `/api/health` returned 200 through the web-only `13608:80`
+  exposure. This is operational evidence, not credentialed LLM/MCP validation.
+
+Broader final submission smoke, including real LLM/Fuyao/iFinD credentials,
+remains pending.
+
+## ELI-319 verification rerun — 2026-09-23
+
+- Rebased the existing submission branch onto `main@38818eb` and retained the
+  PR #7 identity/integration work; no duplicate architecture or agent changes.
+- `bun test` in the API source mount: **55/55 pass**, 256 `expect()` calls,
+  including fresh-DB empty-password refusal and existing-admin restart with an
+  empty password preserving the stored hash.
+- `npm run build`, `git diff --check`, `docker compose config` with
+  `INITIAL_ADMIN_PASSWORD` unset, and `docker compose build` passed. The
+  rendered Compose config shows an empty API password and `restart:
+  unless-stopped` on both services.
+- After a non-destructive `docker compose up -d --build` and an explicit
+  `docker compose restart api web`, API health, web `/health`, and web
+  `/api/health` each returned 200. `docker compose ps` showed API healthy,
+  web-only host exposure on `13608`, and API only on internal `3000/tcp`.
+- Populated key/bearer scan found no populated patterns. No real LLM/Fuyao/iFinD
+  credentialed calls were made; broader final submission smoke remains pending.

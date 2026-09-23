@@ -185,6 +185,15 @@ Expected:
 - disabled users and logged-out sessions are rejected
 - client-supplied `x-user-id` headers cannot select identity on protected routes
 
+### T23 — Bootstrap configuration and restart recovery
+Expected:
+- Compose config succeeds when `INITIAL_ADMIN_PASSWORD` is absent and passes an
+  empty value to the API
+- a fresh database refuses startup with a clear bootstrap-password error
+- an existing database with an admin restarts without changing credentials
+- after a container restart, API health and web `/health` plus `/api/health`
+  return 200 through the web-only `13608:80` mapping
+
 ## Pre-submit checklist
 
 - [ ] Web URL works in clean browser session
@@ -211,5 +220,7 @@ Expected:
 | Credentialed real LLM/MCP smoke | PENDING | Requires credentials and the real-gateway work; no completion is claimed. |
 | Public URL / deployed app | PASS | `https://10jqka-aime.tong-xiao.top` returned the AIME homepage, `/api/health` returned 200, and public POST `/api/reviews` returned 202. |
 | Auth baseline | PASS | Merged main auth evidence records 50/50 Bun tests, including bootstrap, forced change, managed-user lifecycle, session invalidation, and identity-header rejection. |
+| Bootstrap restart regression | PASS | Fresh DB without a password is refused by API bootstrap; existing DB with an admin returns `created=false` and preserves the password hash. Compose passes an absent password empty rather than failing interpolation. |
+| Container restart recovery | PASS (host evidence) | After the 2026-09-23 outage recovery, `restart: unless-stopped` is configured; API health, web `/health`, and web `/api/health` returned 200 on web-only `13608:80`. |
 
 The deployment/public URL passes are based on the Oracle host smoke report; they do not imply credentialed gateway integration. Keep the credentialed LLM/MCP row pending until those calls are actually run.

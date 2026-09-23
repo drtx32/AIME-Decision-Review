@@ -123,3 +123,16 @@
   .message-warning-gutter:focus-within .message-warning-tooltip,
   .message-warning-tooltip.open{transform:none}
 }
+
+/* ELI-354: activity is owned by the assistant turn and disclosed as worklog. */
+.assistant-turn{margin:10px 0 22px;padding-left:38px;border-left:1px solid #e0e5e1}
+.activity-head{display:flex;align-items:center;justify-content:space-between;gap:10px}
+.activity-toggle{display:flex;align-items:center;gap:7px;border:0;background:transparent;color:#66736b;padding:4px 0;font-size:11px}
+.activity-toggle strong{font-weight:600}.activity-chevron{color:#9aa49e;font-size:10px}
+.activity-stop{border:1px solid #d8dfda;border-radius:4px;background:#fff;color:#68756d;padding:4px 8px;font-size:10px}
+.activity-worklog{display:grid;gap:6px;margin:5px 0 0 20px;padding:7px 0 1px 12px;border-left:1px solid #e6ebe7}
+.activity-event{display:flex;gap:7px;color:#6b7870;font-size:10px}.activity-event b{display:block;font-weight:500}.activity-event small{display:block;color:#9aa49e;font-size:9px}
+.activity-state{width:12px;color:#8c9a91}.activity-state.active{color:#526c5b}.activity-state.degraded{color:#a65449}
+.activity-pulse{color:#526c5b;animation:pulse 1.2s ease-in-out infinite}@keyframes pulse{50%{opacity:.35}}
+.context-tabs button{border-radius:0;border-bottom:2px solid transparent}.context-tabs button:hover,.context-tabs button.active{background:transparent;border-bottom-color:#526c5b;color:#303a34}
+.composer-dock{position:sticky;bottom:0;padding-top:8px;background:linear-gradient(transparent,#f7f8f7 14px)}

@@ -27,8 +27,8 @@ export class DecisionExtractorAgent {
       modelName: this.modelName,
       schemaHint: "DecisionExtractionResult",
       temperature: 0.1,
-      maxOutputTokens: 1800,
-      system: "你是 AIME Decision Extractor。只做历史投资决策结构化抽取，不做复盘。必须识别 1..N 笔 decision，解决中文指代。绝不能把数量词（如 2手、全仓）或语气词（如了）当成标的。订单挂单时间不是成交 T0。无法确定分钟就用 approximate/unknown，executedAt 保持 null 或只给有依据的 ISO，不得用当前时刻或 index 假造时间。保留原始时间描述。" + schema,
+      maxOutputTokens: 4096,
+      system: "你是 AIME Decision Extractor。只做历史投资决策结构化抽取，不做复盘。必须识别 1..N 个独立的 decision/order event，解决中文指代。每个成交、卖出或买入各占一个 entry；连续多日重复挂单/排板必须按每天输出独立 entry，即使均未成交（executedAt=null、notes 标明 attempted/unfilled），绝不能合并。绝不能把数量词（如 2手、全仓）或语气词（如了）当成标的。订单挂单时间不是成交 T0。无法确定分钟就用 approximate/unknown，executedAt 保持 null 或只给有依据的 ISO，不得用当前时刻或 index 假造时间。保留原始时间描述。" + schema,
       user: JSON.stringify({ message, clientNow: context.clientNow, timezone: context.timezone }),
     });
     const value = completion.structured ?? parseJson(completion.text);
@@ -41,7 +41,10 @@ export class DecisionExtractorAgent {
 }
 
 function parseJson(text: string): unknown {
-  const cleaned = text.trim().replace(/^```(?:json)?\s*/i, "").replace(/\s*```$/, "");
+  const cleaned = text.trim()
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
+    .replace(/^```(?:json)?\s*/i, "")
+    .replace(/\s*```$/, "");
   try { return JSON.parse(cleaned); } catch { const start = cleaned.indexOf("{"); const end = cleaned.lastIndexOf("}"); return start >= 0 && end > start ? JSON.parse(cleaned.slice(start, end + 1)) : null; }
 }
 

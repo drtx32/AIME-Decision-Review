@@ -61,6 +61,8 @@ export interface SessionMessageRow {
   role: "user" | "assistant" | "status";
   content: string;
   createdAt: string;
+  state?: "accepted" | "extracting" | "needs_input" | "failed" | "completed" | "cancelled";
+  errorMessage?: string | null;
   deletedAt?: string | null;
 }
 
@@ -175,6 +177,8 @@ export class ReviewRepository {
         role TEXT NOT NULL,
         content TEXT NOT NULL,
         createdAt TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'accepted',
+        errorMessage TEXT,
         deletedAt TEXT,
         FOREIGN KEY(sessionId) REFERENCES review_sessions(id)
       );
@@ -235,7 +239,11 @@ export class ReviewRepository {
       "ALTER TABLE session_decisions ADD COLUMN confidence REAL NOT NULL DEFAULT 0",
       "ALTER TABLE session_decisions ADD COLUMN needsConfirmation TEXT NOT NULL DEFAULT '[]'",
     ]) { try { this.db.exec(statement); } catch { /* column already exists */ } }
-    try { this.db.exec("ALTER TABLE conversation_messages ADD COLUMN deletedAt TEXT"); } catch { /* column already exists */ }
+    for (const statement of [
+      "ALTER TABLE conversation_messages ADD COLUMN state TEXT NOT NULL DEFAULT 'accepted'",
+      "ALTER TABLE conversation_messages ADD COLUMN errorMessage TEXT",
+      "ALTER TABLE conversation_messages ADD COLUMN deletedAt TEXT",
+    ]) { try { this.db.exec(statement); } catch { /* column already exists */ } }
   }
 
   createRun(id: string, decision: DecisionInput, T0: string, sessionId?: string, userId?: string): ReviewRunRow {
@@ -447,10 +455,10 @@ export class ReviewRepository {
       .run(status, new Date().toISOString(), id, userId);
   }
 
-  addMessage(sessionId: string, userId: string, role: SessionMessageRow["role"], content: string): SessionMessageRow {
-    const row = { id: `msg_${randomUUID()}`, sessionId, userId, role, content, createdAt: new Date().toISOString() };
-    this.db.prepare(`INSERT INTO conversation_messages (id,sessionId,userId,role,content,createdAt) VALUES (?,?,?,?,?,?)`)
-      .run(row.id, row.sessionId, row.userId, row.role, row.content, row.createdAt);
+  addMessage(sessionId: string, userId: string, role: SessionMessageRow["role"], content: string, state: SessionMessageRow["state"] = "accepted", errorMessage: string | null = null): SessionMessageRow {
+    const row = { id: `msg_${randomUUID()}`, sessionId, userId, role, content, state, errorMessage, createdAt: new Date().toISOString() };
+    this.db.prepare(`INSERT INTO conversation_messages (id,sessionId,userId,role,content,createdAt,state,errorMessage) VALUES (?,?,?,?,?,?,?,?)`)
+      .run(row.id, row.sessionId, row.userId, row.role, row.content, row.createdAt, row.state, row.errorMessage);
     this.db.prepare(`UPDATE review_sessions SET updatedAt=? WHERE id=? AND userId=?`).run(row.createdAt, sessionId, userId);
     return row;
   }
@@ -465,13 +473,16 @@ export class ReviewRepository {
   listSessions(userId: string) { return this.db.prepare(`SELECT * FROM review_sessions WHERE userId=? ORDER BY updatedAt DESC`).all(userId) as Array<Record<string, unknown>>; }
   getSession(id: string, userId: string) { return this.db.prepare(`SELECT * FROM review_sessions WHERE id=? AND userId=?`).get(id,userId) as Record<string, unknown> | null; }
   listMessages(sessionId: string, userId: string) { return this.db.prepare(`SELECT * FROM conversation_messages WHERE sessionId=? AND userId=? AND deletedAt IS NULL ORDER BY createdAt ASC`).all(sessionId,userId) as SessionMessageRow[]; }
+  updateMessageState(id: string, sessionId: string, userId: string, state: NonNullable<SessionMessageRow["state"]>, errorMessage: string | null = null): void {
+    this.db.prepare(`UPDATE conversation_messages SET state=?, errorMessage=? WHERE id=? AND sessionId=? AND userId=? AND deletedAt IS NULL`).run(state, errorMessage, id, sessionId, userId);
+  }
   updateMessageAndInvalidate(id: string, sessionId: string, userId: string, content: string): SessionMessageRow | null {
     const row = this.db.prepare(`SELECT * FROM conversation_messages WHERE id=? AND sessionId=? AND userId=? AND deletedAt IS NULL`).get(id, sessionId, userId) as SessionMessageRow | null;
     if (!row || row.role !== "user") return null;
     const now = new Date().toISOString();
-    this.db.prepare(`UPDATE conversation_messages SET content=? WHERE id=? AND sessionId=? AND userId=?`).run(content, id, sessionId, userId);
+    this.db.prepare(`UPDATE conversation_messages SET content=?, state='extracting', errorMessage=NULL WHERE id=? AND sessionId=? AND userId=?`).run(content, id, sessionId, userId);
     this.db.prepare(`UPDATE conversation_messages SET deletedAt=? WHERE sessionId=? AND userId=? AND createdAt>? AND deletedAt IS NULL`).run(now, sessionId, userId, row.createdAt);
-    this.db.prepare(`UPDATE session_decisions SET reviewId=NULL, confirmed=0 WHERE sessionId=? AND userId=?`).run(sessionId, userId);
+    this.db.prepare(`DELETE FROM session_decisions WHERE sessionId=? AND userId=?`).run(sessionId, userId);
     this.db.prepare(`UPDATE review_sessions SET status='draft', updatedAt=? WHERE id=? AND userId=?`).run(now, sessionId, userId);
     return { ...row, content };
   }
@@ -482,7 +493,7 @@ export class ReviewRepository {
     this.db.prepare(`UPDATE conversation_messages SET deletedAt=? WHERE id=? AND sessionId=? AND userId=?`).run(now, id, sessionId, userId);
     if (row.role === "user") {
       this.db.prepare(`UPDATE conversation_messages SET deletedAt=? WHERE sessionId=? AND userId=? AND createdAt>? AND deletedAt IS NULL`).run(now, sessionId, userId, row.createdAt);
-      this.db.prepare(`UPDATE session_decisions SET reviewId=NULL, confirmed=0 WHERE sessionId=? AND userId=?`).run(sessionId, userId);
+      this.db.prepare(`DELETE FROM session_decisions WHERE sessionId=? AND userId=?`).run(sessionId, userId);
       this.db.prepare(`UPDATE review_sessions SET status='draft', updatedAt=? WHERE id=? AND userId=?`).run(now, sessionId, userId);
     }
     return true;

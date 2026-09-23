@@ -24,6 +24,7 @@ Relevant reference material:
 | Mature message actions | Copy/edit/delete/retry actions are keyboard-focusable; server edit/delete invalidates downstream session output. |
 | Settings isolation | Settings is rendered through a viewport-level portal and preserves the underlying draft/session when closed. |
 | Attachment affordance | Composer chips preserve draft text; the picker allowlists image, DOCX, XLSX, CSV, and PDF extensions. |
+| Accepted-turn warnings | Hermes keeps the sent turn in the transcript and marks message-level error/warning state (`data-error` / warning affordances) instead of converting it into a global composer failure. AIME persists `conversation_messages.state=needs_input` plus a safe explanation and renders an accessible warning gutter with edit recovery. |
 
 AIME-specific boundaries remain intact: no Hermes terminal/worktree/agent
 control features, no managed session runtime, and no forwarding of provider or

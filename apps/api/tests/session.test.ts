@@ -106,6 +106,32 @@ describe("Conversation session contract", () => {
     expect(ctx.repo.listSessions("alice")).toHaveLength(0);
   });
 
+  test("accepted message with invalid extraction stays visible as needs_input and can be edited", async () => {
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "needs-input", "needs-input-pass");
+    ctx.deps.provider = { id: "test", modelName: "test", configured: true, complete: async (req) => req.schemaHint ? { text: JSON.stringify({ decisions: [] }) } : { text: "继续" } } satisfies ModelProvider;
+    const created = await ctx.app.request("/api/sessions", { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ message: "我最近做了几笔交易，帮我一起复盘这些决策。" }) });
+    expect(created.status).toBe(201);
+    const body = await created.json() as any;
+    expect(body.status).toBe("needs_input");
+    expect(body.decisions).toHaveLength(0);
+    expect(body.messages.some((message: any) => message.role === "user" && message.state === "needs_input" && message.content.includes("几笔交易"))).toBe(true);
+    expect(body.messages.find((message: any) => message.role === "user").errorMessage).toContain("标的");
+    const restored = await (await ctx.app.request(`/api/sessions/${body.sessionId}`, { headers: { cookie } })).json() as any;
+    expect(restored.session.status).toBe("needs_input");
+    expect(restored.messages.filter((message: any) => message.role === "user")).toHaveLength(1);
+
+    const candidate = { ...extraction.decisions[0], timePrecision: "exact", needsConfirmation: [] };
+    ctx.deps.provider = { id: "test", modelName: "test", configured: true, complete: async (req) => req.schemaHint ? { text: JSON.stringify({ decisions: [candidate] }) } : { text: "继续" } } satisfies ModelProvider;
+    const userMessage = body.messages.find((message: any) => message.role === "user");
+    const edited = await ctx.app.request(`/api/sessions/${body.sessionId}/messages/${userMessage.id}`, { method: "PATCH", headers: { "content-type": "application/json", cookie }, body: JSON.stringify({ content: "昨天 14:34 卖出金牛化工" }) });
+    expect(edited.status).toBe(200);
+    const afterEdit = await (await ctx.app.request(`/api/sessions/${body.sessionId}`, { headers: { cookie } })).json() as any;
+    const afterMessage = afterEdit.messages.find((message: any) => message.role === "user");
+    expect(afterMessage.state).toBe("accepted");
+    expect(afterMessage.errorMessage).toBeNull();
+    expect(afterEdit.decisions).toHaveLength(1);
+  });
+
   test("requires an actual T0 before review and sends follow-up through provider", async () => {
     let call = 0;
     const provider: ModelProvider = { id: "test", modelName: "test", configured: true, complete: async (req) => { call += 1; return req.schemaHint ? { text: JSON.stringify({ decisions: [{ ...extraction.decisions[2] }] }) } : { text: "基于当前 session 的证据，建议先检查失效条件。" }; } };

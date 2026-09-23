@@ -42,17 +42,25 @@ evidence is attached to `docs/AI_VALIDATION.md`.
 
 ### Mock-only LLM path
 
-`LLM_PROVIDER=mock` is the **default** and the only path exercised end-to-end
-by `bun test`. The `openai-compatible` provider is plumbed but a real
-`LLM_API_KEY` call has not been recorded in `docs/AI_VALIDATION.md`.
+`LLM_PROVIDER=mock` is the **default fixture path** and is the only path
+exercised end-to-end by `bun test`. The production LLM provider is
+**MiniMax-M3** configured via the `openai-compatible` adapter; the
+credentialed MiniMax-M3 run against the production review path is recorded
+as ✅ in `submission/AI_VALIDATION_RECORD.md` §"Real validation" →
+"Real LLM call".
 
 ### Mock-only MCP path
 
 All six Fuyao servers and all eleven iFinD servers are configured in the
 registry, but the adapters (`apps/api/src/mcp/adapters/*-mock.ts`) return
-deterministic fixtures. The HTTP branches for Fuyao and iFinD return
-`permanent_error` when credentials are configured, so the review API
-degrades to a documented `partial` status with no fabricated data.
+deterministic fixtures when no credentials are present. The HTTP branches
+for Fuyao and iFinD are exercised against real credentials in production:
+
+- **Fuyao**: `a-share`, `a-share-index`, `meta` validated on the historical
+  review path; `fund` / `futures` / `options` are Real-by-configuration.
+- **iFinD**: direct `stock` and `news` probes validated; the current
+  production review path uses `mapped-news`, whose final acceptance run is
+  still pending — do not overclaim `Real` on the review path.
 
 ### SQLite is per-process
 
@@ -122,10 +130,10 @@ omissions.
 | 9  | LLM provider failure → transient / bounded retry          | 🧪      | T05 (LLM analogue)     | Provider returns `transient_error`; bounded retry (one extra attempt); if still failing, review becomes `partial`.   |
 | 10 | Persistence / reload — review survives API restart        | ✅      | T19                    | SQLite `reviews` table persists in `api-data` volume; reload via `GET /api/reviews/:id/result` rehydrates the panel. |
 | 11 | Persistence / reload — review survives browser reload     | ✅      | T01b                   | Session id restored from browser storage; rehydrated via session API.                                              |
-| 12 | Production smoke — health endpoints from a clean host     | ⛔      | T19                    | Pending the production deploy step (out of scope for ELI-340). See `submission/DEPLOYMENT_EVIDENCE.template.md`.     |
-| 13 | Real LLM call (openai-compatible / MiniMax)               | ⛔      | T18a                   | Provider plumbed; no credentialed run recorded.                                                                    |
-| 14 | Real Fuyao MCP call                                       | ⛔      | T18                    | HTTP branch wired; no credentialed run recorded.                                                                   |
-| 15 | Real iFinD MCP call                                       | ⛔      | T18                    | HTTP branch wired; no credentialed run recorded.                                                                   |
+| 12 | Production smoke — health endpoints from a clean host     | 🟡      | T19                    | `submission/DEPLOYMENT_EVIDENCE.md` populated; last successful deploy SHA = `de42657`; final archive SHA pending PR #30 / ELI-362 / ELI-360 close-out. |
+| 13 | Real LLM call (MiniMax-M3 via openai-compatible)         | ✅      | T18a                   | Credentialed MiniMax-M3 run captured; provider `LLM_PROVIDER=openai-compatible`, `LLM_MODEL=MiniMax-M3`.            |
+| 14 | Real Fuyao MCP call (historical review path)              | ✅      | T18                    | `a-share` / `a-share-index` / `meta` returned `success` with non-empty evidence and provenance preserved.           |
+| 15 | Real iFinD MCP call (direct stock / news probes; mapped-news pending) | 🟡 | T18 | `stock` and direct `news` probes Real; mapped-news (the current production review path) still needs final acceptance run. |
 | 16 | T0 leakage reflection — ex-post contaminates ex-ante?     | ✅      | T09, T10               | Reflection pass flags outcome contamination when present; deterministic in code; asserted in `apps/api/tests/agent.test.ts`. |
 | 17 | Non-compliant request (guaranteed return / direct trade)  | ✅      | T11                    | API returns HTTP 422 `{ error: "non_compliant_request" }`; no review created.                                       |
 | 18 | Secret scan — no populated credentials in repo / build    | ✅      | T12                    | `scripts/preflight.mjs` plus `tests/preflight/`; `docs/AI_VALIDATION.md` exempted with a documented reason.          |
@@ -198,17 +206,23 @@ omissions.
 
 #### 12. Production smoke
 
-- Pending. The current submission explicitly defers production deploy
-  evidence to a follow-up PR. `submission/DEPLOYMENT_EVIDENCE.template.md`
-  remains the unfilled template; the public Web URL placeholder and
-  the exact final deployed SHA are `UNKNOWN` until the deploy step
-  lands (out of scope for ELI-340).
+- `submission/DEPLOYMENT_EVIDENCE.md` is the materialized record of the
+  running production deployment. Last successful production deploy SHA
+  captured: `de426576` (merge of PR #27). Main has advanced to
+  `b87e8fb` (ELI-358 archived-vs-active scope fix) and is moving
+  through PR #30 (ELI-355 Markdown / CoT / conversation routing),
+  ELI-362 (T0 datetime hotfix), and ELI-360 (user BYOK browser-local).
+  The final deployed SHA recorded in `submission/DEPLOYMENT_EVIDENCE.md`
+  must be re-captured when those PRs land and a fresh
+  `docker compose up -d --build` completes.
 
 #### 13–15. Real LLM / Fuyao / iFinD validation
 
 - See `submission/AI_VALIDATION_RECORD.md` §"Real validation" for the
-  code paths and the evidence required to upgrade each entry from
-  `⛔ Unvalidated` to `Real`.
+  current status of each row. MiniMax-M3 (Real) and Fuyao historical
+  path (Real) are captured. iFinD direct stock / news probes are Real;
+  the current production review path uses `mapped-news`, whose final
+  acceptance run is still pending — do not overclaim.
 
 ---
 

@@ -236,10 +236,13 @@ the submission. They are also tracked per-case in
   remains the unfilled template; the public Web URL placeholder and the
   exact final deployed SHA are `UNKNOWN` until the production deploy
   step lands (out of scope for ELI-340).
-- **P0 fixes still moving.** ELI-354 / ELI-355 / ELI-357 (chat
-  interaction primitives, identity contracts, final close-out) were
-  moving at the time of this submission package. This package documents
-  the state at the recorded SHA; later fixes land in a follow-up PR.
+- **P0 fixes status (as of `main` `b87e8fb`).** ELI-354 (chat
+  interaction primitives) merged. ELI-358 (P0 archived-vs-active scope)
+  merged at `b87e8fb`. PR #30 / ELI-355 (Markdown / CoT / conversation
+  routing) is **pending**. ELI-362 (T0 datetime hotfix) and ELI-360
+  (user BYOK browser-local) are **running**. This package documents the
+  state at the recorded SHA; later fixes land in a follow-up PR before
+  the final archive SHA is captured.
 - **Scanned / image-only PDFs are not OCR'd in v0.1** unless a verified
   vision capability is configured. Vision probing is explicitly opt-in
   (`d1a2e8c`).

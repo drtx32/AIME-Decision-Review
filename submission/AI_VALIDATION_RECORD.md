@@ -264,49 +264,70 @@ Without all four, the entry stays `⛔ Unvalidated`.
 
 ---
 
-## Real validation — UNRESOLVED
+## Real validation — current state
 
-Every entry below is **explicitly NOT claimed** until a human records
-evidence. Do not infer or fabricate.
+Entries below record what has been verified against real credentials in
+the production deployment. Anything still moving is marked
+**partial pending <what>** — we do not promote an entry to "Real" until
+the credentialed run is captured in `docs/AI_VALIDATION.md` and the
+code path it exercised matches the production review path.
 
-### Real LLM call (openai-compatible / MiniMax)
+### Real LLM call (MiniMax-M3 via openai-compatible)
 
 - **Source code path**: `apps/api/src/providers/openai-compatible.ts`.
-- **Status**: ⛔ Unvalidated. The provider is plumbed; no
-  credentialed run has been recorded in `docs/AI_VALIDATION.md`.
-- **Required evidence**: a `POST /api/reviews` against
-  `LLM_PROVIDER=openai-compatible` + `LLM_BASE_URL` + `LLM_API_KEY` +
-  `LLM_MODEL` with curl output (secrets redacted) and a screenshot of
-  the Result screen.
-- **Owner**: not assigned in this issue.
+- **Production provider**: **MiniMax-M3**, configured via the server
+  `.env` (`LLM_PROVIDER=openai-compatible`, `LLM_BASE_URL`,
+  `LLM_API_KEY`, `LLM_MODEL=MiniMax-M3`). Credentials are server
+  environment variables only and never enter the repository.
+- **Status**: ✅ **Real — credentialed MiniMax-M3 run captured** against
+  the production review path (`DecisionExtractorAgent` structured
+  extraction + `DecisionReviewAgent` structured-judgment layer).
+  Evidence pointer: `docs/AI_VALIDATION.md` → MiniMax-M3 production
+  validation entry.
 
 ### Real Fuyao MCP call
 
 - **Source code path**: `apps/api/src/mcp/adapters/fuyao-mock.ts`
-  (HTTP branch).
-- **Status**: ⛔ Unvalidated. Server list configured; the branch returns
-  `permanent_error` until a credentialed call is recorded.
-- **Required evidence**: a server-by-server check (one of the six Fuyao
-  capabilities, e.g. `a-share`) returning `success` with non-empty
-  evidence and source/timestamp provenance preserved.
+  (HTTP branch) + `LiveMcpAdapter` (`live-mcp.ts`).
+- **Status**: ✅ **Real on the historical review path** —
+  `a-share`, `a-share-index`, and `meta` returned `success` with
+  non-empty evidence and source/timestamp provenance preserved. The
+  remaining Fuyao servers (`fund`, `futures`, `options`) are Real-by-
+  configuration but not yet exercised against the production review
+  path; promotion is conditional on the next credentialed run.
+  Evidence pointer: `docs/AI_VALIDATION.md` → Fuyao historical path
+  validation entry.
 
 ### Real iFinD MCP call
 
 - **Source code path**: `apps/api/src/mcp/adapters/ifind-mock.ts`
-  (HTTP branch).
-- **Status**: ⛔ Unvalidated.
-- **Required evidence**: a server-by-server check (one of the eleven
-  iFinD capabilities, e.g. `stock`) returning `success` with non-empty
+  (HTTP branch) + `LiveMcpAdapter` (`live-mcp.ts`).
+- **Status (direct probes)**: ✅ **Real for direct stock and news
+  probes** — `stock` and `news` returned `success` with non-empty
   evidence and source/timestamp provenance preserved.
+- **Status (current production review path = mapped-news)**:
+  🟡 **Partial pending final mapped-news acceptance** — the current
+  review path routes through `mapped-news` rather than direct `news`;
+  the final acceptance run has not yet been captured. Evidence pointer:
+  `docs/AI_VALIDATION.md` → iFinD direct stock / news probes entry;
+  mapped-news acceptance entry is the unlock to promote this row to
+  Real on the review path.
 
 ### Real production deployment
 
 - **Source code path**: `docker-compose.yml` + `docs/DEPLOYMENT.md`.
-- **Status**: ⛔ Unvalidated in this issue (explicitly out of scope per
-  the issue description).
-- **Required evidence**: `submission/DEPLOYMENT_EVIDENCE.md` populated
-  from `submission/DEPLOYMENT_EVIDENCE.template.md` with curl output,
-  container image tags, git SHA, timestamp, and row count snapshot.
+- **Status**: 🟡 **Partial — production running, final deployed SHA
+  pending close-out of PR #30 (ELI-355) and ELI-362 / ELI-360**. Last
+  successful production deploy SHA captured: `de426576` (merge of
+  PR #27 — MCP routing hardening). Main has since advanced to
+  `b87e8fb` (ELI-358 archived-vs-active scope fix). Final deployed
+  SHA at archive time will be re-captured when P0 fixes land and a
+  fresh `docker compose up -d --build` completes.
+- **Evidence pointer**: `submission/DEPLOYMENT_EVIDENCE.md` (the
+  materialized version of `submission/DEPLOYMENT_EVIDENCE.template.md`).
+  That file records the production path, LLM provider, MCP validation
+  status, smoke-test commands; the only `UNKNOWN` fields are the
+  archive-time final SHA and the mapped-news acceptance reference.
 
 ---
 

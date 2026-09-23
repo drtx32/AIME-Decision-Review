@@ -8,6 +8,12 @@
  *
  * The provider returns structured JSON — never free-form chat — so the agent
  * state machine can validate every claim before it lands in the result.
+ *
+ * `capabilities` exposes what the configured endpoint has actually been
+ * probed to support — most importantly whether image inputs work. The
+ * attachment pipeline records this snapshot at upload time so the composer
+ * (ELI-336) can later decide whether to invoke the multimodal path without
+ * re-querying the provider.
  */
 
 import type { AppConfig } from "../config.ts";
@@ -36,10 +42,27 @@ export interface LLMCompletion {
   usage?: { input: number; output: number };
 }
 
+/**
+ * Provider capability flags. Set at construction time; `images` is the result
+ * of a real probe (small multimodal payload → /chat/completions) — never a
+ * model-name string match.
+ */
+export interface ProviderCapabilities {
+  text: true;
+  images: boolean;
+}
+
 export interface ModelProvider {
   readonly id: string;
   readonly modelName: string;
+  readonly capabilities: ProviderCapabilities;
   complete(req: LLMCompletionRequest): Promise<LLMCompletion>;
+  /**
+   * Probe a multimodal payload against the live endpoint. Used internally
+   * by `OpenAICompatibleProvider` to populate `capabilities.images`. The
+   * mock provider implements it as a synchronous "unknown".
+   */
+  probeImages?(): Promise<{ available: boolean; reason?: string }>;
 }
 
 let cached: ModelProvider | null = null;

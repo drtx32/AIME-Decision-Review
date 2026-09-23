@@ -7,13 +7,22 @@
  * the LLM for facts. This provider exists so the LLM-only structured-judgment
  * step (rating, attribution reasoning, lesson phrasing) still has a typed
  * surface during the mock vertical slice.
+ *
+ * Capability snapshot: text always supported; images unavailable because no
+ * real multimodal endpoint is configured.
  */
 
-import type { LLMCompletion, LLMCompletionRequest, ModelProvider } from "./index.ts";
+import type {
+  LLMCompletion,
+  LLMCompletionRequest,
+  ModelProvider,
+  ProviderCapabilities,
+} from "./index.ts";
 
 export class MockModelProvider implements ModelProvider {
   readonly id = "mock";
   readonly modelName: string;
+  readonly capabilities: ProviderCapabilities = { text: true, images: false };
 
   constructor(modelName: string) {
     this.modelName = modelName;
@@ -33,5 +42,9 @@ export class MockModelProvider implements ModelProvider {
       structured,
       usage: { input: req.user.length, output: 64 },
     };
+  }
+
+  async probeImages(): Promise<{ available: false; reason: string }> {
+    return { available: false, reason: "mock_provider_no_endpoint" };
   }
 }

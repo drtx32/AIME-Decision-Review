@@ -1,5 +1,5 @@
 /**
- * Hono routes — /api/reviews/* + /api/auth/* + /api/admin/* + /health.
+ * Hono routes — /api/reviews/* + /api/auth/* + /api/admin/* + /api/attachments/* + /health.
  *
  * All non-auth, non-health endpoints require an authenticated session.
  * mustChangePassword users are blocked from review endpoints and admin
@@ -18,6 +18,8 @@ import type { ModelProvider } from "../providers/index.ts";
 import { attachUser, requireAuth, gateMustChangePassword, rejectClientUserIdHeader, type AuthEnv } from "../auth/middleware.ts";
 import { buildAuthRoutes } from "../auth/routes.ts";
 import { buildAdminRoutes } from "../auth/admin.ts";
+import { AttachmentService } from "../attachments/service.ts";
+import { buildAttachmentRoutes } from "../attachments/routes.ts";
 
 export interface RouteDeps {
   config: AppConfig;
@@ -25,6 +27,8 @@ export interface RouteDeps {
   userRepo: UserRepository;
   registry: McpRegistry;
   provider: ModelProvider;
+  /** Optional attachment service. When present, /api/attachments/* is wired. */
+  attachments?: AttachmentService;
   /** Test hook — bypass background execution so specs stay deterministic. */
   runSync?: boolean;
 }
@@ -49,6 +53,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     return c.json({
       status: "ok",
       provider: deps.provider.id,
+      providerCapabilities: deps.provider.capabilities,
       configuredServers: deps.registry.configuredKeys(),
       time: new Date().toISOString(),
     });
@@ -59,6 +64,16 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
 
   // Review endpoints — require an authenticated, non-mustChangePassword user.
   app.use("/api/reviews/*", requireAuth(deps.userRepo), gateMustChangePassword());
+
+  // Attachment endpoints — require an authenticated, non-mustChangePassword user.
+  if (deps.attachments) {
+    app.use(
+      "/api/attachments/*",
+      requireAuth(deps.userRepo),
+      gateMustChangePassword()
+    );
+    app.route("/api/attachments", buildAttachmentRoutes(deps.attachments));
+  }
 
   app.post("/api/reviews", async (c) => {
     const body = await c.req.json().catch(() => null);

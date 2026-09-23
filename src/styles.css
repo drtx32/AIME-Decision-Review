@@ -123,3 +123,31 @@
   .message-warning-gutter:focus-within .message-warning-tooltip,
   .message-warning-tooltip.open{transform:none}
 }
+
+/* Markdown body — produced by src/markdown.ts via dangerouslySetInnerHTML.
+   Keep selectors narrow so they only target the rendered chat body, not
+   the welcome card, error rows, or composer chrome. */
+.markdown-body{margin-top:5px;color:#50645a;font-size:12px;line-height:1.7}
+.markdown-body>:first-child{margin-top:0}
+.markdown-body>:last-child{margin-bottom:0}
+.markdown-body h1,.markdown-body h2,.markdown-body h3,.markdown-body h4,.markdown-body h5,.markdown-body h6{margin:14px 0 6px;color:#17231f;letter-spacing:-.02em;line-height:1.3;font-weight:700}
+.markdown-body h1{font-size:18px}.markdown-body h2{font-size:15px}.markdown-body h3{font-size:13px}.markdown-body h4,.markdown-body h5,.markdown-body h6{font-size:12px}
+.markdown-body p{margin:6px 0}
+.markdown-body ul,.markdown-body ol{margin:6px 0;padding-left:20px}
+.markdown-body li{margin:2px 0}
+.markdown-body li>p{margin:2px 0}
+.markdown-body blockquote{margin:8px 0;padding:6px 12px;border-left:3px solid #d4e0d2;color:#64766a;background:#f4f8f2;border-radius:0 4px 4px 0}
+.markdown-body code{font:11px/1.4 'DM Mono',ui-monospace,Menlo,monospace;background:#f0f4ef;color:#3a5443;padding:1px 5px;border-radius:3px}
+.markdown-body pre{margin:8px 0;padding:9px 12px;background:#1d2a23;color:#d8e6d5;border-radius:6px;overflow:auto}
+.markdown-body pre code{background:transparent;color:inherit;padding:0;font-size:11px;line-height:1.55}
+.markdown-body table{margin:8px 0;border-collapse:collapse;width:auto;font-size:11px}
+.markdown-body th,.markdown-body td{padding:5px 9px;border:1px solid #dbe6db;text-align:left}
+.markdown-body th{background:#eff5ed;color:#2e4634;font-weight:600}
+.markdown-body a{color:#315e3a;text-decoration:underline;text-decoration-color:#b9d2bb;text-underline-offset:2px}
+.markdown-body a:hover{color:#172f1d;text-decoration-color:#77a77d}
+.markdown-body strong{color:#17231f;font-weight:700}
+.markdown-body em{font-style:italic}
+.markdown-body hr{border:0;border-top:1px solid #dfe8df;margin:10px 0}
+.markdown-body.status-copy{color:#7e8d83}
+.markdown-body.status-copy strong{color:#3a5443}
+.markdown-body img{max-width:100%;height:auto}

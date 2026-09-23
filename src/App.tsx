@@ -1,9 +1,10 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { ArrowRight, BookOpen, Check, ChevronLeft, ChevronRight, CircleAlert, FileText, LogOut, Menu, Plus, Search, Send, Settings, ShieldCheck, Sparkles, X } from 'lucide-react';
 import { reviewApi, resultView, type ActivityEvent, type LearningMemory, type Result, type SessionDecision, type SessionMessage, type SessionSnapshot } from './api';
 import { adminUsers, ApiError, auth, modelConfig, usage, type PublicUser, type UserModelConfig, type UsageSummary } from './auth-api';
 import { ChartCard } from './ChartCard';
+import { renderAssistantMarkdown } from './markdown';
 
 type Phase = 'compose' | 'extracting' | 'confirm' | 'running' | 'review';
 type PanelTab = 'decisions' | 'timeline' | 'evidence' | 'findings' | 'learning';
@@ -119,7 +120,20 @@ export default function App() {
 
 function Message({ message, copyNotice, onCopy, onEdit, onDelete, onRetry }: { message: SessionMessage; copyNotice: boolean; onCopy: (message: SessionMessage) => void; onEdit?: (message: SessionMessage) => void; onDelete: (message: SessionMessage) => void; onRetry?: (message: SessionMessage) => void }) {
   const status = message.role === 'status' || message.role === 'error'; const isWelcome = message.id === 'welcome'; const needsInput = message.role === 'user' && message.state === 'needs_input'; const [warningOpen, setWarningOpen] = useState(false); const warningId = `${message.id}-warning`;
-  return <div className={`message-row ${message.role} ${isWelcome ? 'welcome-message' : ''} ${needsInput ? 'needs-input' : ''}`}><div className="message-avatar">{message.role === 'assistant' ? <Sparkles size={14}/> : message.role === 'status' ? <span className="status-mark"/> : message.role === 'error' ? <CircleAlert size={14}/> : '景'}</div>{needsInput && <span className="message-warning-gutter"><button type="button" className="message-warning" aria-label="该消息需要补充信息" aria-describedby={warningId} aria-expanded={warningOpen} onClick={() => setWarningOpen((open) => !open)}><CircleAlert size={15}/></button><span id={warningId} role="tooltip" className={`message-warning-tooltip ${warningOpen ? 'open' : ''}`}>{message.errorMessage || '这条消息还缺少可确认的标的、方向或成交/下单时间。你可以直接编辑原消息补充。'}</span></span>}<div className="message-bubble">{isWelcome ? <><h2>{message.content}</h2><p>用自然语言描述历史决策，AIME 会帮你还原当时的信息环境。</p></> : <><span>{message.role === 'assistant' ? 'AIME REVIEW AGENT' : message.role === 'status' ? 'REVIEW STATUS' : message.role === 'error' ? 'TURN ERROR' : 'YOU'}</span><p className={status ? 'status-copy' : ''}>{message.content}</p>{message.role !== 'error' && <div className="message-actions"><button type="button" aria-label="复制消息" onClick={() => onCopy(message)}>{copyNotice ? '已复制' : '复制'}</button>{onEdit && <button type="button" aria-label="编辑消息" onClick={() => onEdit(message)}>编辑</button>}{onRetry && <button type="button" aria-label="重试消息" onClick={() => onRetry(message)}>重试</button>}<button type="button" aria-label="删除消息" onClick={() => void onDelete(message)}>删除</button></div>}</>}</div></div>;
+  // Markdown rendering is scoped to assistant and status turns. User and
+  // error messages stay plain text — user content is already displayed as
+  // typed, and error turns are short operator-facing strings that should
+  // not render Markdown formatting (e.g. a stray underscore would otherwise
+  // turn into italics). Welcome message content is fixed copy and is
+  // rendered directly without Markdown.
+  const renderedHtml = useMemo(() => {
+    if (isWelcome) return null;
+    if (message.role === 'assistant' || message.role === 'status') {
+      return renderAssistantMarkdown(message.content).html;
+    }
+    return null;
+  }, [isWelcome, message.role, message.content]);
+  return <div className={`message-row ${message.role} ${isWelcome ? 'welcome-message' : ''} ${needsInput ? 'needs-input' : ''}`}><div className="message-avatar">{message.role === 'assistant' ? <Sparkles size={14}/> : message.role === 'status' ? <span className="status-mark"/> : message.role === 'error' ? <CircleAlert size={14}/> : '景'}</div>{needsInput && <span className="message-warning-gutter"><button type="button" className="message-warning" aria-label="该消息需要补充信息" aria-describedby={warningId} aria-expanded={warningOpen} onClick={() => setWarningOpen((open) => !open)}><CircleAlert size={15}/></button><span id={warningId} role="tooltip" className={`message-warning-tooltip ${warningOpen ? 'open' : ''}`}>{message.errorMessage || '这条消息还缺少可确认的标的、方向或成交/下单时间。你可以直接编辑原消息补充。'}</span></span>}<div className="message-bubble">{isWelcome ? <><h2>{message.content}</h2><p>用自然语言描述历史决策，AIME 会帮你还原当时的信息环境。</p></> : <><span>{message.role === 'assistant' ? 'AIME REVIEW AGENT' : message.role === 'status' ? 'REVIEW STATUS' : message.role === 'error' ? 'TURN ERROR' : 'YOU'}</span>{renderedHtml !== null ? <div className={`markdown-body ${status ? 'status-copy' : ''}`} data-message-role={message.role} dangerouslySetInnerHTML={{ __html: renderedHtml }} /> : <p className={status ? 'status-copy' : ''}>{message.content}</p>}{message.role !== 'error' && <div className="message-actions"><button type="button" aria-label="复制消息" onClick={() => onCopy(message)}>{copyNotice ? '已复制' : '复制'}</button>{onEdit && <button type="button" aria-label="编辑消息" onClick={() => onEdit(message)}>编辑</button>}{onRetry && <button type="button" aria-label="重试消息" onClick={() => onRetry(message)}>重试</button>}<button type="button" aria-label="删除消息" onClick={() => void onDelete(message)}>删除</button></div>}</>}</div></div>;
 }
 function StarterPrompts({ onSelect }: { onSelect: (prompt: string) => void }) { return <div className="starter-prompts" data-testid="starter-prompts"><span className="eyebrow">START WITH A REVIEW</span><div>{starterPrompts.map((prompt, index) => <button type="button" key={prompt} data-testid={`starter-prompt-${index + 1}`} onClick={() => onSelect(prompt)}>{prompt}<ArrowRight size={14}/></button>)}</div></div>; }
 function ActivityAnchor({ events, active, open, onToggle, onStop }: { events: ActivityEvent[]; active: boolean; open: boolean; onToggle: () => void; onStop: () => void }) {

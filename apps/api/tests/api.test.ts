@@ -2,7 +2,6 @@ import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { makeTestServer, loginAndCookie, type TestServer } from "./helpers.ts";
 import type { DecisionReviewResult } from "../src/types/index.ts";
 import type { ModelProvider } from "../src/providers/index.ts";
-import { getModelProvider } from "../src/providers/index.ts";
 
 describe("Review API contract", () => {
   let ctx: TestServer;
@@ -42,11 +41,10 @@ describe("Review API contract", () => {
 
   test("production with no configured model keeps health up but rejects review creation", async () => {
     const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "reviewer", "reviewer-pass");
-    ctx.cfg.runtime = "production";
-    ctx.cfg.llm.provider = "openai-compatible";
-    ctx.cfg.llm.baseUrl = null;
-    ctx.cfg.llm.apiKey = null;
-    ctx.deps.provider = getModelProvider(ctx.cfg);
+    // Canonical production uses PORT=3000 even when NODE_ENV is unset.
+    // The explicit mock default must be reported as unavailable there.
+    ctx.cfg.runtime = "development";
+    ctx.cfg.isProduction = true;
     const health = await ctx.app.request("/health");
     expect(health.status).toBe(200);
     const healthBody = await health.json() as { status: string; provider_configured: boolean; provider_status: string };

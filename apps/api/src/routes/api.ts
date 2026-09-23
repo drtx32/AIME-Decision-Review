@@ -41,13 +41,22 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   // Provider availability is the single readiness contract. In particular,
   // real-provider mode with missing credentials must never be treated as a
   // mock-backed configured provider by route pre-flight or /health.
-  const providerAvailability = () => deps.provider.availability?.() ?? {
+  const providerAvailability = () => {
+    const base = deps.provider.availability?.() ?? {
     state: deps.provider.configured ? "ready" : "unconfigured",
     providerId: deps.provider.id,
     model: deps.provider.modelName,
     lastError: null,
     requestedMode: "mock" as const,
     degraded: !deps.provider.configured,
+    };
+    // A production deployment must never present an implicit/default mock as
+    // a ready model. `isProduction` also covers the canonical PORT=3000
+    // deployment where NODE_ENV is unset.
+    if (config.isProduction && base.requestedMode === "mock") {
+      return { ...base, state: "unconfigured" as const, degraded: true };
+    }
+    return base;
   };
   const providerReady = () => providerAvailability().state === "ready";
 

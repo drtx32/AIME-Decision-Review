@@ -42,6 +42,13 @@ describe("MCP registry — selective construction", () => {
     expect(keys).not.toContain("news");
   });
 
+  test("resolveFor honors the plan allow-list and avoids cross-server dispatch", () => {
+    const cfg = makeTestConfig();
+    const registry = buildMcpRegistry(cfg);
+    const priceAdapters = registry.resolveFor("price", ["a-share"]);
+    expect(priceAdapters.map((a) => String(a.serverKey))).toEqual(["a-share"]);
+  });
+
   test("do not dump every tool schema at startup — adapters are lazy", () => {
     const cfg = makeTestConfig();
     const registry = buildMcpRegistry(cfg);

@@ -10,8 +10,12 @@ export interface AppConfig {
   logLevel: "debug" | "info" | "warn" | "error";
   /** Production-ish flag toggles Secure cookies and stricter auth headers. */
   isProduction: boolean;
-  /** Secret used to encrypt per-user BYOK keys at rest. */
-  modelConfigSecret: string;
+  /**
+   * ELI-360 — no per-user BYOK is stored on this server. Only the
+   * operator's LLM_* env credentials are used for the v0.1 Review Agent
+   * path; user-supplied keys live in the browser (IndexedDB) and never
+   * touch this process.
+   */
 
   initialAdmin: {
     username: string;
@@ -156,7 +160,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     sqlitePath: env.SQLITE_PATH ?? "./data/decision-review.db",
     logLevel: (env.LOG_LEVEL as AppConfig["logLevel"]) ?? "info",
     isProduction,
-    modelConfigSecret: env.MODEL_CONFIG_SECRET?.trim() || initialAdminPassword || "aime-model-config-local-secret",
     initialAdmin: {
       username: initialAdminUsername,
       password: initialAdminPassword,

@@ -1,81 +1,71 @@
 /**
  * Settings / usage / model-capability routes.
  *
- * Surface:
- *   GET    /api/settings/model    — read the current user's model config
- *   PUT    /api/settings/model    — upsert (encrypts apiKey at rest)
- *   GET    /api/usage             — quota summary + recent events
- *   GET    /api/models/capabilities — provider/model capability metadata
+ * Surface (ELI-360):
+ *   GET    /api/settings/server-model
+ *                            — read the server-managed LLM provider config
+ *                              (driven by LLM_* env). The AIME backend never
+ *                              stores, logs, echoes, or fingerprints a
+ *                              user-supplied BYOK. User-side BYOK lives in
+ *                              the browser (IndexedDB) and only ever crosses
+ *                              the network browser -> provider directly.
+ *   GET    /api/usage        — token-usage summary derived from
+ *                              usage_events. Per-user allowance is
+ *                              operator-configured (env-driven), never
+ *                              derived from a user-supplied key.
+ *   GET    /api/models/capabilities
+ *                            — provider/model capability metadata.
+ *
+ * Removed in ELI-360:
+ *   - PUT    /api/settings/model       (was: upsert with encrypted apiKey)
+ *   - POST   /api/auth/model           (was: upsert with encrypted apiKey)
+ *   - POST   /api/auth/model/test      (was: forward user key to provider)
+ *   - DELETE /api/auth/model           (was: clear stored ciphertext)
+ *   - GET    /api/auth/model           (was: echo fingerprint / keySuffix)
+ *   These endpoints returned 410 Gone if reached via a stale frontend
+ *   bundle. Browser now manages BYOK directly and never speaks to AIME
+ *   about the secret.
  *
  * Identity is always derived from the session cookie (handled upstream
- * by attachUser + requireAuth); we never trust a client-supplied
- * userId on these endpoints.
- *
- * Secret redaction contract:
- *   - The plaintext API key never appears in any response, log, or
- *     error message. Only `hasApiKey: boolean` and
- *     `apiKeyFingerprint: "abcd…efgh"` are returned.
- *   - If a key is supplied on PUT but no secret-encryption handle is
- *     available, the request is rejected with 503 / `secret_store_unavailable`
- *     rather than silently downgrading to plaintext persistence.
+ * by attachUser + requireAuth); we never trust a client-supplied userId.
  */
 
 import { Hono } from "hono";
-import { z } from "zod";
 import type { AuthEnv } from "../auth/middleware.ts";
 import type { SettingsRepository } from "./repository.ts";
-import { loadSecretKey } from "./crypto.ts";
 import { getModelCapabilities } from "./capabilities.ts";
-import type { ModelSettingsPayload, UsagePayload, SettingsProvider } from "./types.ts";
+import type { UsagePayload } from "./types.ts";
 
 export interface SettingsDeps {
   settingsRepo: SettingsRepository;
 }
 
-const PutSettingsSchema = z
-  .object({
-    provider: z.enum(["openai-compatible", "mock"]),
-    model: z.string().min(1).max(128),
-    baseUrl: z
-      .string()
-      .trim()
-      .max(512)
-      .refine((v) => v === "" || /^https?:\/\//i.test(v), {
-        message: "baseUrl must be empty or an http(s) URL",
-      })
-      .optional()
-      .transform((v) => (v === undefined || v === "" ? null : v)),
-    /**
-     * Plaintext API key. Optional on PUT — if omitted the existing
-     * ciphertext is preserved, so the Settings UI can rotate
-     * model/baseUrl without forcing re-entry.
-     *
-     * Empty string is treated as "clear the stored key".
-     */
-    apiKey: z.string().max(4096).optional(),
-    /**
-     * Optional period configuration for the quota summary. Operators
-     * can set / clear the allowance; the API never fabricates one.
-     */
-    period: z
-      .object({
-        start: z.string().datetime({ offset: true }),
-        end: z.string().datetime({ offset: true }),
-        resetAt: z.string().datetime({ offset: true }),
-        allowanceTokens: z.number().int().nonnegative().nullable(),
-      })
-      .optional(),
-  })
-  .strict();
+const REMOVED_ENDPOINT_NOTICE =
+  "This endpoint was removed in ELI-360: the AIME backend no longer accepts, " +
+  "stores, or proxies user-supplied API keys. Configure BYOK in the browser " +
+  "(Settings → Model & API) — your key stays in browser-local storage and " +
+  "only crosses the wire browser → provider directly.";
 
-export function buildSettingsRoutes(deps: SettingsDeps) {
+/**
+ * Read-only view of the server-managed LLM provider config (env-driven).
+ *
+ * The frontend uses this to surface the "current server default" row in
+ * Settings → Model & API alongside the browser-local BYOK editor. We
+ * NEVER return a user-bound `configured / keySuffix / apiKeyFingerprint`
+ * — the server has no per-user key material after ELI-360.
+ */
+export interface ServerModelInfo {
+  provider: string;
+  model: string;
+  baseUrl: string | null;
+  /** True if the server-managed provider has both baseUrl and apiKey. */
+  configured: boolean;
+}
+
+export function buildServerModelRoute(deps: {
+  resolve: () => ServerModelInfo;
+}): Hono<AuthEnv> {
   const app = new Hono<AuthEnv>();
-
-  // Inline auth gate — mustChangePassword users are blocked from the
-  // Settings surface until they complete the first-login password change.
-  // requireAuth() in the auth middleware is intentionally not reused here
-  // because the upstream signature takes the UserRepository (used for
-  // account-disable cleanup that does not apply to settings routes).
   app.use("*", async (c, next) => {
     const user = c.get("user");
     if (!user) return c.json({ error: "unauthenticated" }, 401);
@@ -84,88 +74,28 @@ export function buildSettingsRoutes(deps: SettingsDeps) {
     }
     await next();
   });
+  app.get("/", (c) => c.json(deps.resolve()));
+  return app;
+}
 
-  app.get("/model", (c) => {
-    const user = c.get("user")!;
-    const row = deps.settingsRepo.getModelSettings(user.id);
-    return c.json(row ? toPublicPayload(row) : defaultPayloadFor(user.username));
+/**
+ * Stub that returns 410 Gone for any of the ELI-360-removed endpoints
+ * (PUT /api/settings/model, /api/auth/model GET/POST/DELETE,
+ * /api/auth/model/test). This is mounted so a stale frontend bundle
+ * cannot silently "succeed" by hitting a path the server used to honour.
+ */
+export function buildRemovedModelEndpoints(): Hono<AuthEnv> {
+  const app = new Hono<AuthEnv>();
+  app.all("*", async (c) => {
+    return c.json(
+      {
+        error: "endpoint_removed",
+        code: "byok_browser_local",
+        message: REMOVED_ENDPOINT_NOTICE,
+      },
+      410
+    );
   });
-
-  app.put("/model", async (c) => {
-    const user = c.get("user")!;
-    const body = await c.req.json().catch(() => null);
-    const parsed = PutSettingsSchema.safeParse(body);
-    if (!parsed.success) {
-      return c.json({ error: "invalid_input", issues: parsed.error.issues }, 400);
-    }
-    const input = parsed.data;
-
-    // Mock provider is intentionally non-configurable: reject any attempt
-    // to attach a baseUrl / apiKey to it. The capability metadata already
-    // documents this.
-    if (input.provider === "mock") {
-      if (input.baseUrl || (input.apiKey && input.apiKey.length > 0)) {
-        return c.json(
-          {
-            error: "mock_not_configurable",
-            message:
-              "The mock provider does not accept a baseUrl or apiKey. Use provider='openai-compatible' for real credentials.",
-          },
-          400
-        );
-      }
-    }
-
-    let apiKeyCiphertext: string | null | undefined;
-    let apiKeyFingerprint: string | null | undefined;
-
-    if (input.apiKey !== undefined) {
-      if (input.apiKey === "") {
-        // Explicit clear.
-        apiKeyCiphertext = null;
-        apiKeyFingerprint = null;
-      } else {
-        const key = loadSecretKey();
-        if (!key) {
-          return c.json(
-            {
-              error: "secret_store_unavailable",
-              message:
-                "Server is not configured to store user-supplied API keys securely. " +
-                "Set AIME_SECRET_ENC_KEY (or supply INITIAL_ADMIN_PASSWORD) so the API " +
-                "can encrypt the key at rest. The plaintext was NOT persisted.",
-            },
-            503
-          );
-        }
-        const ciphertext = key.encrypt(input.apiKey);
-        apiKeyCiphertext = ciphertext;
-        apiKeyFingerprint = key.fingerprint(ciphertext);
-      }
-    }
-
-    const row = deps.settingsRepo.saveModelSettings({
-      userId: user.id,
-      provider: input.provider,
-      model: input.model,
-      baseUrl: input.baseUrl ?? null,
-      apiKeyCiphertext,
-      apiKeyFingerprint,
-    });
-
-    if (input.period) {
-      deps.settingsRepo.upsertUsagePeriod({
-        userId: user.id,
-        periodStart: input.period.start,
-        periodEnd: input.period.end,
-        resetAt: input.period.resetAt,
-        allowanceTokens: input.period.allowanceTokens,
-      });
-    }
-
-    return c.json(toPublicPayload(row));
-  });
-
   return app;
 }
 
@@ -191,12 +121,6 @@ export function buildUsageRoute(deps: SettingsDeps) {
 
 export function buildCapabilitiesRoute() {
   const app = new Hono<AuthEnv>();
-  // Capabilities is a static, non-secret registry — keep it behind
-  // requireAuth so it lines up with the rest of the Settings surface.
-  // mustChangePassword users are blocked too so the gate is uniform:
-  // the Settings UI is not usable until the first-login password change
-  // is complete, and exposing the model picker early would let the user
-  // commit to a model they cannot actually use yet.
   app.use("*", async (c, next) => {
     const user = c.get("user");
     if (!user) return c.json({ error: "unauthenticated" }, 401);
@@ -214,42 +138,6 @@ export function buildCapabilitiesRoute() {
 }
 
 // ── helpers ────────────────────────────────────────────────────────────────
-
-function toPublicPayload(row: {
-  userId: string;
-  provider: SettingsProvider;
-  model: string;
-  baseUrl: string | null;
-  apiKeyCiphertext: string | null;
-  apiKeyFingerprint: string | null;
-  updatedAt: string;
-}): ModelSettingsPayload {
-  return {
-    provider: row.provider,
-    model: row.model,
-    baseUrl: row.baseUrl,
-    hasApiKey: row.apiKeyCiphertext !== null && row.apiKeyCiphertext.length > 0,
-    apiKeyFingerprint: row.apiKeyFingerprint,
-    updatedAt: row.updatedAt,
-  };
-}
-
-function defaultPayloadFor(username: string): ModelSettingsPayload {
-  // No row on file — return the documented default that the Settings UI
-  // should pre-fill (matches the env-driven default at startup).
-  // The username is intentionally ignored here; we keep the parameter so
-  // future server-side defaults can branch on it without changing the
-  // public contract.
-  void username;
-  return {
-    provider: "mock",
-    model: "mvp-mock-model",
-    baseUrl: null,
-    hasApiKey: false,
-    apiKeyFingerprint: null,
-    updatedAt: new Date(0).toISOString(),
-  };
-}
 
 const DEFAULT_PERIOD_DAYS = 30;
 

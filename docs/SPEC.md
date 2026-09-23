@@ -249,6 +249,31 @@ Never commit or log API keys, cookies, tokens, authorization headers, MCP
 credentials, or secret-bearing traces. Secrets stay in server environment
 variables/GitHub Secrets and are never sent to the frontend bundle.
 
+### 8.1 LLM credentials and the BYOK trust boundary (ELI-360)
+
+User-supplied BYOK apiKey is **browser-local only**. The AIME backend never
+accepts, persists, logs, echoes, fingerprints, or proxies it:
+
+- The Review Agent runs server-side on the operator's `LLM_*` env
+  credentials. The frontend never sends the user BYOK to AIME.
+- User BYOK lives in the browser's IndexedDB (`aime-byok` store). The key
+  is plaintext there because the browser is the user's own device; we do
+  not weaken that boundary with a server-rendered copy.
+- Connection tests for user BYOK go browser → provider directly. If the
+  provider does not allow browser-direct access (CORS), the UI surfaces
+  `browser_incompatible` and recommends the operator-managed default
+  model — it never falls back to proxying the key through AIME.
+- AIME exposes only `GET /api/settings/server-model` (read-only
+  `{ provider, model, baseUrl, configured }`); there is no PUT for user
+  BYOK. Removed endpoints (`/api/auth/model*`, `/api/settings/model`,
+  `/api/settings/model*` test surfaces) return 410 Gone so a stale
+  frontend bundle fails closed instead of silently downgrading.
+- Bootstrap-time migration zeroes legacy `apiKeyEncrypted`,
+  `apiKeyCiphertext`, `apiKeyFingerprint`, `verifiedAt`, `lastError`,
+  and `baseUrl` columns from pre-ELI-360 builds; the renamed
+  `legacy_user_model_configs` / `legacy_user_model_settings` tables are
+  kept as audit shells, never with key material.
+
 ## 9. Validation and delivery
 
 Direct API regressions cover representative single- and multi-trade narratives,

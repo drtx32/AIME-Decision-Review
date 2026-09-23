@@ -37,6 +37,8 @@ export interface AppConfig {
     apiKey: string | null;
     servers: FuyaoServerKey[];
     toolMap: Partial<Record<AdapterIntent, string>>;
+    /** Optional server:intent:toolName mappings that narrow dispatch per server. */
+    toolMapByServer: Partial<Record<FuyaoServerKey, Partial<Record<AdapterIntent, string>>>>;
     remoteSuffixMap: Partial<Record<FuyaoServerKey, string>>;
   };
 
@@ -45,6 +47,8 @@ export interface AppConfig {
     authorization: string | null;
     servers: IFindServerKey[];
     toolMap: Partial<Record<AdapterIntent, string>>;
+    /** Optional server:intent:toolName mappings that narrow dispatch per server. */
+    toolMapByServer: Partial<Record<IFindServerKey, Partial<Record<AdapterIntent, string>>>>;
     remoteSuffixMap: Partial<Record<IFindServerKey, string>>;
   };
 }
@@ -55,6 +59,25 @@ function parseToolMap(raw: string | undefined): Partial<Record<AdapterIntent, st
   for (const pair of raw.split(",")) {
     const [intent, toolName] = pair.split(":").map((part) => part.trim());
     if (intent && toolName) out[intent as AdapterIntent] = toolName;
+  }
+  return out;
+}
+
+/** Parse "server:intent:toolName,server2:intent2:toolName2". */
+function parseToolMapByServer<K extends string>(
+  raw: string | undefined,
+  allowed: readonly K[]
+): Partial<Record<K, Partial<Record<AdapterIntent, string>>>> {
+  const out: Partial<Record<K, Partial<Record<AdapterIntent, string>>>> = {};
+  if (!raw) return out;
+  for (const pair of raw.split(",")) {
+    const [server, intent, ...toolParts] = pair.split(":").map((s) => s.trim());
+    const toolName = toolParts.join(":").trim();
+    if (!server || !intent || !toolName) continue;
+    if (!(allowed as readonly string[]).includes(server)) continue;
+    const serverMap = out[server as K] ?? {};
+    serverMap[intent as AdapterIntent] = toolName;
+    out[server as K] = serverMap;
   }
   return out;
 }
@@ -154,6 +177,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         [...ALL_FUYAO_SERVERS]
       ),
       toolMap: parseToolMap(env.HITHINK_FINANCE_TOOL_MAP),
+      toolMapByServer: parseToolMapByServer(env.HITHINK_FINANCE_TOOL_MAP_PER_SERVER, ALL_FUYAO_SERVERS),
       remoteSuffixMap: parseSuffixMap(env.HITHINK_FINANCE_REMOTE_SUFFIX_MAP, ALL_FUYAO_SERVERS),
     },
     ifind: {
@@ -165,6 +189,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         [...ALL_IFIND_SERVERS]
       ),
       toolMap: parseToolMap(env.IFIND_MCP_TOOL_MAP),
+      toolMapByServer: parseToolMapByServer(env.IFIND_MCP_TOOL_MAP_PER_SERVER, ALL_IFIND_SERVERS),
       remoteSuffixMap: parseSuffixMap(env.IFIND_MCP_REMOTE_SUFFIX_MAP, ALL_IFIND_SERVERS),
     },
   };

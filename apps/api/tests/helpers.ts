@@ -49,12 +49,16 @@ export function makeTestConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       apiKey: null,
       servers: ["a-share", "a-share-index", "fund", "futures", "options", "meta"],
       toolMap: {},
+      toolMapByServer: {},
+      remoteSuffixMap: {},
     },
     ifind: {
       baseUrl: null,
       authorization: null,
       servers: ["ds", "enterprise", "law", "stock", "fund", "edb", "news", "bond", "global-stock", "index", "futures"],
       toolMap: {},
+      toolMapByServer: {},
+      remoteSuffixMap: {},
     },
     ...overrides,
   } as AppConfig;

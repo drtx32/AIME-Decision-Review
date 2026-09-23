@@ -101,7 +101,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     };
     // Explicit mock mode is a development/demo capability. A production
     // process must not present a mock-backed report as model-ready.
-    if (config.runtime === "production" && base.requestedMode === "mock") {
+    if (config.isProduction && base.requestedMode === "mock") {
       return { ...base, state: "unconfigured" as const, degraded: true };
     }
     return base;

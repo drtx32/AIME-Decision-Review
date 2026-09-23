@@ -85,7 +85,9 @@ describe("Review API contract", () => {
 
   test("production with no configured model keeps health up but rejects review creation", async () => {
     const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "reviewer", "reviewer-pass");
-    ctx.cfg.runtime = "production";
+    // Canonical production uses PORT=3000 even when NODE_ENV is unset.
+    ctx.cfg.runtime = "development";
+    ctx.cfg.isProduction = true;
     const health = await ctx.app.request("/health");
     expect(health.status).toBe(200);
     const healthBody = await health.json() as { status: string; provider_configured: boolean; provider_status: string };

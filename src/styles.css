@@ -167,3 +167,20 @@
 .settings-actions .authPrimary{background:var(--green);color:#e2f2d3;border-color:transparent;margin-top:0}
 .settings-actions .authPrimary.danger{background:#a65449;color:#fff;border-color:transparent}
 .settings-actions .authPrimary:disabled{opacity:.5}
+.message-md{color:#50645a;font-size:12px;line-height:1.7}
+.message-md p,.message-md dl,.message-md ol,.message-md ul,.message-md blockquote,.message-md table{margin:5px 0 0}
+.message-md p:first-child,.message-md>*:first-child{margin-top:0}
+.message-md h1,.message-md h2,.message-md h3,.message-md h4{margin:9px 0 3px;color:#2c3a32;font-size:13px;line-height:1.4}
+.message-md ul,.message-md ol{padding-left:20px}
+.message-md li{margin:1px 0}
+.message-md blockquote{border-left:3px solid #cfe0ce;padding-left:10px;color:#7e8d83}
+.message-md code{font:11px/1.5 'DM Mono',monospace;background:#eef3ec;border-radius:3px;padding:1px 4px;color:#3c5c49}
+.message-md pre{background:#f1f4ef;border:1px solid #e2e8e1;border-radius:6px;padding:9px 11px;overflow:auto}
+.message-md pre code{background:transparent;padding:0}
+.message-md table{border-collapse:collapse;font-size:11px}
+.message-md th,.message-md td{border:1px solid #dde6dc;padding:4px 8px;text-align:left}
+.message-md th{background:#eef3ec;color:#43594a}
+.message-md a{color:#3c6b4f;text-decoration:underline}
+.message-md hr{border:0;border-top:1px solid #dfe8df;margin:9px 0}
+.status-copy .message-md p{color:#7e8d83}
+.status-copy .message-md a{color:#5c7a63}

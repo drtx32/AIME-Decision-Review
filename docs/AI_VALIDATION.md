@@ -679,3 +679,71 @@ evidence template, license inventory, test notes, validation record, and a
 deterministic preflight/packaging path. It records fixture validation separately
 from credentialed provider validation and generates build metadata without
 committing runtime secrets or build output.
+
+## ELI-358 conversation library UX — 2026-09-23
+
+**AI/tool used**
+- Local CC with Bun 1.2.19 and TypeScript 5.9.3.
+
+**Task**
+- Replace the hardcoded `新建复盘` titles and `进行中` sidebar badges
+  with deterministic auto-titling, real per-session lifecycle status,
+  full-content search, and user-scoped rename / archive / soft-delete
+  actions, without redesigning the existing chat shell or sidebar.
+
+**Output**
+- `apps/api/src/db/sqlite.ts` adds `archivedAt`, `deletedAt`, and
+  `manualTitle` columns plus `listSessionsForUser`, `applyAutoTitle`,
+  `renameSession`, `setSessionArchived`, `softDeleteSession`, and the
+  pure `deriveSessionTitle` helper.
+- `apps/api/src/routes/api.ts` exposes `/sessions?q=&archived=`,
+  `PATCH /sessions/:id`, `POST /sessions/:id/archive`,
+  `POST /sessions/:id/unarchive`, and `DELETE /sessions/:id`. The
+  create-session and message-edit flows now call `applyAutoTitle` so a
+  freshly extracted session picks a meaningful title without a second
+  LLM call.
+- `src/api.ts` extends `reviewApi.listSessions` to forward `q` /
+  `archived` and adds `renameSession`, `archiveSession`,
+  `unarchiveSession`, and `deleteSession`.
+- `src/App.tsx` replaces the title-only client-side filter with a
+  debounced server-side search, swaps the hardcoded `进行中` badge for
+  a status pill keyed on the server lifecycle, and adds an inline kebab
+  menu (`Rename` / `Archive` or `Unarchive` / `Delete`) plus a
+  centered `RenameDialog` and `DeleteDialog`. The default view hides
+  archived sessions; an `Active / Archived` chip switches the scope.
+- `src/styles.css` adds the new sidebar filter, kebab trigger / menu,
+  status pill colors, and dialog action styles. All additions reuse
+  the existing palette and typography tokens.
+
+**Validation**
+- `bun test` from `apps/api/` — 219 pass / 0 fail (10 new
+  `session-library.test.ts` cases covering auto-title, single-symbol
+  fallback, manual-rename lock, input validation, content search,
+  completed/needs_input status, archive/unarchive persistence, soft
+  delete with user scoping, cross-user hijack rejection, and the
+  pure title helper).
+- `bun run build` from the repo root — frontend bundles cleanly (CSS
+  30.05 kB, JS 841.67 kB) with no type or template errors.
+- `bun run preflight` — passes with one expected dirty-tree warning
+  (current change set).
+
+**Human corrections**
+- Renamed the optimistic local placeholder session entry after the
+  `listSessions` refresh, so the sidebar reflects the server-derived
+  title as soon as the response arrives instead of briefly showing a
+  client-only summary.
+- Decision: do not allow editing the title of an already-running
+  session through the kebab menu while it is `running`; rename is
+  still allowed (matches the existing user requirement that completed
+  reviews stay editable). The backend treats `manualTitle` as a
+  one-way lock regardless of lifecycle.
+
+**Residual risk / unresolved**
+- Search is a bounded `LIKE` against title, decision symbols/names/
+  reasons, and message bodies. Acceptable for v0.1 MVP traffic; if
+  session volume grows significantly, swap for SQLite FTS5 or move
+  index creation to a dedicated migration.
+- Soft-deleted sessions keep their attached `review_runs` and
+  evidence rows for audit; a hard-delete maintenance path is not in
+  v0.1.
+

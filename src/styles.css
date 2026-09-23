@@ -136,3 +136,34 @@
 .activity-pulse{color:#526c5b;animation:pulse 1.2s ease-in-out infinite}@keyframes pulse{50%{opacity:.35}}
 .context-tabs button{border-radius:0;border-bottom:2px solid transparent}.context-tabs button:hover,.context-tabs button.active{background:transparent;border-bottom-color:#526c5b;color:#303a34}
 .composer-dock{position:sticky;bottom:0;padding-top:8px;background:linear-gradient(transparent,#f7f8f7 14px)}
+
+/* ELI-358 — conversation library: per-row actions, archive filter, real status. */
+.session-filter{display:flex;gap:4px;padding:2px 4px 7px}
+.session-filter-tab{flex:1;border:1px solid var(--line);border-radius:6px;background:transparent;color:var(--muted);padding:5px 7px;font-size:10px}
+.session-filter-tab:hover,.session-filter-tab:focus-visible{color:var(--ink);border-color:var(--accent);outline:none}
+.session-filter-tab.active{background:var(--green);border-color:var(--green);color:#e1f2d0}
+.session-row{position:relative;display:grid;grid-template-columns:1fr auto auto;align-items:center;gap:4px;padding:0 4px}
+.session-row .nav-item{padding-right:6px;min-width:0}
+.session-row-title{display:block;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.session-row-status{font:500 9px 'DM Mono';color:#7c9082;text-transform:uppercase;letter-spacing:.04em;padding:1px 5px;border-radius:3px;background:#eef3ed;align-self:center}
+.session-row-status.status-completed{background:#e7f3e5;color:#477b4c}
+.session-row-status.status-partial{background:#fff4dc;color:#9a7638}
+.session-row-status.status-failed{background:#fff0ed;color:#a65449}
+.session-row-status.status-needs_input{background:#fff7e6;color:#9a650f}
+.session-row-status.status-cancelled{background:#eef1ee;color:#7e8881}
+.session-row-status.status-running,.session-row-status.status-draft{background:#e8f0e6;color:#526c5b}
+.session-row-menu-trigger{display:grid;place-items:center;width:22px;height:22px;border:0;background:transparent;color:#94a298;border-radius:4px;opacity:0;transition:opacity .12s ease}
+.session-row:hover .session-row-menu-trigger,.session-row:focus-within .session-row-menu-trigger,.session-row-menu-trigger[aria-expanded="true"]{opacity:1}
+.session-row-menu-trigger:hover,.session-row-menu-trigger:focus-visible{background:#e8f0e6;color:var(--ink);outline:none}
+.session-row-menu{position:absolute;right:4px;top:calc(100% - 2px);z-index:9;display:grid;gap:1px;min-width:130px;padding:5px;border:1px solid var(--line);border-radius:7px;background:var(--surface);box-shadow:0 8px 24px #1f332a1f}
+.session-row-menu button{display:flex;align-items:center;gap:7px;border:0;background:transparent;color:#44524b;text-align:left;padding:6px 8px;border-radius:4px;font-size:11px}
+.session-row-menu button:hover,.session-row-menu button:focus-visible{background:#eef3ed;color:var(--ink);outline:none}
+.session-row-menu button.danger{color:#a65449}
+.session-row-menu button.danger:hover,.session-row-menu button.danger:focus-visible{background:#fff0ed;color:#8b433b}
+.session-action-sheet{width:min(440px,calc(100vw - 260px))}
+.settings-actions{display:flex;justify-content:flex-end;gap:8px;margin-top:14px}
+.settings-actions button{border:1px solid var(--line);border-radius:6px;background:#fffefa;color:#52605a;padding:8px 14px;font-size:11px}
+.settings-actions button:disabled{opacity:.5;cursor:not-allowed}
+.settings-actions .authPrimary{background:var(--green);color:#e2f2d3;border-color:transparent;margin-top:0}
+.settings-actions .authPrimary.danger{background:#a65449;color:#fff;border-color:transparent}
+.settings-actions .authPrimary:disabled{opacity:.5}

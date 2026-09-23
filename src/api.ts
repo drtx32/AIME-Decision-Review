@@ -1,3 +1,5 @@
+export type SessionListItem = { id: string; title: string; status: string; updatedAt: string; archivedAt?: string | null; manualTitle?: number | boolean };
+
 export type Input = { symbol: string; market: string; side: 'buy' | 'sell'; executedAt: string; price: string; quantity: string; reason: string; notes: string };
 export type Result = { id: string; reviewId: string; decisionId: string; status: string; input: Input; summary: string; ante: string[]; post: string[]; raw: any };
 export type SessionDecision = { id: string; symbol: string; name?: string | null; market: string; action: 'buy' | 'sell'; executedAt: string | null; executedAtText?: string; timePrecision?: 'exact' | 'approximate' | 'unknown'; price: number | null; quantity: number | null; quantityShares?: number | null; quantityText?: string | null; confidence?: number; needsConfirmation?: string[]; reason: string; notes: string; reviewId: string | null; confirmed: boolean };
@@ -9,7 +11,15 @@ const apiBase = import.meta.env.VITE_API_BASE_URL as string | undefined;
 const unavailable = '当前未配置可用的大模型服务，请联系管理员。';
 async function request(path: string, init: RequestInit = {}) { if (!apiBase) throw new Error(unavailable); const response = await fetch(`${apiBase}${path}`, { ...init, credentials: 'include', headers: { 'content-type': 'application/json', ...(init.headers || {}) } }); const body = await response.json().catch(() => ({})); if (!response.ok) throw new Error(body.message || unavailable); return body; }
 export const reviewApi = {
-  async listSessions() { if (!apiBase) return []; const body = await request('/sessions'); return body.sessions as Array<{ id: string; title: string; status: string; updatedAt: string }>; },
+  async listSessions(query?: { q?: string; archived?: boolean }) {
+    if (!apiBase) return [];
+    const params = new URLSearchParams();
+    if (query?.q?.trim()) params.set('q', query.q.trim());
+    if (query?.archived) params.set('archived', '1');
+    const suffix = params.toString() ? `?${params.toString()}` : '';
+    const body = await request(`/sessions${suffix}`);
+    return body.sessions as Array<SessionListItem>;
+  },
   async getSession(id: string): Promise<SessionSnapshot> { return request(`/sessions/${encodeURIComponent(id)}`); },
   async createSession(message: string, signal?: AbortSignal) { return request('/sessions', { method: 'POST', signal, body: JSON.stringify({ message, clientNow: new Date().toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }) }) as Promise<{ sessionId: string; status?: string; warning?: string; decisions: SessionDecision[]; messages: SessionMessage[]; memories: LearningMemory[]; activities?: ActivityEvent[] }> },
   async confirm(sessionId: string) { return request(`/sessions/${encodeURIComponent(sessionId)}/confirm`, { method: 'POST' }); },
@@ -18,6 +28,10 @@ export const reviewApi = {
   async updateMessage(sessionId: string, messageId: string, content: string) { return request(`/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}`, { method: 'PATCH', body: JSON.stringify({ content }) }); },
   async deleteMessage(sessionId: string, messageId: string) { return request(`/sessions/${encodeURIComponent(sessionId)}/messages/${encodeURIComponent(messageId)}`, { method: 'DELETE' }); },
   async cancel(sessionId: string) { return request(`/sessions/${encodeURIComponent(sessionId)}/cancel`, { method: 'POST' }); },
+  async renameSession(id: string, title: string) { return request(`/sessions/${encodeURIComponent(id)}`, { method: 'PATCH', body: JSON.stringify({ title }) }) as Promise<{ session: { id: string; title: string; status: string; archivedAt: string | null; manualTitle: number } }>; },
+  async archiveSession(id: string) { return request(`/sessions/${encodeURIComponent(id)}/archive`, { method: 'POST' }) as Promise<{ session: { id: string; title: string; status: string; archivedAt: string | null } }>; },
+  async unarchiveSession(id: string) { return request(`/sessions/${encodeURIComponent(id)}/unarchive`, { method: 'POST' }) as Promise<{ session: { id: string; title: string; status: string; archivedAt: string | null } }>; },
+  async deleteSession(id: string) { return request(`/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }) as Promise<{ sessionId: string; deleted: true }>; },
   async waitForSession(sessionId: string, onSnapshot: (snapshot: SessionSnapshot) => void) { for (let attempt = 0; attempt < 180; attempt += 1) { const snapshot = await this.getSession(sessionId); onSnapshot(snapshot); const linked = snapshot.decisions.filter((d) => d.reviewId); if (linked.length && linked.every((d) => snapshot.results.some((r) => r.decisionId === d.id && r.result))) return snapshot; await new Promise((resolve) => setTimeout(resolve, 500)); } throw new Error('复盘等待超时，请稍后查看服务状态。'); },
 };
 export function resultView(snapshot: SessionSnapshot): Result[] { return snapshot.results.flatMap((item) => { const raw = item.result; if (!raw?.decision) return []; const input = raw.decision; return [{ id: raw.decision.T0, reviewId: item.reviewId, decisionId: item.decisionId, status: item.status, input: { symbol: input.symbol, market: input.market === 'CN' ? 'A股' : input.market === 'HK' ? '港股' : '美股', side: input.action, executedAt: input.executedAt, price: String(input.price ?? ''), quantity: String(input.quantity ?? ''), reason: input.userReason ?? '', notes: '' }, summary: raw.decisionQuality?.reasoning ?? '暂无可靠的结构化判断。', ante: (raw.exAnteEvidence ?? []).map((e: any) => `${String(e.publishedAt ?? '').slice(0, 10)}：${e.content}`), post: (raw.exPostEvidence ?? []).map((e: any) => `${String(e.publishedAt ?? '').slice(0, 10)}：${e.content}`), raw }]; }); }

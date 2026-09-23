@@ -199,7 +199,11 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
 
   app.get("/api/sessions", (c) => {
     const user = c.get("user")!;
-    return c.json({ sessions: deps.repo.listSessions(user.id) });
+    const includeArchived = c.req.query("archived") === "1" || c.req.query("archived") === "true";
+    const q = c.req.query("q")?.trim() ?? "";
+    return c.json({
+      sessions: deps.repo.listSessionsForUser(user.id, { includeArchived, query: q || undefined }),
+    });
   });
 
   app.post("/api/sessions", async (c) => {
@@ -221,6 +225,9 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     }
     deps.repo.updateMessageState(userMessage.id, sessionId, user.id, "accepted");
     const stored = decisions.map((decision) => deps.repo.addSessionDecision({ ...decision, market: decision.market ?? "CN", quantity: decision.quantityShares, reason: decision.rationale, sessionId, userId: user.id }));
+    // ELI-358 — auto-title from extracted symbols unless the user has
+    // manually renamed this session. Skips silently when no usable symbol.
+    deps.repo.applyAutoTitle(sessionId, user.id, stored);
     deps.repo.addMessage(sessionId, user.id, "status", `已识别 ${stored.length} 笔决策，请确认每笔 T0、方向与数量。`);
     return c.json({ sessionId, status: "accepted", decisions: stored, messages: deps.repo.listMessages(sessionId, user.id), memories: deps.repo.listMemories(user.id), activities: [] }, 201);
   });
@@ -297,6 +304,9 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
       deps.repo.updateMessageState(message.id, id, user.id, "accepted");
       const stored = decisions.map((decision) => deps.repo.addSessionDecision({ ...decision, market: decision.market ?? "CN", quantity: decision.quantityShares, reason: decision.rationale, sessionId: id, userId: user.id }));
       deps.repo.updateSession(id, user.id, "draft");
+      // ELI-358 — re-derive title on message edit if the user hasn't manually
+      // renamed the session.
+      deps.repo.applyAutoTitle(id, user.id, stored);
       deps.repo.addMessage(id, user.id, "status", `已重新识别 ${stored.length} 笔决策，请确认每笔 T0、方向与数量。`);
       return c.json({ message, status: "accepted", decisions: stored, messages: deps.repo.listMessages(id, user.id) });
     } catch {
@@ -311,6 +321,34 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     return c.json({ messages: deps.repo.listMessages(id, user.id) });
   });
   app.post("/api/sessions/:id/cancel", (c) => { const user = c.get("user")!; const id = c.req.param("id"); if (!deps.repo.getSession(id, user.id)) return c.json({ error: "not_found" }, 404); deps.repo.cancelSessionRuns(id, user.id); return c.json({ sessionId: id, status: "cancelled" }); });
+
+  // ELI-358 — conversation library session actions: rename, archive, delete.
+  app.patch("/api/sessions/:id", async (c) => {
+    const user = c.get("user")!; const id = c.req.param("id");
+    const body = await c.req.json().catch(() => ({})) as { title?: string };
+    if (typeof body.title !== "string") return c.json({ error: "invalid_input", message: "title 必须为字符串。" }, 400);
+    if (!deps.repo.getSession(id, user.id)) return c.json({ error: "not_found" }, 404);
+    const session = deps.repo.renameSession(id, user.id, body.title);
+    if (!session) return c.json({ error: "invalid_input", message: "标题不能为空，且长度不超过 80。" }, 400);
+    return c.json({ session });
+  });
+  app.post("/api/sessions/:id/archive", (c) => {
+    const user = c.get("user")!; const id = c.req.param("id");
+    const session = deps.repo.setSessionArchived(id, user.id, true);
+    if (!session) return c.json({ error: "not_found" }, 404);
+    return c.json({ session });
+  });
+  app.post("/api/sessions/:id/unarchive", (c) => {
+    const user = c.get("user")!; const id = c.req.param("id");
+    const session = deps.repo.setSessionArchived(id, user.id, false);
+    if (!session) return c.json({ error: "not_found" }, 404);
+    return c.json({ session });
+  });
+  app.delete("/api/sessions/:id", (c) => {
+    const user = c.get("user")!; const id = c.req.param("id");
+    if (!deps.repo.softDeleteSession(id, user.id)) return c.json({ error: "not_found" }, 404);
+    return c.json({ sessionId: id, deleted: true });
+  });
 
   // Review endpoints — require an authenticated, non-mustChangePassword user.
   app.use("/api/reviews/*", requireAuth(deps.userRepo), gateMustChangePassword());

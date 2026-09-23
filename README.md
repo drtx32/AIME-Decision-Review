@@ -2,6 +2,8 @@
 
 AI-native historical investment decision review product for the AIME test.
 
+> Chinese version: [【README-zh.md / 中文】](./README-zh.md)
+
 ## Problem
 
 A retail or research investor looking back on a single past investment

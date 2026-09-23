@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { LiveMcpAdapter } from "../src/mcp/adapters/live-mcp.ts";
+import { LiveMcpAdapter, normalizeItems, parseToolContent } from "../src/mcp/adapters/live-mcp.ts";
 
 describe("Live MCP adapter contract", () => {
   const originalFetch = globalThis.fetch;
@@ -113,5 +113,41 @@ describe("Live MCP adapter contract", () => {
     });
     const result = await adapter.fetch({ intent: "news", symbol: "600519", market: "CN", T0: "2025-03-17T00:00:00Z" });
     expect(result.status).toBe("empty");
+  });
+
+  test("normalizes Fuyao historical rows with row timestamps and envelope identity", () => {
+    const raw = parseToolContent([{
+      type: "text",
+      text: JSON.stringify({ code: 0, data: {
+        timestamp: 1710432000000,
+        thscode: "000002.SZ",
+        item: [{ date_ms: 1710345600000, close_price: 9.71 }],
+      } }),
+    }], "price");
+    const result = normalizeItems(raw, "2026-09-23T08:00:00.000Z", "fuyao", "a-share", "2024-03-15T00:00:00Z", "price");
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      title: "a-share 000002.SZ",
+      publishedAt: "2024-03-13T16:00:00.000Z",
+      relationToDecision: "ex_ante",
+    });
+  });
+
+  test("normalizes Fuyao corporate-action rows as timestamped announcements", () => {
+    const raw = parseToolContent([{
+      type: "text",
+      text: JSON.stringify({ code: 0, data: {
+        thscode: "000002.SZ",
+        item: [{ ex_date_ms: 1692892800000, dividend_per_share: 0.68 }],
+      } }),
+    }], "announcement");
+    const result = normalizeItems(raw, "2026-09-23T08:00:00.000Z", "fuyao", "a-share", "2024-03-15T00:00:00Z", "announcement");
+    expect(result).toHaveLength(1);
+    expect(result[0]).toMatchObject({
+      type: "announcement",
+      title: "a-share 000002.SZ",
+      publishedAt: "2023-08-24T16:00:00.000Z",
+      relationToDecision: "ex_ante",
+    });
   });
 });

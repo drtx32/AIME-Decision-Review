@@ -1,7 +1,7 @@
 export type Input = { symbol: string; market: string; side: 'buy' | 'sell'; executedAt: string; price: string; quantity: string; reason: string; notes: string };
 export type Result = { id: string; decisionId: string; status: string; input: Input; summary: string; ante: string[]; post: string[]; raw: any };
 export type SessionDecision = { id: string; symbol: string; name?: string | null; market: string; action: 'buy' | 'sell'; executedAt: string | null; executedAtText?: string; timePrecision?: 'exact' | 'approximate' | 'unknown'; price: number | null; quantity: number | null; quantityShares?: number | null; quantityText?: string | null; confidence?: number; needsConfirmation?: string[]; reason: string; notes: string; reviewId: string | null; confirmed: boolean };
-export type SessionMessage = { id: string; sessionId: string; userId: string; role: 'user' | 'assistant' | 'status'; content: string; createdAt: string };
+export type SessionMessage = { id: string; sessionId: string; userId: string; role: 'user' | 'assistant' | 'status'; content: string; createdAt: string; state?: 'accepted' | 'extracting' | 'needs_input' | 'failed' | 'completed' | 'cancelled'; errorMessage?: string | null };
 export type LearningMemory = { id: string; text: string; kind: string; sourceSessionId: string; sourceDecisionId: string | null; strength: number; active: boolean };
 export type SessionSnapshot = { session: { id: string; title: string; scope: string; status: string }; decisions: SessionDecision[]; messages: SessionMessage[]; memories: LearningMemory[]; results: Array<{ decisionId: string; reviewId: string; status: string; result: any }> };
 const apiBase = import.meta.env.VITE_API_BASE_URL as string | undefined;
@@ -10,7 +10,7 @@ async function request(path: string, init: RequestInit = {}) { if (!apiBase) thr
 export const reviewApi = {
   async listSessions() { if (!apiBase) return []; const body = await request('/sessions'); return body.sessions as Array<{ id: string; title: string; status: string; updatedAt: string }>; },
   async getSession(id: string): Promise<SessionSnapshot> { return request(`/sessions/${encodeURIComponent(id)}`); },
-  async createSession(message: string) { return request('/sessions', { method: 'POST', body: JSON.stringify({ message, clientNow: new Date().toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }) }) as Promise<{ sessionId: string; decisions: SessionDecision[]; messages: SessionMessage[]; memories: LearningMemory[] }> },
+  async createSession(message: string) { return request('/sessions', { method: 'POST', body: JSON.stringify({ message, clientNow: new Date().toISOString(), timezone: Intl.DateTimeFormat().resolvedOptions().timeZone }) }) as Promise<{ sessionId: string; status?: string; warning?: string; decisions: SessionDecision[]; messages: SessionMessage[]; memories: LearningMemory[] }> },
   async confirm(sessionId: string) { return request(`/sessions/${encodeURIComponent(sessionId)}/confirm`, { method: 'POST' }); },
   async updateDecision(sessionId: string, decisionId: string, patch: Partial<SessionDecision>) { await request(`/sessions/${encodeURIComponent(sessionId)}/decisions/${encodeURIComponent(decisionId)}`, { method: 'PATCH', body: JSON.stringify(patch) }); },
   async sendMessage(sessionId: string, content: string, signal?: AbortSignal): Promise<SessionMessage> { const body = await request(`/sessions/${encodeURIComponent(sessionId)}/messages`, { method: 'POST', body: JSON.stringify({ content }), signal }); return body.message; },

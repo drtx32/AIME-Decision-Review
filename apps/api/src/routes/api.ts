@@ -440,11 +440,23 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
         // more useful diagnostic copy.
       }
       if (!availability.fuyao && !availability.ifind && primary?.status !== "ok") {
-        // No live provider wired — fall back to a synthetic series that
-        // is explicitly labelled `source: "fallback"` so the UI can
-        // show the disclaimer. We never silently invent an "ok" response.
-        const synthetic = fallbackKlineSeries(req);
-        primary = { status: "ok", series: synthetic };
+        // Real credentials are required to ever return `status: "ok"`.
+        // Mock-mode (NODE_ENV !== production) keeps the demo path alive
+        // with a clearly labelled `source: "fallback"` synthetic series;
+        // production must NEVER silently invent data and must surface
+        // the explicit `unavailable` envelope so the UI shows the
+        // degraded card. The trigger explicitly forbids mock faking
+        // success under real credentials.
+        if (config.isProduction) {
+          primary = {
+            status: "unavailable",
+            message:
+              "未配置 Fuyao / iFinD 直连凭据，K 线图表暂不可用。复盘结论仍可继续生成。",
+          };
+        } else {
+          const synthetic = fallbackKlineSeries(req);
+          primary = { status: "ok", series: synthetic };
+        }
       }
     } else if (req.type === "compare") {
       // Comparison series: fetch the primary and the baseline, then

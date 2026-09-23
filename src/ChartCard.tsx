@@ -106,7 +106,7 @@ export interface ChartCardProps {
   refreshKey?: string | number;
 }
 
-const apiBase = (import.meta.env.VITE_API_BASE_URL as string | undefined) || '';
+const apiBase = ((import.meta.env.VITE_API_BASE_URL as string | undefined) || '/api').replace(/\/$/, '');
 
 export function ChartCard({
   symbol,
@@ -138,20 +138,10 @@ export function ChartCard({
   }, [symbol, market, type, period, compareSymbol, reviewId]);
 
   useEffect(() => {
-    if (!apiBase) {
-      setResponse({
-        status: 'unavailable',
-        type,
-        retrievedAt: new Date().toISOString(),
-        message: '未配置 VITE_API_BASE_URL，无法获取图表数据。',
-      });
-      setLoading(false);
-      return;
-    }
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetch(`${apiBase}/api/chart-data?${query}`, { credentials: 'include' })
+    fetch(`${apiBase}/chart-data?${query}`, { credentials: 'include' })
       .then(async (res) => {
         if (!res.ok) throw new Error(`图表请求失败 (${res.status})`);
         const body = (await res.json()) as ChartResponse;

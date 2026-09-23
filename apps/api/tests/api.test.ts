@@ -27,6 +27,50 @@ describe("Review API contract", () => {
     expect(body.configuredServers).toContain("stock");
   });
 
+  test("GET /api/chart-data requires auth", async () => {
+    const res = await ctx.app.request("/api/chart-data?symbol=600519&type=kline");
+    expect(res.status).toBe(401);
+  });
+
+  test("GET /api/chart-data rejects invalid payload", async () => {
+    const res = await ctx.app.request(
+      "/api/chart-data?type=invalid&symbol=",
+      { headers: { cookie } }
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("invalid_input");
+  });
+
+  test("GET /api/chart-data returns ok with synthetic series when no provider is wired", async () => {
+    const res = await ctx.app.request(
+      "/api/chart-data?symbol=600519&type=kline&period=day",
+      { headers: { cookie } }
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      status: string;
+      type: string;
+      series?: { source: string; candles?: unknown[]; timezone?: string };
+    };
+    expect(body.status).toBe("ok");
+    expect(body.type).toBe("kline");
+    expect(body.series?.source).toBe("fallback");
+    expect(body.series?.timezone).toBe("Asia/Shanghai");
+    expect(Array.isArray(body.series?.candles)).toBe(true);
+  });
+
+  test("GET /api/chart-data returns unavailable for unsupported valuation fields", async () => {
+    const res = await ctx.app.request(
+      "/api/chart-data?symbol=600519&type=valuation",
+      { headers: { cookie } }
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; message?: string };
+    expect(body.status).toBe("unavailable");
+    expect(body.message).toBeTruthy();
+  });
+
   test("POST /api/reviews rejects invalid payload", async () => {
     const res = await ctx.app.request("/api/reviews", {
       method: "POST",

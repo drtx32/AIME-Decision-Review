@@ -468,3 +468,41 @@ to `main`.
   placeholder never appears in stored hashes or any response body,
   preserving the signal that any real credential-shaped string would
   leak the same way.
+
+---
+
+## Inline chart path — 2026-09-23 (ELI-334)
+
+**AI/tool used**
+- Oracle CC for backend adapter design, frontend ECharts renderer, and regression tests.
+
+**Task**
+- Add a direct structured-data API path plus native ECharts visualization to AIME so charts become a first-class response format inside the conversation, without turning AIME into a form-first financial terminal. Backend talks to Fuyao REST first, falls back to iFinD QuantAPI, and degrades explicitly when neither is wired. Frontend keeps the composer/scroll surface stable and never fabricates a chart.
+
+**Output**
+- `apps/api/src/charts/contract.ts` — typed `ChartSeries` / `ChartResponse` with `source`, `timezone`, `adjustment`, `retrievedAt`, `candles`, `line`, `baseline`, `markers`, plus a `ChartStatus` enum (`ok | empty | unavailable | transient_error | permanent_error`).
+- `apps/api/src/charts/adapters.ts` — `fetchFuyaoKline`, `fetchIFindKline`, `withMarkers`, `buildCompareSeries`, `fallbackKlineSeries`, plus field-alias tolerance (Fuyao `lc` accepted as close fallback, `l`/`low` for low).
+- `apps/api/src/routes/api.ts` — new `GET /api/chart-data` endpoint, auth + must-change-password gated, server-side normalization to one `ChartSeries` contract, error-class propagation.
+- `src/ChartCard.tsx` — ECharts inline renderer with K-line + MA5/10/20/60 + volume + T0 vertical line + ex_post marker color, composer-stable, explicit `unavailable` / `transient_error` / `permanent_error` card.
+- `src/styles.css` — chart card / toolbar / pill / marker CSS that preserves the existing conversation-first shell.
+- `src/App.tsx` — Result screen chart toolbar (type/period/baseline) wired to the new renderer; chart state resets on logout / reset.
+- `apps/api/tests/charts.test.ts` — 21 hermetic tests covering contract, unavailable credentials, 401/403/429/5xx/timeout, fallback determinism, marker alignment, compare percent-change.
+- `apps/api/tests/api.test.ts` — 4 regression tests for `/api/chart-data` auth gate, invalid input, fallback series, valuation unavailable.
+- `README.md` — Inline chart path documented with provenance + UI invariants.
+
+**Validation**
+- `cd apps/api && bun test` → 79 pass / 0 fail (54 baseline + 21 chart + 4 new API regressions).
+- `bun run build` (root) → TypeScript check + Vite production build clean. Bundle 817 KB / 266 KB gzipped — ECharts tree-shaken to one chart framework.
+- Server-side credentials never leave `apps/api/src/charts/adapters.ts`. `ChartResponse` carries `source`, `timezone`, `adjustment`, `retrievedAt` for every successful series, including the `fallback` series so the UI can show the disclaimer explicitly.
+- Markers carry `relationToDecision` distinct from `publishedAt`; the renderer colors ex_post differently and never lets them visually justify the original decision.
+- Provider failure classification preserved end-to-end: 401/403 → `permanent_error`, 429/5xx/timeout → `transient_error`, missing fields → `unavailable`, empty upstream → `empty`. The UI renders one explicit card per class.
+
+**Human corrections**
+- Did NOT introduce a second chart framework — `echarts/core` plus the chart and component imports required for candlestick + line + bar + axes + tooltip + markLine/markPoint + dataZoom + legend.
+- Did NOT add a permanent "AI看板" multi-widget surface. Chart lives in the conversation flow, expands inline, and does not move the composer.
+- Did NOT synthesize an analyst target price or consensus recommendation — `valuation` / `financial` types return `unavailable` with a clear copy when the configured account does not expose them. No fake fields, no synthesized "recommended price".
+- Did NOT route deterministic series data through the LLM. Charts come from direct API calls server-side.
+
+**Residual risk / unresolved**
+- Live Fuyao / iFinD calls were not exercised against real production credentials in this turn; the adapters are wired and gated behind env credentials. A future turn should run a credentialed probe against the configured account and append the result here.
+- Bundle is large because ECharts pulls in the full markLine + dataZoom + tooltip surface for a single render. Future tightening could lazy-load the renderer on first chart open.

@@ -28,3 +28,50 @@
 .userRow em{font-style:normal;font:10px 'DM Mono';color:#b5544a;border:1px solid #f3c8c0;border-radius:30px;padding:2px 8px;background:#fce9e5}
 .userActions{display:flex;gap:8px}
 @media(max-width:800px){.headerRight .ghost{padding:7px 9px;font-size:11px}.authCard{padding:0}.adminGrid{grid-template-columns:1fr}.userRow{flex-wrap:wrap;gap:10px}.userActions{width:100%;justify-content:flex-end}}
+
+/* --- Chart cards (ELI-334) ---------------------------------------- */
+.resulttop-actions{display:flex;gap:10px;align-items:end}
+.chart-toolbar{display:flex;flex-wrap:wrap;align-items:center;gap:14px;padding:14px 18px;margin-top:14px;font-size:11px;color:#5e7065}
+.chart-toolbar-group{display:flex;align-items:center;gap:8px}
+.chart-toolbar-group>span{font:700 10px 'DM Mono';color:#7d9083;letter-spacing:.06em;text-transform:uppercase}
+.chart-toolbar-baseline{display:flex;align-items:center;gap:8px;font:700 10px 'DM Mono';color:#7d9083;text-transform:uppercase;letter-spacing:.06em}
+.chart-toolbar-baseline input{width:140px;margin-top:0;padding:7px 9px;font:600 11px 'DM Mono'}
+.chart-card{margin-top:14px;padding:0;border:1px solid #e1e9e1;border-radius:14px;background:#fff;box-shadow:0 12px 30px #294f3810;overflow:hidden}
+.chart-card.expanded .chart-canvas{height:520px}
+.chart-card.chart-loading{display:flex;align-items:center;gap:10px;padding:18px 22px;color:#718077;font-size:12px}
+.chart-loading-spinner{width:14px;height:14px;border-radius:50%;border:2px solid #d5e6d5;border-top-color:#173e2e;animation:chart-spin .9s linear infinite}
+@keyframes chart-spin{to{transform:rotate(360deg)}}
+.chart-card.chart-error{padding:18px 22px;color:#b5544a;font-size:12px;background:#fce9e5;border-color:#f3c8c0}
+.chart-head{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;border-bottom:1px solid #edf1ed}
+.chart-title{font:700 13px Manrope;color:#1b2b22;letter-spacing:.01em}
+.chart-head-meta{display:flex;gap:8px;align-items:center}
+.chart-pill{font:9px 'DM Mono';padding:4px 8px;border-radius:30px;letter-spacing:.06em;text-transform:uppercase;background:#eff8ef;color:#4c7d58;border:1px solid #d5e6d5}
+.chart-pill-source.chart-pill-fuyao{background:#e5f3e4;color:#4e8857;border-color:#a8d0a9}
+.chart-pill-source.chart-pill-ifind{background:#fff4dc;color:#a37c34;border-color:#f0e3b8}
+.chart-pill-source.chart-pill-mixed{background:#f0f1ff;color:#4a5fa8;border-color:#c0c8e8}
+.chart-pill-source.chart-pill-fallback{background:#fff8e6;color:#8a7434;border-color:#f0e3b8}
+.chart-pill-adjust{background:#f4f6f2;color:#718077;border-color:#dde4dd}
+.chart-pill-ok{background:#e5f3e4;color:#4e8857;border-color:#a8d0a9}
+.chart-pill-unavailable{background:#fce9e5;color:#b86d61;border-color:#f3c8c0}
+.chart-pill-transient_error{background:#fff4dc;color:#a37c34;border-color:#f0e3b8}
+.chart-pill-permanent_error{background:#f0f0f0;color:#9a8a92;border-color:#dad2d8}
+.chart-pill-empty{background:#f4f6f2;color:#718077;border-color:#dde4dd}
+.chart-toggle{display:flex;align-items:center;gap:5px;font:600 11px Manrope;color:#5e7065;background:#fbfcfa;border:1px solid #dce6dd;border-radius:8px;padding:6px 10px;cursor:pointer}
+.chart-toggle:hover{background:#edf8ed;color:#173e2e}
+.chart-canvas{width:100%;height:360px;background:#fbfcfa}
+.chart-foot{display:flex;flex-wrap:wrap;gap:14px;justify-content:space-between;padding:10px 18px;border-top:1px solid #edf1ed;background:#fbfcfa;color:#89958d;font-size:10px}
+.chart-foot-t0{color:#7a4ec4}
+.chart-message{margin:18px 22px;font-size:12px;color:#5c6d62;line-height:1.55}
+.chart-meta{margin:0 22px 18px;color:#9aa69f;font-size:10px}
+.chart-meta code{background:#f4f6f2;padding:2px 6px;border-radius:4px;color:#5e7065}
+.chart-markers{margin:0 18px 18px;border-top:1px solid #edf1ed;padding-top:10px}
+.chart-markers summary{display:flex;align-items:center;gap:6px;font:600 11px Manrope;color:#5e7065;cursor:pointer}
+.chart-markers ul{margin:10px 0 0;padding:0;list-style:none}
+.chart-markers li{display:grid;grid-template-columns:60px 90px 1fr;gap:8px;padding:6px 0;border-bottom:1px dashed #edf1ed;font-size:11px;color:#5d6e63}
+.chart-markers li:last-child{border-bottom:0}
+.chart-markers li b{font:9px 'DM Mono';padding:3px 6px;border-radius:4px;text-align:center}
+.chart-markers li.marker-ex_ante b{background:#e5f3e4;color:#4e8857}
+.chart-markers li.marker-ex_post b{background:#fce9e5;color:#b86d61}
+.chart-markers li em{font-style:normal;color:#5e7065}
+.chart-markers li span{font:10px 'DM Mono';color:#718077}
+@media(max-width:800px){.chart-toolbar{flex-direction:column;align-items:stretch}.chart-toolbar-baseline input{width:100%}.chart-canvas{height:300px}.chart-card.expanded .chart-canvas{height:380px}.chart-markers li{grid-template-columns:1fr}}

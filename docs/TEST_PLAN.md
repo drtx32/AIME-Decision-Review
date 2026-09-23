@@ -176,3 +176,35 @@ Expected:
 - [ ] compliance boundary tested
 - [ ] secrets absent from repo/build/logs
 - [ ] known limitations documented
+
+## 12. Inline chart path (ELI-334)
+
+Required evidence for chart-data wiring in addition to the cases above:
+
+### T20 — Known A-share symbol returns valid OHLC and volume
+- Input: `GET /api/chart-data?symbol=600519&type=kline&period=day` (with auth)
+- Expected: 200, `status: ok` (provider wired) or `status: ok` with `series.source: "fallback"` when no provider is configured
+- `series.candles[*]` carries `{t, open, high, low, close, volume}` and trades on Asia/Shanghai timestamps
+
+### T21 — Day/week/month switching
+- Input: same request with `period=week` and `period=month`
+- Expected: 200, candle list reshapes; `series.timezone` stays `Asia/Shanghai`
+
+### T22 — Trade marker aligns to trading timestamp
+- Input: `GET /api/chart-data?...&reviewId=<id>` with review that has `T0 = 2024-03-18T10:24:00+08:00`
+- Expected: the resulting `series.markers[*]` contains the session events split into `relationToDecision: ex_ante` vs `ex_post` against T0
+
+### T23 — Provider empty / 401 / 429 / 5xx / timeout surfaces explicit degraded state
+- Input: stubbed fetch returning each of `[]`, 401, 429, 503, and abort
+- Expected: `status` is one of `empty`, `permanent_error`, `transient_error`; `error.code` reflects the upstream class; `error.retryable` is true only on transient classes. The UI never shows a fake chart.
+
+### T24 — Compare series aligns timestamps
+- Input: `GET /api/chart-data?symbol=600519&type=compare&compareSymbol=000300.SH`
+- Expected: 200, `series.source: "mixed"`, both `series.line` and `series.baseline` carry timestamp-aligned percent change
+
+### T25 — Composer / scroll surface stability under chart expansion
+- Manual / visual check that expanding the chart inside the conversation does not shift the surrounding composer or panel
+
+### T26 — Findings / Evidence / Learning panel remains intact when chart opens
+- Manual / visual check that the existing attribution / outcome / lessons panels are untouched when the chart toolbar is opened
+

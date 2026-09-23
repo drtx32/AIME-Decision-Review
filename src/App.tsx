@@ -1,6 +1,7 @@
-import {useEffect, useState} from 'react';import {ArrowRight,Check,ChevronRight,LogOut,RotateCcw,ShieldCheck,Sparkles,UserCog,Users} from 'lucide-react';
+import {useEffect,useState} from 'react';import {ArrowRight,BarChart3,Check,ChevronRight,LogOut,RotateCcw,ShieldCheck,Sparkles,UserCog,Users} from 'lucide-react';
 import {mock,type Input,type Result} from './api';
 import {auth,adminUsers,ApiError,type PublicUser} from './auth-api';
+import {ChartCard} from './ChartCard';
 type Screen='login'|'change-password'|'home'|'running'|'result'|'admin';
 const stages=['行情与市场环境','指数与行业基准','新闻与公告','时间对齐与事实检查','生成结构化复盘'];
 const blank:Input={symbol:'',market:'A股',side:'buy',executedAt:'2024-03-18T10:24',price:'',quantity:'',reason:'',notes:''};
@@ -12,6 +13,10 @@ export default function App(){
   const[v,setV]=useState<Input>(blank);
   const[r,setR]=useState<Result|null>(null);
   const[p,setP]=useState(0);
+  const[chartOpen,setChartOpen]=useState(false);
+  const[chartType,setChartType]=useState<'kline'|'timeline'|'compare'>('kline');
+  const[chartPeriod,setChartPeriod]=useState<'day'|'week'|'month'>('day');
+  const[compareSymbol,setCompareSymbol]=useState('000300.SH');
   useEffect(()=>{void bootstrap();},[]);
   async function bootstrap(){
     try{
@@ -33,6 +38,7 @@ export default function App(){
     setUser(null);
     setR(null);
     setP(0);
+    setChartOpen(false);
     setS('login');
   }
   async function handlePasswordChanged(payload:PublicUser){
@@ -48,7 +54,7 @@ export default function App(){
     const x=await mock.createReview(v);setR(await mock.result(x.id));setS('result');
   }}/></main></div>;
   if(s==='running'&&user)return <div className="app"><Header user={user} onLogout={handleLogout}/><main><Running p={p}/></main></div>;
-  if(s==='result'&&user&&r)return <div className="app"><Header user={user} onLogout={handleLogout} onOpenAdmin={()=>setS('admin')}/><main><Result r={r} reset={()=>{setS('home');setR(null);setP(0)}}/></main></div>;
+  if(s==='result'&&user&&r)return <div className="app"><Header user={user} onLogout={handleLogout} onOpenAdmin={()=>setS('admin')}/><main><Result r={r} reset={()=>{setS('home');setR(null);setP(0);setChartOpen(false)}} chartOpen={chartOpen} setChartOpen={setChartOpen} chartType={chartType} setChartType={setChartType} chartPeriod={chartPeriod} setChartPeriod={setChartPeriod} compareSymbol={compareSymbol} setCompareSymbol={setCompareSymbol}/></main></div>;
   return null;
 }
 function Header({user,onLogout,onOpenAdmin}:{user:PublicUser|null;onLogout:()=>void;onOpenAdmin?:()=>void}){
@@ -223,7 +229,37 @@ function Home({v,setV,go}:{v:Input;setV:React.Dispatch<React.SetStateAction<Inpu
 }
 function Field({t,children}:{t:string;children:React.ReactNode}){return <label className="field">{t}{children}</label>;}
 function Running({p}:{p:number}){return <section className="card running"><div className="runicon">◌</div><span>REVIEW RUNNING</span><h1>正在重建这笔决策</h1><p>把决策时点的证据，与之后发生的结果严格分开。</p><div className="bar"><i style={{width:p*20+'%'}}/></div>{stages.map((x,i)=><div className={'stage '+(i<p?'done':'')} key={x}><b>{i<p?<Check size={12}/>:i+1}</b>{x}<small>{i<p?'完成':i===p?'分析中…':'等待'}</small></div>)}<div className="safe">◈ 不展示模型思考过程，仅呈现可核验的证据与结论。</div></section>;}
-function Result({r,reset}:{r:Result;reset:()=>void}){return <section className="result"><div className="resulttop"><div><label className="pill ok"><Check size={13}/> REVIEW COMPLETE</label><h1>{r.input.symbol} <span>· {r.input.side==='buy'?'买入':'卖出'}复盘</span></h1><p>{r.input.executedAt.replace('T',' ')} · 成交价 ¥{r.input.price} · {r.input.quantity} 股</p></div><button className="ghost" onClick={reset}><RotateCcw size={14}/> 新建复盘</button></div><div className="card summary"><div className="summaryicon">◈</div><div><label>DECISION SUMMARY</label><p>{r.summary}</p></div><strong>62<small>判断质量</small></strong></div><div className="t0"><b>T0 · 2024.03.18 10:24</b><strong>时间边界</strong><span>左侧只包含当时可知信息；右侧是事后发生的信息，不能用于评价当时的判断。</span></div><div className="evidence"><Evidence title="当时已知 · Ex-Ante" sub="可用于评价决策质量" a={r.ante} tone="ante"/><Evidence title="事后信息 · Ex-Post" sub="用于理解结果，不倒灌判断" a={r.post} tone="post"/></div><div className="lower"><div className="card block"><label>ATTRIBUTION</label><h3>归因可信度</h3><Tag t="SUPPORTED" c="green">“渠道库存改善”是可被 T0 前证据支持的核心判断。</Tag><Tag t="UNCERTAIN" c="yellow">对批价企稳的时间判断缺少明确验证条件。</Tag><Tag t="UNSUPPORTED" c="red">“市场会很快修复”未记录可核验依据。</Tag></div><div className="card block"><label>OUTCOME VS QUALITY</label><h3>结果不等于质量</h3><Metric t="决策质量" x="62 / 100" w="62%"/><Metric t="持有期结果" x="-18.4%" w="28%" bad/><p className="muted">结果较差，但部分事前证据和判断链条仍然成立。</p></div></div><div className="card lessons"><label>NEXT TIME</label><h3>Lessons & Checklist</h3>{['把“企稳”写成可验证条件','在下单前记录反向证据','预先写下失效条件'].map((x,i)=><div className="lesson" key={x}><b>0{i+1}</b><span><strong>{x}</strong><small>{['例如：批价连续两周不再下行，且库存周转回到 X 天以内。','北向资金流出是已知信号，下次应明确它对仓位的影响。','当核心假设被证伪时，触发减仓或重新评估。'][i]}</small></span></div>)}</div><p className="cite">ⓘ 证据引用：公司公告、行情数据、公开新闻（演示数据）　›</p></section>;}
+function Result({r,reset,chartOpen,setChartOpen,chartType,setChartType,chartPeriod,setChartPeriod,compareSymbol,setCompareSymbol}:{r:Result;reset:()=>void;chartOpen:boolean;setChartOpen:React.Dispatch<React.SetStateAction<boolean>>;chartType:'kline'|'timeline'|'compare';setChartType:React.Dispatch<React.SetStateAction<'kline'|'timeline'|'compare'>>;chartPeriod:'day'|'week'|'month';setChartPeriod:React.Dispatch<React.SetStateAction<'day'|'week'|'month'>>;compareSymbol:string;setCompareSymbol:React.Dispatch<React.SetStateAction<string>>}){
+  const [refreshKey,setRefreshKey]=useState(0);
+  return <section className="result"><div className="resulttop"><div><label className="pill ok"><Check size={13}/> REVIEW COMPLETE</label><h1>{r.input.symbol} <span>· {r.input.side==='buy'?'买入':'卖出'}复盘</span></h1><p>{r.input.executedAt.replace('T',' ')} · 成交价 ¥{r.input.price} · {r.input.quantity} 股</p></div><div className="resulttop-actions"><button className="ghost" onClick={()=>setChartOpen(v=>!v)}><BarChart3 size={14}/>{chartOpen?'收起图表':'查看图表'}</button><button className="ghost" onClick={reset}><RotateCcw size={14}/> 新建复盘</button></div></div><div className="card summary"><div className="summaryicon">◈</div><div><label>DECISION SUMMARY</label><p>{r.summary}</p></div><strong>62<small>判断质量</small></strong></div><div className="t0"><b>T0 · {r.input.executedAt.replace('T',' ')}</b><strong>时间边界</strong><span>左侧只包含当时可知信息；右侧是事后发生的信息，不能用于评价当时的判断。</span></div>{chartOpen&&<div className="chart-toolbar card">
+        <div className="chart-toolbar-group">
+          <span>图表类型</span>
+          <div className="seg">
+            <button type="button" className={chartType==='kline'?'on':''} onClick={()=>setChartType('kline')}>K 线</button>
+            <button type="button" className={chartType==='timeline'?'on':''} onClick={()=>setChartType('timeline')}>时间线</button>
+            <button type="button" className={chartType==='compare'?'on':''} onClick={()=>setChartType('compare')}>对比</button>
+          </div>
+        </div>
+        <div className="chart-toolbar-group">
+          <span>周期</span>
+          <div className="seg">
+            <button type="button" className={chartPeriod==='day'?'on':''} onClick={()=>setChartPeriod('day')}>日</button>
+            <button type="button" className={chartPeriod==='week'?'on':''} onClick={()=>setChartPeriod('week')}>周</button>
+            <button type="button" className={chartPeriod==='month'?'on':''} onClick={()=>setChartPeriod('month')}>月</button>
+          </div>
+        </div>
+        {chartType==='compare'&&<label className="chart-toolbar-baseline">基准<input value={compareSymbol} onChange={e=>setCompareSymbol(e.target.value)} placeholder="如 000300.SH"/></label>}
+        <button type="button" className="ghost" onClick={()=>setRefreshKey(k=>k+1)}>刷新</button>
+      </div>}{chartOpen&&<ChartCard
+        symbol={r.input.symbol}
+        market={r.input.market==='港股'?'HK':r.input.market==='美股'?'US':'CN'}
+        type={chartType}
+        period={chartPeriod}
+        T0={r.input.executedAt}
+        compareSymbol={chartType==='compare'?compareSymbol:undefined}
+        refreshKey={refreshKey}
+      />}<div className="evidence"><Evidence title="当时已知 · Ex-Ante" sub="可用于评价决策质量" a={r.ante} tone="ante"/><Evidence title="事后信息 · Ex-Post" sub="用于理解结果，不倒灌判断" a={r.post} tone="post"/></div><div className="lower"><div className="card block"><label>ATTRIBUTION</label><h3>归因可信度</h3><Tag t="SUPPORTED" c="green">“渠道库存改善”是可被 T0 前证据支持的核心判断。</Tag><Tag t="UNCERTAIN" c="yellow">对批价企稳的时间判断缺少明确验证条件。</Tag><Tag t="UNSUPPORTED" c="red">“市场会很快修复”未记录可核验依据。</Tag></div><div className="card block"><label>OUTCOME VS QUALITY</label><h3>结果不等于质量</h3><Metric t="决策质量" x="62 / 100" w="62%"/><Metric t="持有期结果" x="-18.4%" w="28%" bad/><p className="muted">结果较差，但部分事前证据和判断链条仍然成立。</p></div></div><div className="card lessons"><label>NEXT TIME</label><h3>Lessons & Checklist</h3>{['把“企稳”写成可验证条件','在下单前记录反向证据','预先写下失效条件'].map((x,i)=><div className="lesson" key={x}><b>0{i+1}</b><span><strong>{x}</strong><small>{['例如：批价连续两周不再下行，且库存周转回到 X 天以内。','北向资金流出是已知信号，下次应明确它对仓位的影响。','当核心假设被证伪时，触发减仓或重新评估。'][i]}</small></span></div>)}</div><p className="cite">ⓘ 证据引用：公司公告、行情数据、公开新闻（演示数据）　›</p></section>;
+}
 function Evidence({title,sub,a,tone}:{title:string;sub:string;a:string[];tone:string}){return <div className={'card ev '+tone}><div className="evhead"><span><h3>{title}</h3><small>{sub}</small></span><i>{a.length} 条</i></div>{a.map((x,i)=><div className="evitem" key={x}><b>0{i+1}</b><span>{x}</span><ChevronRight size={14}/></div>)}</div>;}
 function Tag({t,c,children}:{t:string;c:string;children:string}){return <div className="tag"><b className={c}>{t}</b><span>{children}</span></div>}
 function Metric({t,x,w,bad}:{t:string;x:string;w:string;bad?:boolean}){return <div className="metric"><div><span>{t}</span><b className={bad?'bad':''}>{x}</b></div><i className={bad?'bad':''} style={{width:w}}/></div>}

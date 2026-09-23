@@ -549,7 +549,9 @@ UI).
 1. iFinD real-gateway 404 on every documented slug — operator confirmation of the correct base path / slug still needed. `McpStreamableHttpClient` correctly classifies these as `PermanentMcpError`.
 2. `normalizeItems.relationToDecision` uses `ms <= Date.now()` (T0-agnostic) — small follow-up to thread T0 through.
 3. Retry / backoff in `LiveMcpAdapter` — follow-up.
-4. `HITHINK_FINANCE_TOOL_MAP` is shared across all Fuyao servers; applying `price:get_a_share_prices_snapshot` to the `meta` server produces a 403 (correctly surfaced as `permanent_error`). Per-server toolMap is a small follow-up.
+4. The legacy `HITHINK_FINANCE_TOOL_MAP` remains shared across Fuyao
+   servers. Use `HITHINK_FINANCE_TOOL_MAP_PER_SERVER=server:intent:tool`
+   when unrelated servers must not claim the same intent.
 
 PR #3 head now `8c40086` (will be amended to the new rebase head); force-pushed; still Draft.
 
@@ -769,12 +771,29 @@ the credentialed smoke stays **visibly partial**:
    unblock for the iFinD half of T18. The integration is visibly
    partial (every iFinD `toolStatus` row reads `permanent_error` or
    `empty`) and the contract is preserved.
-2. **Per-server `HITHINK_FINANCE_TOOL_MAP`.** The shared tool map
-   currently forces the `meta` server to attempt a price tool it does
-   not expose (403 → `permanent_error`). Splitting to per-server maps
-   is a follow-up.
+2. **Per-server `HITHINK_FINANCE_TOOL_MAP`.** The shared map remains
+   supported for backward compatibility, while
+   `HITHINK_FINANCE_TOOL_MAP_PER_SERVER=server:intent:tool` prevents a
+   price tool from being dispatched to unrelated servers.
 3. **Retry / backoff** in `LiveMcpAdapter` is not yet implemented;
    transient errors surface as `partial`. Follow-up.
 
 PR #3 head amended in this round; force-pushed; still Draft.
 Assignee Oracle CC; status `in_progress`.
+
+### ELI-318 final-candidate follow-up — per-server tools and historical args
+
+- `HITHINK_FINANCE_TOOL_MAP_PER_SERVER` accepts
+  `server:intent:toolName` entries, for example
+  `a-share:price:get_a_share_prices_snapshot`. When this map is non-empty,
+  unlisted Fuyao servers do not claim the intent, preventing a shared price
+  tool from being sent to `meta` or `fund`.
+- `IFIND_MCP_TOOL_MAP_PER_SERVER` uses the same format for iFinD.
+- Fuyao historical tools declaring `thscode`, `start`, `end`, `interval`, and
+  `adjust` now receive the symbol, a seven-day look-back in millisecond epoch
+  values through T0, `interval: "1d"`, and `adjust: "forward"`. The call
+  body is schema-derived; unknown fields are not fabricated.
+- A verified iFinD news call used the natural-language query shape
+  `{query: "贵州茅台", size: 5, time_start: "YYYY-MM-DD", time_end: "YYYY-MM-DD"}`.
+  Some symbol-heavy query variants return `IFIND_HTTP_403`; that remains a
+  loud permanent error and should be handled by refining the query template.

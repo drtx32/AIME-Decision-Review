@@ -32,6 +32,8 @@ export interface AppConfig {
     servers: FuyaoServerKey[];
     /** Operator-supplied intent → MCP tool name map (e.g. "price:get_security_price"). */
     toolMap: Partial<Record<AdapterIntent, string>>;
+    /** Optional server:intent:toolName mappings that narrow dispatch per server. */
+    toolMapByServer: Partial<Record<FuyaoServerKey, Partial<Record<AdapterIntent, string>>>>;
     /**
      * Operator-supplied canonical → remote-name suffix map. iFinD's gateway
      * uses the full server name (e.g. `hexin-ifind-ds-stock-mcp`); Fuyao
@@ -47,6 +49,8 @@ export interface AppConfig {
     authorization: string | null;
     servers: IFindServerKey[];
     toolMap: Partial<Record<AdapterIntent, string>>;
+    /** Optional server:intent:toolName mappings that narrow dispatch per server. */
+    toolMapByServer: Partial<Record<IFindServerKey, Partial<Record<AdapterIntent, string>>>>;
     /**
      * See `fuyao.remoteSuffixMap`. The default map uses
      * `hexin-ifind-ds-<key>-mcp` for every configured iFinD server key.
@@ -79,6 +83,25 @@ function parseToolMap(
     const [intent, toolName] = pair.split(":").map((s) => s.trim());
     if (!intent || !toolName) continue;
     out[intent as AdapterIntent] = toolName;
+  }
+  return out;
+}
+
+/** Parse "server:intent:toolName,server2:intent2:toolName2". */
+function parseToolMapByServer<K extends string>(
+  raw: string | undefined,
+  allowed: readonly K[]
+): Partial<Record<K, Partial<Record<AdapterIntent, string>>>> {
+  const out: Partial<Record<K, Partial<Record<AdapterIntent, string>>>> = {};
+  if (!raw) return out;
+  for (const pair of raw.split(",")) {
+    const [server, intent, ...toolParts] = pair.split(":").map((s) => s.trim());
+    const toolName = toolParts.join(":").trim();
+    if (!server || !intent || !toolName) continue;
+    if (!(allowed as readonly string[]).includes(server)) continue;
+    const serverMap = out[server as K] ?? {};
+    serverMap[intent as AdapterIntent] = toolName;
+    out[server as K] = serverMap;
   }
   return out;
 }
@@ -169,6 +192,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         [...ALL_FUYAO_SERVERS]
       ),
       toolMap: parseToolMap(env.HITHINK_FINANCE_TOOL_MAP),
+      toolMapByServer: parseToolMapByServer(
+        env.HITHINK_FINANCE_TOOL_MAP_PER_SERVER,
+        ALL_FUYAO_SERVERS
+      ),
       remoteSuffixMap: parseSuffixMap(
         env.HITHINK_FINANCE_REMOTE_SUFFIX_MAP,
         ALL_FUYAO_SERVERS
@@ -183,6 +210,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
         [...ALL_IFIND_SERVERS]
       ),
       toolMap: parseToolMap(env.IFIND_MCP_TOOL_MAP),
+      toolMapByServer: parseToolMapByServer(
+        env.IFIND_MCP_TOOL_MAP_PER_SERVER,
+        ALL_IFIND_SERVERS
+      ),
       remoteSuffixMap: parseSuffixMap(
         env.IFIND_MCP_REMOTE_SUFFIX_MAP,
         ALL_IFIND_SERVERS

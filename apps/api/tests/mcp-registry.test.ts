@@ -10,6 +10,7 @@ describe("MCP registry — selective construction", () => {
         apiKey: null,
         servers: ["a-share", "a-share-index"],
         toolMap: {},
+        toolMapByServer: {},
         remoteSuffixMap: {},
       },
       ifind: {
@@ -17,6 +18,7 @@ describe("MCP registry — selective construction", () => {
         authorization: null,
         servers: ["stock", "news"],
         toolMap: {},
+        toolMapByServer: {},
         remoteSuffixMap: {},
       },
     });

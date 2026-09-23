@@ -627,6 +627,15 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
         apiKey: "test-key",
         servers: ["a-share"],
         toolMap: {},
+        toolMapByServer: {},
+        remoteSuffixMap: {},
+      },
+      ifind: {
+        baseUrl: null,
+        authorization: null,
+        servers: [],
+        toolMap: {},
+        toolMapByServer: {},
         remoteSuffixMap: {},
       },
     });
@@ -644,6 +653,7 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
         apiKey: "test-key",
         servers: ["a-share"],
         toolMap: { price: "get_a_share_price" },
+        toolMapByServer: {},
         remoteSuffixMap: {},
       },
     });
@@ -655,7 +665,7 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
 
   test("no credentials → mock adapter still selected", () => {
     const cfg = makeTestConfig({
-      fuyao: { baseUrl: null, apiKey: null, servers: ["a-share"], toolMap: {}, remoteSuffixMap: {} },
+      fuyao: { baseUrl: null, apiKey: null, servers: ["a-share"], toolMap: {}, toolMapByServer: {}, remoteSuffixMap: {} },
     });
     const registry = buildMcpRegistry(cfg);
     const adapter = registry.resolve("a-share")!;
@@ -712,6 +722,7 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
         apiKey: "test-key",
         servers: ["a-share"],
         toolMap: { price: "get_a_share_price" },
+        toolMapByServer: {},
         remoteSuffixMap: {},
       },
       ifind: {
@@ -719,6 +730,7 @@ describe("MCP registry — credentials + toolMap wire LiveMcpAdapter", () => {
         authorization: "Bearer ifind-token",
         servers: ["news"],
         toolMap: { news: "get_news" },
+        toolMapByServer: {},
         remoteSuffixMap: {},
       },
     });
@@ -811,6 +823,28 @@ describe("buildToolArgs — inputSchema-driven call payload", () => {
     });
   });
 
+  test("Fuyao historical schema gets ms-epoch window and adjustment args", () => {
+    const T0 = "2024-09-15T01:35:00Z";
+    const t0Ms = Date.parse(T0);
+    const args = buildToolArgs({
+      type: "object",
+      properties: {
+        thscode: { type: "string" },
+        start: { type: "integer" },
+        end: { type: "integer" },
+        interval: { type: "string" },
+        adjust: { type: "string" },
+      },
+    }, { intent: "price", symbol: "600519.SH", T0 });
+    expect(args).toEqual({
+      thscode: "600519.SH",
+      start: t0Ms - 7 * 24 * 60 * 60 * 1000,
+      end: t0Ms,
+      interval: "1d",
+      adjust: "forward",
+    });
+  });
+
   test("no schema supplied falls back to the legacy generic payload", () => {
     const args = buildToolArgs(undefined, {
       intent: "price",
@@ -882,6 +916,7 @@ describe("MCP registry — iFinD canonical→remote suffix map", () => {
         authorization: "Bearer test-token",
         servers: ["stock", "news"],
         toolMap: {},
+        toolMapByServer: {},
         remoteSuffixMap: {},
       },
     });
@@ -905,11 +940,39 @@ describe("MCP registry — iFinD canonical→remote suffix map", () => {
         authorization: "Bearer test-token",
         servers: ["stock"],
         toolMap: {},
+        toolMapByServer: {},
         remoteSuffixMap: { stock: "custom-stock-server" },
       },
     });
     const registry = buildMcpRegistry(cfg);
     const adapter = registry.resolve("stock")!;
     expect(adapter).not.toBeNull();
+  });
+});
+
+describe("MCP registry — per-server tool map", () => {
+  test("restricts a shared price intent to the explicitly mapped Fuyao server", () => {
+    const cfg = makeTestConfig({
+      fuyao: {
+        baseUrl: "https://fuyao.example.test/mcp",
+        apiKey: "test-key",
+        servers: ["meta", "a-share", "fund"],
+        toolMap: { price: "get_a_share_prices_snapshot" },
+        toolMapByServer: { "a-share": { price: "get_a_share_prices_snapshot" } },
+        remoteSuffixMap: {},
+      },
+      ifind: {
+        baseUrl: null,
+        authorization: null,
+        servers: [],
+        toolMap: {},
+        toolMapByServer: {},
+        remoteSuffixMap: {},
+      },
+    });
+    const registry = buildMcpRegistry(cfg);
+    const adapters = registry.resolveFor("price");
+    expect(adapters).toHaveLength(1);
+    expect(adapters[0].serverKey).toBe("a-share");
   });
 });

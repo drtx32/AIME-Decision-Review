@@ -222,9 +222,12 @@ export class LiveMcpAdapter implements EvidenceAdapter {
  *   2. For known symbol-key names (`symbol`, `symbols`, `thscode`, `ticker`,
  *      `code`), write the symbol value in the format the upstream expects.
  *      `symbols` is sent as a single-element array; the others as a string.
- *   3. For known time-window keys (`T0`, `start_date`, `startDate`, `date`,
- *      `end_date`, `endDate`), write T0 (and a derived end date) in ISO.
- *   4. For known market / intent keys, write the relevant values.
+ *   3. For known time-window keys, write T0 or a derived window. Fuyao's
+ *      historical tool uses `start`/`end` milliseconds, with a seven-day
+ *      look-back and an inclusive end at T0; ISO `start_date`/`end_date`
+ *      variants remain supported.
+ *   4. For known market / interval / adjustment keys, write the relevant
+ *      values.
  *   5. Any unknown key in the schema is left out — never fabricate fields
  *      the upstream hasn't declared.
  *   6. If no schema is supplied (legacy servers), fall back to the previous
@@ -239,6 +242,10 @@ export function buildToolArgs(
   const market = req.market ?? "CN";
   const limit = req.limit ?? 5;
   const intent = req.intent;
+  const t0Ms = Date.parse(T0);
+  const validT0Ms = Number.isNaN(t0Ms) ? Date.now() : t0Ms;
+  const historicalStartMs = validT0Ms - 7 * 24 * 60 * 60 * 1000;
+  const historicalEndMs = validT0Ms;
 
   const props =
     schema && typeof schema === "object" && schema.properties && typeof schema.properties === "object"
@@ -280,6 +287,8 @@ export function buildToolArgs(
 
   // T0 / time-window mapping.
   if ("T0" in props) args.T0 = T0;
+  if ("start" in props) args.start = historicalStartMs;
+  if ("end" in props) args.end = historicalEndMs;
   if ("start_date" in props) args.start_date = T0.slice(0, 10);
   if ("startDate" in props) args.startDate = T0;
   if ("end_date" in props) {
@@ -291,6 +300,14 @@ export function buildToolArgs(
   if ("endDate" in props) args.endDate = T0;
   if ("date" in props) args.date = T0.slice(0, 10);
   if ("trade_date" in props) args.trade_date = T0.slice(0, 10);
+  if ("interval" in props) args.interval = "1d";
+  if ("adjust" in props) args.adjust = "forward";
+  if ("metadata" in props) {
+    args.metadata = {
+      decisionT0: T0,
+      historicalWindow: { startMs: historicalStartMs, endMs: historicalEndMs },
+    };
+  }
 
   // Misc context.
   if ("market" in props) args.market = market;

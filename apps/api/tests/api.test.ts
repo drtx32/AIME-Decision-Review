@@ -43,7 +43,7 @@ describe("Review API contract", () => {
     expect(body.error).toBe("invalid_input");
   });
 
-  test("GET /api/chart-data returns ok with synthetic series when no provider is wired", async () => {
+  test("GET /api/chart-data returns ok with synthetic series when no provider is wired (development mode)", async () => {
     const res = await ctx.app.request(
       "/api/chart-data?symbol=600519&type=kline&period=day",
       { headers: { cookie } }
@@ -54,11 +54,51 @@ describe("Review API contract", () => {
       type: string;
       series?: { source: string; candles?: unknown[]; timezone?: string };
     };
+    // Test helper sets isProduction=false, so the demo fallback path is
+    // enabled. The series MUST be explicitly labelled `source: "fallback"`
+    // so the UI can show the disclaimer.
     expect(body.status).toBe("ok");
     expect(body.type).toBe("kline");
     expect(body.series?.source).toBe("fallback");
     expect(body.series?.timezone).toBe("Asia/Shanghai");
     expect(Array.isArray(body.series?.candles)).toBe(true);
+  });
+
+  test("GET /api/chart-data returns unavailable in production when no provider is wired", async () => {
+    // Build a server with isProduction=true to prove the production gate
+    // never returns synthetic data — explicit degraded state only.
+    const cfg = (await import("./helpers.ts")).makeTestConfig({
+      isProduction: true,
+    });
+    const prod = (await import("../src/server.ts")).buildServer(cfg);
+    const userRepo = prod.userRepo;
+    const hash = await (await import("../src/auth/passwords.ts")).hashPassword(
+      "secret-pass-12345"
+    );
+    if (!userRepo.findByUsername("prodtester")) {
+      userRepo.createUser({
+        username: "prodtester",
+        passwordHash: hash,
+        role: "user",
+        mustChangePassword: false,
+      });
+    }
+    const login = await prod.app.request("/api/auth/login", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ username: "prodtester", password: "secret-pass-12345" }),
+    });
+    const setCookie = login.headers.get("set-cookie")!.split(";")[0];
+    const res = await prod.app.request(
+      "/api/chart-data?symbol=600519&type=kline&period=day",
+      { headers: { cookie: setCookie } }
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; message?: string };
+    expect(body.status).toBe("unavailable");
+    expect(body.message).toBeTruthy();
+    prod.repo.close();
+    prod.userRepo.close();
   });
 
   test("GET /api/chart-data returns unavailable for unsupported valuation fields", async () => {

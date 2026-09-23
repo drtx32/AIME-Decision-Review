@@ -1,6 +1,7 @@
 import { describe, test, expect, beforeEach, afterEach } from "bun:test";
 import { makeTestServer, loginAndCookie, type TestServer } from "./helpers.ts";
 import type { DecisionReviewResult } from "../src/types/index.ts";
+import type { ModelProvider } from "../src/providers/index.ts";
 
 describe("Review API contract", () => {
   let ctx: TestServer;
@@ -27,6 +28,50 @@ describe("Review API contract", () => {
     expect(body.configuredServers).toContain("stock");
   });
 
+  test("GET /api/chart-data requires auth", async () => {
+    const res = await ctx.app.request("/api/chart-data?symbol=600519&type=kline");
+    expect(res.status).toBe(401);
+  });
+
+  test("GET /api/chart-data rejects invalid payload", async () => {
+    const res = await ctx.app.request(
+      "/api/chart-data?type=invalid&symbol=",
+      { headers: { cookie } }
+    );
+    expect(res.status).toBe(400);
+    const body = (await res.json()) as { error: string };
+    expect(body.error).toBe("invalid_input");
+  });
+
+  test("GET /api/chart-data returns ok with synthetic series when no provider is wired", async () => {
+    const res = await ctx.app.request(
+      "/api/chart-data?symbol=600519&type=kline&period=day",
+      { headers: { cookie } }
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      status: string;
+      type: string;
+      series?: { source: string; candles?: unknown[]; timezone?: string };
+    };
+    expect(body.status).toBe("ok");
+    expect(body.type).toBe("kline");
+    expect(body.series?.source).toBe("fallback");
+    expect(body.series?.timezone).toBe("Asia/Shanghai");
+    expect(Array.isArray(body.series?.candles)).toBe(true);
+  });
+
+  test("GET /api/chart-data returns unavailable for unsupported valuation fields", async () => {
+    const res = await ctx.app.request(
+      "/api/chart-data?symbol=600519&type=valuation",
+      { headers: { cookie } }
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { status: string; message?: string };
+    expect(body.status).toBe("unavailable");
+    expect(body.message).toBeTruthy();
+  });
+
   test("POST /api/reviews rejects invalid payload", async () => {
     const res = await ctx.app.request("/api/reviews", {
       method: "POST",
@@ -36,6 +81,25 @@ describe("Review API contract", () => {
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
     expect(body.error).toBe("invalid_input");
+  });
+
+  test("production with no configured model keeps health up but rejects review creation", async () => {
+    const cookie = await loginAndCookie(ctx.app, ctx.userRepo, "reviewer", "reviewer-pass");
+    ctx.cfg.runtime = "production";
+    const health = await ctx.app.request("/health");
+    expect(health.status).toBe(200);
+    const healthBody = await health.json() as { status: string; provider_configured: boolean; provider_status: string };
+    expect(healthBody.status).toBe("ok");
+    expect(healthBody.provider_configured).toBe(false);
+    expect(healthBody.provider_status).toBe("unconfigured");
+
+    const review = await ctx.app.request("/api/reviews", {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie },
+      body: JSON.stringify({ symbol: "600519", market: "CN", action: "buy", executedAt: "2024-03-15T00:00:00Z", userReason: "channel checks" }),
+    });
+    expect(review.status).toBe(503);
+    expect(await review.json()).toMatchObject({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", message: "当前未配置可用的大模型服务，请联系管理员。" });
   });
 
   test("POST /api/reviews rejects non-compliant (T11) deterministic-prediction language", async () => {
@@ -57,6 +121,7 @@ describe("Review API contract", () => {
   });
 
   test("POST /api/reviews → GET /result returns structured review (vertical slice)", async () => {
+    ctx.deps.provider = { id: "test", modelName: "test", configured: true, complete: async () => ({ text: "{}" }) } satisfies ModelProvider;
     const created = await ctx.app.request("/api/reviews", {
       method: "POST",
       headers: { "content-type": "application/json", cookie },

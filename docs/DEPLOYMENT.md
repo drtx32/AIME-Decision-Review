@@ -30,6 +30,12 @@ chmod 600 .env
 docker compose up -d --build
 ```
 
+Both services use `restart: unless-stopped`. Compose passes an unset
+`INITIAL_ADMIN_PASSWORD` through as empty, keeping an existing SQLite-backed
+deployment restartable. The API refuses startup with a clear error only when a
+fresh database has no admin to bootstrap, so the initial password is still
+required for first provisioning.
+
 Future deployments should update and restart from the same directory:
 
 ```bash

@@ -28,7 +28,7 @@ import {
   wrapPermanentError,
 } from "./types.ts";
 
-const IFIND_INTENT_MAP: Record<IFindServerKey, AdapterIntent[]> = {
+export const IFIND_INTENT_MAP: Record<IFindServerKey, AdapterIntent[]> = {
   ds: [],
   enterprise: ["enterprise"],
   law: ["legal"],

@@ -18,7 +18,7 @@ import {
   wrapPermanentError,
 } from "./types.ts";
 
-const FUYAO_INTENT_MAP: Record<FuyaoServerKey, AdapterIntent[]> = {
+export const FUYAO_INTENT_MAP: Record<FuyaoServerKey, AdapterIntent[]> = {
   meta: [],
   "a-share": ["price", "financial", "announcement"],
   "a-share-index": ["index", "industry"],

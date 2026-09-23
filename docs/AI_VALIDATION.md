@@ -1,5 +1,22 @@
 # AI Usage & Validation Log
 
+## Canonical documentation reconciliation — 2026-09-23
+
+This file records validation evidence; it is not a substitute for the product
+contract in `docs/SPEC.md`. The canonical contract now requires a
+conversation-first desktop workspace with a stable bottom composer, centered
+Settings overlay, controlled attachments, default-deny trusted web evidence,
+direct Fuyao/iFinD structured chart data with native ECharts, and strict
+ex-ante/ex-post correctness. Browser and direct-API regression cases are listed
+in `docs/TEST_PLAN.md`.
+
+The existing entries below are historical evidence and retain their original
+environment, mode, and SHA. Controlled fake upstreams are not credentialed
+Fuyao/iFinD/LLM validation. Any real-provider claim must include the exact
+tested/deployed SHA and sanitized endpoint/tool, schema, timestamp, permission,
+quota, and error evidence. Missing evidence remains a known limitation rather
+than a successful validation result.
+
 This file records how AI tools are used in the project, what they generated, how outputs were checked, and what humans corrected.
 
 ## Rules
@@ -34,6 +51,33 @@ This file records how AI tools are used in the project, what they generated, how
 - What is still uncertain:
 
 ---
+
+## ELI-333 rerun on PR #7 final candidate — 2026-09-22
+
+**AI/tool used**
+- Oracle Codex with Bun 1.4.2, direct Hono API requests, a structured test provider, and MCP HTTP contract fixtures.
+
+**Task**
+- Re-run the exact required Chinese multi-trade narrative against PR #7 head `5d5ffec98ab5e3a824fc0c9c9afc1c4bf754e1b8`, including approximate T0 confirmation, findings grounding, temporal invariants, learning persistence, and follow-up.
+
+**Output**
+- Before the fix, extraction was correct (exactly 3 decisions: 金牛化工 SELL, 中粮糖业 BUY, 中粮糖业 SELL; 16.57; 2手→200 shares; lunch-break order placement in notes), but `/confirm` blocked all approximate decisions and PATCH could not clear `needsConfirmation`.
+- Minimal fix: known approximate T0 can proceed after explicit confirmation; unknown/null T0 and unresolved confirmation questions still block. The result retains `timePrecision: approximate` and adds an explicit uncertainty.
+- Structured model rating/checklist/attribution are consumed when valid; attribution evidence IDs are restricted to ex-ante IDs. Fallback claims now include actual evidence content rather than generic `Pre-T0 evidence supported...` text.
+- Fuyao price-snapshot envelopes may use upstream `data.timestamp` as the snapshot item's `publishedAt` for temporal placement; `retrievedAt` remains separately recorded. News/announcement envelopes must still provide item-level publication time and never borrow envelope or retrieval time. Timestamp-less items become `empty`.
+
+**Validation**
+- `bun run typecheck` passed.
+- Full API suite: 63 tests passed after updating the session contract for approximate confirmation; the new approximate-T0 persistence test and MCP snapshot timestamp test passed.
+- Direct API golden path: initial confirm `422`; after explicit approximate confirmations, session `completed`, 3 results, symbols `金牛化工/中粮糖业/中粮糖业`, all 3 results retained `timePrecision=approximate`, all ex-ante/ex-post evidence respected T0 and `retrievedAt >= publishedAt`, and findings were non-template/evidence-grounded.
+- All 3 results contained 3 lessons each; 5 deduplicated learning memories had aggregate strength 9, showing all lesson occurrences were persisted/reinforced rather than only the first result. Follow-up returned 201 and was grounded on the current session.
+- No LLM/MCP credentials were available on the Oracle host, so real MiniMax/Fuyao/iFinD calls were not run. The live adapter contract keeps iFinD 404/permanent errors visible and does not fabricate success; no secrets were printed.
+
+**Human corrections**
+- No new architecture or PR was created. Changes are limited to the existing PR #7 candidate worktree.
+
+**Residual risk / unresolved**
+- The real provider and real upstream payload semantics still require credentialed host verification before submission. Price snapshot observation timestamps are usable for placing that snapshot around T0; they are not treated as news/event publication timestamps.
 
 ## Initial project decisions — 2026-09-22
 
@@ -468,3 +512,170 @@ to `main`.
   placeholder never appears in stored hashes or any response body,
   preserving the signal that any real credential-shaped string would
   leak the same way.
+
+---
+
+## ELI-341 Settings / Usage / Model API contract — 2026-09-23 (Local CC)
+
+**AI/tool used**
+- Local CC (Claude agent) on branch `agent/local-cc/7df9d7e6cccf`
+- Bun 1.2.19 + Hono 4 + Zod 3 + Node `crypto` (AES-256-GCM)
+
+**Task**
+- ELI-341: audit and complete the backend contracts needed by the
+  Settings experience without changing the React shell and without
+  deploying. Required endpoints:
+  - authenticated `/api/auth/me` (already present from ELI-325);
+  - self-service `/api/auth/change-password` (already present);
+  - admin-only `/api/admin/users` CRUD (already present);
+  - `/api/settings/model` GET/PUT — user-supplied provider/model/apiKey,
+    encrypted at rest;
+  - `/api/usage` GET — configured allowance / consumed / remaining,
+    period metadata; never fabricate a provider quota;
+  - `/api/models/capabilities` GET — provider/model capability matrix
+    with vision only flagged `verified` when checked against the
+    published capability list.
+- Authorization tests proving normal users cannot invoke admin
+  mutations; password/session tests; secret-redaction tests covering
+  the new endpoints.
+
+**Output (backend only — `apps/api/` and minimal `tests/` wiring)**
+- New `apps/api/src/settings/` module:
+  - `types.ts` — `ModelSettingsPayload`, `UsagePayload`,
+    `UsageEventSummary`, `ModelCapabilitiesPayload`,
+    `ModelProviderCapabilities`, `ModelCapabilityRow`. The Settings
+    payload never carries a plaintext secret — only
+    `hasApiKey: boolean` and a short non-reversible
+    `apiKeyFingerprint`.
+  - `crypto.ts` — AES-256-GCM secret encryption. Key resolution order:
+    `AIME_SECRET_ENC_KEY` (32-byte base64) → derived from
+    `INITIAL_ADMIN_PASSWORD` via scrypt with a public salt. Plaintext
+    is never logged, never persisted, never returned over the wire.
+  - `repository.ts` — `user_model_settings`, `usage_events`,
+    `usage_periods` SQLite tables. `apiKeyCiphertext` is the only
+    place the secret lives, and it is only readable by server code.
+    The repo preserves the existing ciphertext when PUT omits
+    `apiKey` so the Settings UI can rotate model/baseUrl without
+    forcing re-entry.
+  - `capabilities.ts` — static registry covering `openai-compatible`
+    (GPT-4o / GPT-4o-mini / GPT-4 Turbo / GPT-3.5 Turbo / o1 /
+    o1-mini / Claude 3.5 Sonnet / Claude 3 Opus) and `mock`. Vision
+    is only `verified` for entries I have checked against the
+    provider's published capability matrix; everything else is
+    `static`/`unknown` so the UI never assumes an unverified
+    capability.
+  - `routes.ts` — three Hono sub-apps. `PUT /api/settings/model`
+    rejects `mock` with a baseUrl/apiKey, rejects invalid baseUrl
+    (non-http URL), enforces ≥ 1 char model, and returns
+    `503 secret_store_unavailable` when an apiKey is supplied but no
+    secret-encryption handle can be derived. `GET /api/usage` never
+    fabricates an allowance — `allowance.source = "unknown"` and
+    `remaining.known = false` until an operator configures a period.
+    `GET /api/models/capabilities` returns the static matrix.
+- `apps/api/src/routes/api.ts` mounts the three new sub-apps under
+  `/api/settings`, `/api/usage`, `/api/models/capabilities`. The
+  identity-contract guard (`rejectClientUserIdHeader`) already
+  applies — settings routes cannot be spoofed via `x-user-id`.
+- `apps/api/src/server.ts` constructs `SettingsRepository` alongside
+  the existing repos.
+- `apps/api/tests/helpers.ts` exposes `settingsRepo` so the new specs
+  can inspect the persisted row directly.
+- `apps/api/tests/settings.test.ts` — 30 new tests covering:
+  - 401 unauth, 403 must_change_password on every new endpoint;
+  - admin route remains admin-only when hit with a normal user
+    cookie (the ELI-341 authorization bar);
+  - secret redaction: GET never echoes plaintext or ciphertext,
+    PUT stores ciphertext only, persisted SQLite row contains
+    ciphertext (not the plaintext), `503 secret_store_unavailable`
+    when the key handle is missing;
+  - rotation: omitting `apiKey` on PUT preserves the existing
+    ciphertext; empty-string `apiKey` clears it; `mock` rejects
+    baseUrl/apiKey; invalid baseUrl → 400;
+  - default payload when no row exists; documented
+    `{provider: "mock", model: "mvp-mock-model"}` shape;
+  - AES-GCM round-trip, fresh IV per encryption, tampering detected,
+    fingerprint format pinned, key resolution to `null` when no
+    source is configured;
+  - usage: rolling 30-day default + `unknown` allowance semantics;
+    configured period flows through; consumed is bounded by
+    `[period.start, period.end]` (no future-fabrication);
+    `null` allowanceTokens stays `unknown`; recent events surface
+    in descending order; `at <= period.end` is enforced at the SQL
+    layer (no client-side filter);
+  - capabilities: providers returned, vision `verified` only on
+    checked entries, `mock.configurable = false`, every entry has
+    a `visionSource`;
+  - x-user-id header is rejected on the new surface; disabled
+    accounts are auto-logged-out of settings + usage.
+
+**Validation**
+- `bun run typecheck` → 0 errors.
+- `bun test` → 84/84 pass, 380 expect() calls across 5 files (was
+  54/253; +30 new tests / +127 expect() calls). The 54 existing
+  tests continue to pass — no regression in the ELI-313/ELI-325
+  contracts.
+- Live smoke against `bun src/index.ts` on port 18735:
+  - bootstrap admin → login → change-password → cookie path
+    opens `/api/settings/model`, `/api/usage`,
+    `/api/models/capabilities`;
+  - `PUT /api/settings/model` with `apiKey: "sk-smoke-test-DO-NOT-LEAK-9876543210"`
+    returns `{hasApiKey: true, apiKeyFingerprint: "7a91…79a5"}` and
+    no plaintext;
+  - subsequent `GET` does not contain `smoke-test-DO-NOT-LEAK`
+    anywhere in the response (leak count: 0);
+  - `x-user-id: usr_forged` header on `/api/settings/model` returns
+    `400 x_user_id_header_not_allowed`;
+  - `/api/admin/users` still 200 with the admin cookie (admin
+    surface unchanged).
+- Secret scan on `apps/api/src`:
+  - 0 matches for `sk-*`, `Bearer …`, `Authorization: Bearer …`,
+    `anthropic|claude-key|sk-ant`, hardcoded `AIME_SECRET_ENC_KEY`,
+    or stored plaintext test secrets in source.
+
+**Human corrections**
+- Tightened `capabilities.ts` so vision is `verified` only on the
+  providers whose capability matrix I have actually read. Any
+  unverified entry stays `static: false` so the Settings UI never
+  silently enables image attachments against a model we have not
+  validated.
+- Aligned `consumed.tokens` with the period end at the SQL layer
+  (`WHERE at >= ? AND at <= ?`) rather than relying on the client to
+  filter. Recorded events that fall outside the current period remain
+  in the audit trail but are not summed into the live counter.
+- Capabilities route is gated on `mustChangePassword` so the
+  Settings UI cannot be exercised by a user who has not yet
+  completed the first-login password change. Documented inline.
+- Settings PUT that omits `apiKey` preserves the existing ciphertext
+  so the UI can rotate model/baseUrl without forcing the user to
+  re-enter the key. Empty-string `apiKey` is the explicit clear.
+
+**Residual risk / unresolved**
+- Live recording of usage events is plumbed (the
+  `SettingsRepository.recordUsage` API and the per-period sum
+  query) but not yet called from the Decision Review Agent. The
+  agent's existing LLM call already returns `usage: { input, output }`
+  through `providers/index.ts`; wiring that into
+  `recordUsage(reviewId=..., kind="llm.completion", ...)` per
+  `compose(...)` is a one-line follow-up in
+  `apps/api/src/agents/decision-review.ts`. Tracked for ELI-342 or
+  whichever issue owns the next LLM-integration slice.
+- The `mock` provider has no vision capability and is marked
+  non-configurable; image attachment against it stays disabled
+  through ELI-337 by virtue of this contract.
+
+**Branch / PR**
+- Branch: `agent/local-cc/7df9d7e6cccf` (already in place from
+  workspace bootstrap; the ELI-341 changes are the first commit on
+  this branch).
+- Head SHA to be recorded after `git commit` below.
+- Backend-only diff. No changes under `src/` (frontend shell),
+  `apps/web/`, `docker-compose.yml`, or `.env.example`. No Docker
+  deployment is performed from this branch.
+
+## ELI-340 submission skeleton — 2026-09-23
+
+The integrated submission skeleton adds a tracked-artifact manifest, deployment
+evidence template, license inventory, test notes, validation record, and a
+deterministic preflight/packaging path. It records fixture validation separately
+from credentialed provider validation and generates build metadata without
+committing runtime secrets or build output.

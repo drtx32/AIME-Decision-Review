@@ -31,6 +31,9 @@ export interface AdminCreateResponse {
   temporaryPassword: string;
 }
 
+export interface UserModelConfig { configured: boolean; provider: "openai-compatible"; baseUrl: string; model: string; keySuffix: string | null; verifiedAt: string | null; lastError: string | null; serverDefaultModel: string; }
+export interface UsageSummary { periodStart: string; inputTokens: number; outputTokens: number; totalTokens: number; model: string | null; provider: string | null; allowance: number | null; providerQuota: null; label: string; }
+
 export class ApiError extends Error {
   status: number;
   code?: string;
@@ -125,3 +128,12 @@ export const adminUsers = {
     );
   },
 };
+
+export const modelConfig = {
+  async get(): Promise<UserModelConfig> { return request<UserModelConfig>("/auth/model"); },
+  async save(input: { baseUrl: string; model: string; apiKey?: string; verifiedAt?: string | null }): Promise<UserModelConfig> { return request<UserModelConfig>("/auth/model", { method: "POST", body: JSON.stringify({ provider: "openai-compatible", ...input }) }); },
+  async test(input: { baseUrl?: string; model?: string; apiKey?: string }): Promise<{ ok: boolean; model?: string; verifiedAt?: string; error?: string }> { return request<{ ok: boolean; model?: string; verifiedAt?: string; error?: string }>("/auth/model/test", { method: "POST", body: JSON.stringify(input) }, [200, 502]); },
+  async reset(): Promise<UserModelConfig> { return request<UserModelConfig>("/auth/model", { method: "DELETE" }); },
+};
+
+export const usage = { async get(): Promise<UsageSummary> { return request<UsageSummary>("/auth/usage"); } };

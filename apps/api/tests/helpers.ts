@@ -48,11 +48,13 @@ export function makeTestConfig(overrides: Partial<AppConfig> = {}): AppConfig {
       baseUrl: null,
       apiKey: null,
       servers: ["a-share", "a-share-index", "fund", "futures", "options", "meta"],
+      toolMap: {},
     },
     ifind: {
       baseUrl: null,
       authorization: null,
       servers: ["ds", "enterprise", "law", "stock", "fund", "edb", "news", "bond", "global-stock", "index", "futures"],
+      toolMap: {},
     },
     ...overrides,
   } as AppConfig;
@@ -60,16 +62,18 @@ export function makeTestConfig(overrides: Partial<AppConfig> = {}): AppConfig {
 
 export function makeTestServer(): TestServer {
   const cfg = makeTestConfig();
-  const { app, deps, repo, userRepo } = buildServer(cfg);
+  const { app, deps, repo, userRepo, settingsRepo } = buildServer(cfg);
   return {
     app,
     deps,
     repo,
     userRepo,
+    settingsRepo,
     cfg,
     cleanup: () => {
       repo.close();
       userRepo.close();
+      settingsRepo.close();
       try {
         rmSync(cfg.sqlitePath, { force: true });
       } catch {
@@ -84,6 +88,7 @@ export interface TestServer {
   deps: ReturnType<typeof buildServer>["deps"];
   repo: ReturnType<typeof buildServer>["repo"];
   userRepo: ReturnType<typeof buildServer>["userRepo"];
+  settingsRepo: ReturnType<typeof buildServer>["settingsRepo"];
   cfg: AppConfig;
   cleanup: () => void;
 }

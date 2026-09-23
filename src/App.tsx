@@ -1,229 +1,141 @@
-import {useEffect, useState} from 'react';import {ArrowRight,Check,ChevronRight,LogOut,RotateCcw,ShieldCheck,Sparkles,UserCog,Users} from 'lucide-react';
-import {mock,type Input,type Result} from './api';
-import {auth,adminUsers,ApiError,type PublicUser} from './auth-api';
-type Screen='login'|'change-password'|'home'|'running'|'result'|'admin';
-const stages=['行情与市场环境','指数与行业基准','新闻与公告','时间对齐与事实检查','生成结构化复盘'];
-const blank:Input={symbol:'',market:'A股',side:'buy',executedAt:'2024-03-18T10:24',price:'',quantity:'',reason:'',notes:''};
-export default function App(){
-  const[s,setS]=useState<Screen>('login');
-  const[user,setUser]=useState<PublicUser|null>(null);
-  const[bootError,setBootError]=useState<string|null>(null);
-  // Existing review state — preserved from the pre-auth UI.
-  const[v,setV]=useState<Input>(blank);
-  const[r,setR]=useState<Result|null>(null);
-  const[p,setP]=useState(0);
-  useEffect(()=>{void bootstrap();},[]);
-  async function bootstrap(){
-    try{
-      const me=await auth.me();
-      if(!me){setS('login');return;}
-      setUser(me.user);
-      if(me.mustChangePassword){setS('change-password');}else{setS('home');}
-    }catch(e){
-      setBootError(e instanceof Error?e.message:'无法连接到后端');
-      setS('login');
-    }
-  }
-  async function handleLoginSuccess(payload:PublicUser,mustChange:boolean){
-    setUser(payload);
-    setS(mustChange?'change-password':'home');
-  }
-  async function handleLogout(){
-    try{await auth.logout();}catch{}
-    setUser(null);
-    setR(null);
-    setP(0);
-    setS('login');
-  }
-  async function handlePasswordChanged(payload:PublicUser){
-    setUser(payload);
-    setS('home');
-  }
-  if(s==='login')return <div className="app"><Header user={null} onLogout={handleLogout}/><main><LoginScreen bootError={bootError} onSuccess={handleLoginSuccess}/></main></div>;
-  if(s==='change-password'&&user)return <div className="app"><Header user={user} onLogout={handleLogout}/><main><ChangePasswordScreen username={user.username} mustChange onSuccess={handlePasswordChanged}/></main></div>;
-  if(s==='admin'&&user)return <div className="app"><Header user={user} onLogout={handleLogout}/><main><AdminScreen onBack={()=>setS('home')}/></main></div>;
-  if(s==='home'&&user)return <div className="app"><Header user={user} onLogout={handleLogout} onOpenAdmin={()=>setS('admin')}/><main><Home v={v} setV={setV} go={async e=>{
-    e.preventDefault();setS('running');
-    for(let i=1;i<=5;i++){await new Promise(x=>setTimeout(x,280));setP(i)}
-    const x=await mock.createReview(v);setR(await mock.result(x.id));setS('result');
-  }}/></main></div>;
-  if(s==='running'&&user)return <div className="app"><Header user={user} onLogout={handleLogout}/><main><Running p={p}/></main></div>;
-  if(s==='result'&&user&&r)return <div className="app"><Header user={user} onLogout={handleLogout} onOpenAdmin={()=>setS('admin')}/><main><Result r={r} reset={()=>{setS('home');setR(null);setP(0)}}/></main></div>;
-  return null;
+import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
+import { ArrowRight, BookOpen, Check, ChevronLeft, ChevronRight, CircleAlert, FileText, LogOut, Menu, Plus, Send, Settings, ShieldCheck, Sparkles, X } from 'lucide-react';
+import { reviewApi, resultView, type LearningMemory, type Result, type SessionDecision, type SessionMessage, type SessionSnapshot } from './api';
+import { adminUsers, ApiError, auth, modelConfig, usage, type PublicUser, type UserModelConfig, type UsageSummary } from './auth-api';
+
+type Phase = 'compose' | 'confirm' | 'running' | 'review';
+type PanelTab = 'decisions' | 'timeline' | 'evidence' | 'findings' | 'learning';
+const welcome: SessionMessage = { id: 'welcome', sessionId: '', userId: 'dev-user', role: 'assistant', content: '从一次投资决策开始', createdAt: new Date().toISOString() };
+const starterPrompts = [
+  '我最近做了几笔交易，帮我一起复盘这些决策。',
+  '帮我复盘一笔交易，把当时能知道的信息和事后结果分开看。',
+  '看看我过去的复盘里，有没有重复出现的决策偏差或经验。',
+] as const;
+const allowedAttachmentExtensions = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'docx', 'xlsx', 'csv', 'pdf']);
+const sessionStorageKey = (userId: string) => `aime:current-session:${userId}`;
+
+export default function App() {
+  const [phase, setPhase] = useState<Phase>('compose');
+  const [sessionId, setSessionId] = useState('');
+  const [sessions, setSessions] = useState<Array<{ id: string; title: string; status: string; updatedAt: string }>>([]);
+  const [snapshot, setSnapshot] = useState<SessionSnapshot | null>(null);
+  const [messages, setMessages] = useState<SessionMessage[]>([welcome]);
+  const [decisions, setDecisions] = useState<SessionDecision[]>([]);
+  const [memories, setMemories] = useState<LearningMemory[]>([]);
+  const [draft, setDraft] = useState('');
+  const [error, setError] = useState('');
+  const [tab, setTab] = useState<PanelTab>('decisions');
+  const [mobileSidebar, setMobileSidebar] = useState(false);
+  const [mobilePanel, setMobilePanel] = useState(false);
+  const [panelCollapsed, setPanelCollapsed] = useState(false);
+  const [user, setUser] = useState<PublicUser | null>(null);
+  const [authScreen, setAuthScreen] = useState<'loading' | 'login' | 'change-password' | 'home'>('loading');
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [bootError, setBootError] = useState<string | null>(null);
+  const [attachments, setAttachments] = useState<Array<{ id: string; name: string }>>([]);
+  const [editingMessageId, setEditingMessageId] = useState<string | null>(null);
+  const [hiddenMessageIds, setHiddenMessageIds] = useState<Set<string>>(new Set());
+  const [copyNotice, setCopyNotice] = useState<string | null>(null);
+  const activeRequest = useRef<AbortController | null>(null);
+  const attachmentPicker = useRef<HTMLInputElement | null>(null);
+
+  const applySnapshot = (next: SessionSnapshot) => { setSnapshot(next); setMessages(next.messages); setDecisions(next.decisions); setMemories(next.memories); };
+  useEffect(() => { void (async () => { try { const me = await auth.me(); if (!me) { setAuthScreen('login'); return; } setUser(me.user); setAuthScreen(me.mustChangePassword ? 'change-password' : 'home'); } catch (e) { setBootError(e instanceof Error ? e.message : '无法连接到后端'); setAuthScreen('login'); } })(); }, []);
+  useEffect(() => {
+    if (authScreen !== 'home' || !user) return;
+    void (async () => {
+      try {
+        const listed = await reviewApi.listSessions();
+        setSessions(listed);
+        const savedId = window.localStorage.getItem(sessionStorageKey(user.id));
+        if (savedId) {
+          const saved = await reviewApi.getSession(savedId);
+          setSessionId(savedId);
+          applySnapshot(saved);
+          setPhase(saved.results.length ? 'review' : saved.decisions.length ? 'confirm' : 'compose');
+        }
+      } catch {
+        window.localStorage.removeItem(sessionStorageKey(user.id));
+      }
+    })();
+  }, [authScreen, user]);
+
+  const logout = async () => { try { await auth.logout(); } catch { /* local logout still clears the workspace */ } setUser(null); setAuthScreen('login'); newReview(); };
+
+  const newReview = () => { if (user) window.localStorage.removeItem(sessionStorageKey(user.id)); setSessionId(''); setSnapshot(null); setMessages([welcome]); setDecisions([]); setMemories([]); setDraft(''); setAttachments([]); setEditingMessageId(null); setError(''); setPhase('compose'); setTab('decisions'); setMobileSidebar(false); };
+  const openSession = async (id: string) => { try { const next = await reviewApi.getSession(id); if (user) window.localStorage.setItem(sessionStorageKey(user.id), id); setSessionId(id); applySnapshot(next); setPhase(next.results.length ? 'review' : next.decisions.length ? 'confirm' : 'compose'); setMobileSidebar(false); } catch (e) { setError(e instanceof Error ? e.message : '无法恢复会话。'); } };
+
+  const copyMessage = async (message: SessionMessage) => { try { await navigator.clipboard.writeText(message.content); setCopyNotice(message.id); window.setTimeout(() => setCopyNotice(null), 1400); } catch { setCopyNotice(null); } };
+  const editMessage = (message: SessionMessage) => { setEditingMessageId(message.id); setDraft(message.content); };
+  const deleteMessage = async (message: SessionMessage) => { if (message.role === 'user' && sessionId && (messages.some((item) => item.createdAt > message.createdAt) || results.length)) { if (!window.confirm('删除这条消息也会隐藏由它产生的后续内容，确定继续吗？')) return; } if (message.role === 'user' && sessionId) { await reviewApi.deleteMessage(sessionId, message.id); const next = await reviewApi.getSession(sessionId); applySnapshot(next); } else setHiddenMessageIds((items) => new Set(items).add(message.id)); };
+  const retryMessage = (message: SessionMessage) => { const previous = [...messages].reverse().find((item) => item.role === 'user'); if (previous) { setDraft(previous.content); setCopyNotice(message.id); window.setTimeout(() => setCopyNotice(null), 1400); } };
+  const stopGeneration = async () => { activeRequest.current?.abort(); activeRequest.current = null; if (sessionId) await reviewApi.cancel(sessionId).catch(() => undefined); setPhase('confirm'); setError('本次生成已停止；你可以编辑原消息后重试。'); };
+  const submit = async (event: React.FormEvent) => {
+    event.preventDefault(); const content = draft.trim(); if (!content || phase === 'running') return; setError('');
+    try {
+      if (editingMessageId && sessionId) { await reviewApi.updateMessage(sessionId, editingMessageId, content); const next = await reviewApi.getSession(sessionId); applySnapshot(next); setEditingMessageId(null); setDraft(''); return; }
+      if (!sessionId) { const created = await reviewApi.createSession(content); if (user) window.localStorage.setItem(sessionStorageKey(user.id), created.sessionId); setSessionId(created.sessionId); setMessages(created.messages); setDecisions(created.decisions); setMemories(created.memories); setPhase('confirm'); setDraft(''); setSessions((items) => [{ id: created.sessionId, title: created.decisions.length > 1 ? `${created.decisions.length} 笔投资决策` : `${created.decisions[0]?.symbol ?? '新'} 决策复盘`, status: 'draft', updatedAt: new Date().toISOString() }, ...items.filter((item) => item.id !== created.sessionId)]); void reviewApi.listSessions().then(setSessions).catch(() => undefined); return; }
+      const controller = new AbortController(); activeRequest.current = controller; const message = await reviewApi.sendMessage(sessionId, content, controller.signal); setMessages((items) => [...items, message]); setDraft('');
+    } catch (e) { if ((e as Error).name !== 'AbortError') { const text = e instanceof Error ? e.message : '消息发送失败。'; setError(text); if (sessionId) setMessages((items) => [...items, { id: `error-${Date.now()}`, sessionId, userId: user?.id ?? '', role: 'error', content: text, createdAt: new Date().toISOString() }]); } }
+    finally { activeRequest.current = null; }
+  };
+
+  const confirm = async () => {
+    if (!sessionId || !decisions.length) return; setError(''); setPhase('running');
+    try { await reviewApi.confirm(sessionId); const next = await reviewApi.waitForSession(sessionId, applySnapshot); applySnapshot(next); setPhase('review'); setSessions(await reviewApi.listSessions()); setTab('evidence'); }
+    catch (e) { setPhase('confirm'); setError(e instanceof Error ? e.message : '复盘服务暂时不可用。'); }
+  };
+
+  if (authScreen === 'loading') return <div className="authShell"><div className="authCard"><span className="eyebrow">AIME / AUTHENTICATING</span><h2>正在验证工作区…</h2></div></div>;
+  if (authScreen === 'login') return <LoginScreen bootError={bootError} onSuccess={(next, mustChange) => { setUser(next); setAuthScreen(mustChange ? 'change-password' : 'home'); }} />;
+  if (authScreen === 'change-password' && user) return <ChangePasswordScreen username={user.username} onSuccess={(next) => { setUser(next); setAuthScreen('home'); }} />;
+  const results = snapshot ? resultView(snapshot) : [];
+  return <div id="app" className={panelCollapsed ? 'panel-collapsed' : ''}>
+    <button className="mobile-toggle" onClick={() => setMobileSidebar(!mobileSidebar)}><Menu size={18}/></button>
+    <aside className={mobileSidebar ? 'sidebar open' : 'sidebar'}>
+      <div className="brand"><span className="brand-dot">A</span><span>AIME<small>Decision Review</small></span></div>
+      <nav className="nav-group"><span className="nav-eyebrow">NEW REVIEW</span><button className={!sessionId ? 'nav-item active' : 'nav-item'} onClick={newReview}><Plus size={15}/> 新建复盘</button></nav>
+      <nav className="nav-group"><span className="nav-eyebrow">REVIEW SESSIONS</span><div className="session-nav">{sessions.length ? sessions.map((item) => <button className={item.id === sessionId ? 'nav-item active' : 'nav-item'} key={item.id} onClick={() => openSession(item.id)}><span className="session-dot"/><span>{item.title}<small>{item.status === 'completed' ? '已完成' : '进行中'}</small></span></button>) : <p className="nav-empty">还没有历史会话</p>}</div></nav>
+      <nav className="nav-group"><span className="nav-eyebrow">LEARNING</span><button className={tab === 'learning' ? 'nav-item active' : 'nav-item'} onClick={() => { setTab('learning'); setMobilePanel(true); }}><BookOpen size={15}/> Patterns & Learning</button></nav>
+      <div className="side-note"><b>{user?.username}</b><span>{user?.role === 'admin' ? '管理员 · 数据私有' : '数据私有 · 仅本人可见'}</span><small>Session context 按认证 user_id 隔离</small></div>
+      <div className="account-actions"><button data-testid="settings-open" onClick={() => setSettingsOpen(true)}><Settings size={14}/> 设置</button><button onClick={() => void logout()}><LogOut size={14}/> 退出</button></div>
+    </aside>
+    <main className="main-shell"><div className="conversation-top"><div><span className="eyebrow">AIME / REVIEW SESSION</span><h1>{snapshot?.session.title || '从一次决策开始'}</h1></div><div className="private-badge"><span/> PRIVATE WORKSPACE</div></div>
+      <section className={`conversation-stream ${!sessionId && messages.length === 1 && messages[0].id === 'welcome' ? 'empty-state' : ''}`}>{messages.filter((message) => !hiddenMessageIds.has(message.id)).map((message, index) => <Message key={message.id || index} message={message} copyNotice={copyNotice === message.id} onCopy={copyMessage} onEdit={message.role === 'user' ? editMessage : undefined} onDelete={deleteMessage} onRetry={message.role === 'assistant' ? retryMessage : undefined}/>)}{!sessionId && messages.length === 1 && messages[0].id === 'welcome' && <StarterPrompts onSelect={setDraft}/>} {phase === 'confirm' && decisions.length > 0 && <DecisionConfirm decisions={decisions} onConfirm={confirm} onChange={(id, patch) => { setDecisions((items) => items.map((item) => item.id === id ? { ...item, ...patch } : item)); if (sessionId) void reviewApi.updateDecision(sessionId, id, patch); }}/>} {phase === 'running' && <div className="status-message"><span className="pulse"/><div><b>LIVE REVIEW STATUS</b><p>正在重建每笔决策各自的 T0 前信息环境…</p></div></div>}{phase === 'review' && <ReviewStatus status={snapshot?.session.status}/>}</section>
+      <div className="composer-dock"><div className="composer-notice-stack">{phase === 'running' && <button type="button" className="stop-generating" onClick={() => void stopGeneration()}>停止生成</button>}{error && <div className="composer-notice" role="status"><CircleAlert size={14}/><span>{error}</span><button type="button" aria-label="关闭提示" onClick={() => setError('')}><X size={13}/></button></div>}{attachments.length > 0 && <div className="attachment-chips">{attachments.map((attachment) => <span key={attachment.id}>{attachment.name}<button type="button" aria-label={`移除 ${attachment.name}`} onClick={() => setAttachments((items) => items.filter((item) => item.id !== attachment.id))}>×</button></span>)}</div>}{editingMessageId && <button type="button" className="cancel-edit" onClick={() => { setEditingMessageId(null); setDraft(''); }}>取消编辑</button>}</div><form className="composer" onSubmit={submit}><div className="composer-input-row"><button type="button" className="composer-add" aria-label="添加附件" onClick={() => attachmentPicker.current?.click()}>+</button><input ref={attachmentPicker} className="attachment-picker" type="file" multiple accept=".png,.jpg,.jpeg,.webp,.gif,.docx,.xlsx,.csv,.pdf" onChange={(event) => { const files = Array.from(event.target.files ?? []); const accepted = files.filter((file) => allowedAttachmentExtensions.has(file.name.split('.').pop()?.toLowerCase() ?? '')); if (accepted.length !== files.length) setError('仅支持 PNG/JPG/WEBP/GIF、DOCX、XLSX、CSV 和 PDF 附件。'); setAttachments((items) => [...items, ...accepted.map((file) => ({ id: `${file.name}-${file.lastModified}`, name: file.name }))]); event.currentTarget.value = ''; }}/><textarea value={draft} onChange={(e) => setDraft(e.target.value)} disabled={phase === 'running'} placeholder={phase === 'review' ? '继续追问这次复盘…' : '描述一笔或多笔投资决策…'}/><button className="composer-send" type="submit" aria-label="发送" disabled={phase === 'running' || !draft.trim()}><Send size={15}/></button></div></form></div>
+    </main>
+    <aside className={mobilePanel ? 'context-panel open' : 'context-panel'}><div className="context-head"><span><FileText size={14}/> SESSION CONTEXT</span><div className="context-actions"><button className="collapse-panel" aria-label="收起右侧 Context 面板" onClick={() => setPanelCollapsed(true)}><ChevronRight size={13}/> 收起</button><button className="panel-close" onClick={() => setMobilePanel(false)}><X size={15}/></button></div></div><div className="context-tabs">{(['decisions','timeline','evidence','findings','learning'] as PanelTab[]).map((item) => <button className={tab === item ? 'active' : ''} key={item} onClick={() => setTab(item)}>{item}</button>)}</div><ContextPanel tab={tab} decisions={decisions} messages={messages} memories={memories} results={results}/></aside>
+    <button className="context-rail" type="button" aria-label="展开右侧 Context 面板" onClick={() => setPanelCollapsed(false)}><ChevronLeft size={15}/><span>Context</span></button>
+    {user && settingsOpen && createPortal(<SettingsModalV2 user={user} onClose={() => setSettingsOpen(false)} onUserUpdated={setUser}/>, document.body)}
+  </div>;
 }
-function Header({user,onLogout,onOpenAdmin}:{user:PublicUser|null;onLogout:()=>void;onOpenAdmin?:()=>void}){
-  return <header><b><i>A</i>AIME <small>DECISION REVIEW</small></b>
-    <div className="headerRight">
-      {user&&user.role==='admin'&&onOpenAdmin&&<button className="ghost" onClick={onOpenAdmin}><UserCog size={14}/>用户管理</button>}
-      {user?<span className="user"><b>● {user.username}</b>　{user.role==='admin'?'管理员':'用户'}</span>:null}
-      {user?<button className="ghost" onClick={onLogout}><LogOut size={14}/>退出</button>:null}
-    </div>
-  </header>;
+
+function Message({ message, copyNotice, onCopy, onEdit, onDelete, onRetry }: { message: SessionMessage; copyNotice: boolean; onCopy: (message: SessionMessage) => void; onEdit?: (message: SessionMessage) => void; onDelete: (message: SessionMessage) => void; onRetry?: (message: SessionMessage) => void }) { const status = message.role === 'status' || message.role === 'error'; const isWelcome = message.id === 'welcome'; return <div className={`message-row ${message.role} ${isWelcome ? 'welcome-message' : ''}`}><div className="message-avatar">{message.role === 'assistant' ? <Sparkles size={14}/> : message.role === 'status' ? <span className="status-mark"/> : message.role === 'error' ? <CircleAlert size={14}/> : '景'}</div><div className="message-bubble">{isWelcome ? <><h2>{message.content}</h2><p>用自然语言描述历史决策，AIME 会帮你还原当时的信息环境。</p></> : <><span>{message.role === 'assistant' ? 'AIME REVIEW AGENT' : message.role === 'status' ? 'REVIEW STATUS' : message.role === 'error' ? 'TURN ERROR' : 'YOU'}</span><p className={status ? 'status-copy' : ''}>{message.content}</p>{message.role !== 'error' && <div className="message-actions"><button type="button" aria-label="复制消息" onClick={() => onCopy(message)}>{copyNotice ? '已复制' : '复制'}</button>{onEdit && <button type="button" aria-label="编辑消息" onClick={() => onEdit(message)}>编辑</button>}{onRetry && <button type="button" aria-label="重试消息" onClick={() => onRetry(message)}>重试</button>}<button type="button" aria-label="删除消息" onClick={() => void onDelete(message)}>删除</button></div>}</>}</div></div>; }
+function StarterPrompts({ onSelect }: { onSelect: (prompt: string) => void }) { return <div className="starter-prompts" data-testid="starter-prompts"><span className="eyebrow">START WITH A REVIEW</span><div>{starterPrompts.map((prompt, index) => <button type="button" key={prompt} data-testid={`starter-prompt-${index + 1}`} onClick={() => onSelect(prompt)}>{prompt}<ArrowRight size={14}/></button>)}</div></div>; }
+function ReviewStatus({ status }: { status?: string }) { const partial = status === 'partial'; const failed = status === 'failed'; return <div className={`status-message done ${partial ? 'partial' : ''} ${failed ? 'failed' : ''}`}><Check size={15}/><div><b>{failed ? 'REVIEW DATA UNAVAILABLE' : partial ? 'REVIEW PARTIAL' : 'REVIEW COMPLETE'}</b><p>{failed ? '数据源失败，未生成可依赖的完整结论。请检查 Timeline 后重试。' : partial ? '部分证据源不可用，当前结论仅供补充验证。' : '证据、归因与学习已写回当前 session。'}</p></div></div>; }
+function DecisionConfirm({ decisions, onConfirm, onChange }: { decisions: SessionDecision[]; onConfirm: () => void; onChange: (id: string, patch: Partial<SessionDecision>) => void }) { return <div className="decision-confirm" data-testid="decision-confirm"><div className="confirm-heading"><div><span className="eyebrow">EXTRACTED DECISIONS</span><strong>{decisions.length} 笔，请确认或修改</strong></div><button type="button" onClick={onConfirm}><Sparkles size={14}/> 确认并复盘 <ChevronRight size={14}/></button></div><div className="decision-cards">{decisions.map((decision, i) => <div className="decision-card" key={decision.id}><span className="decision-index">0{i + 1}</span><div><input aria-label={`decision-${i + 1}-symbol`} value={decision.symbol} onChange={(e) => onChange(decision.id, { symbol: e.target.value })}/><select value={decision.action} onChange={(e) => onChange(decision.id, { action: e.target.value as 'buy' | 'sell' })}><option value="buy">买入</option><option value="sell">卖出</option></select><small>T0 · <input aria-label={`decision-${i + 1}-time`} type="datetime-local" value={decision.executedAt ? decision.executedAt.slice(0, 16) : ''} onChange={(e) => onChange(decision.id, { executedAt: e.target.value ? new Date(e.target.value).toISOString() : null, timePrecision: e.target.value ? 'exact' : 'unknown' })}/>{decision.timePrecision !== 'exact' && <em>待确认</em>}</small><input aria-label={`decision-${i + 1}-quantity`} placeholder={decision.quantityText || '数量/仓位'} value={decision.quantityText || ''} onChange={(e) => onChange(decision.id, { quantityText: e.target.value })}/></div></div>)}</div></div>; }
+function ContextPanel({ tab, decisions, messages, memories, results }: { tab: PanelTab; decisions: SessionDecision[]; messages: SessionMessage[]; memories: LearningMemory[]; results: Result[] }) { if (tab === 'decisions') return <div className="context-content"><span className="eyebrow">DECISIONS</span>{decisions.length ? decisions.map((d, i) => <div className="context-decision" key={d.id}><b>0{i + 1} · {d.symbol}</b><span>{d.action === 'buy' ? '买入' : '卖出'} · T0 {d.executedAt ? d.executedAt.slice(0, 16).replace('T', ' ') : '待确认'}</span></div>) : <Empty text="自然语言识别出的 decisions 会出现在这里。"/>}</div>; if (tab === 'timeline') return <div className="context-content"><span className="eyebrow">TIMELINE</span>{messages.filter((m) => m.role === 'status').map((m) => <div className="timeline-item" key={m.id}><i/>{m.content}</div>)}<p className="muted">每个 review run 的状态由服务端事件写入 session。</p></div>; if (tab === 'learning') return <div className="context-content"><span className="eyebrow">ACTIVE LEARNING</span>{memories.length ? memories.map((m) => <div className="memory" key={m.id}><BookOpen size={14}/><span>{m.text}<small>{m.kind} · strength {m.strength}</small></span></div>) : <Empty text="完成复盘后，长期学习会沉淀在这里。"/>}{results.map((r) => (r.raw.lessons ?? []).map((lesson: string) => <div className="memory" key={`${r.decisionId}-${lesson}`}><BookOpen size={14}/><span>{lesson}<small>{r.input.symbol} · {r.status}</small></span></div>))}</div>; if (tab === 'evidence') return results.length ? <div className="context-content">{results.map((result) => <Report key={result.decisionId} result={result}/>)}</div> : <Empty text="复盘完成后，Ex-Ante / Ex-Post 证据会在这里展开。"/>; return results.length ? <div className="context-content"><span className="eyebrow">FINDINGS · ALL DECISIONS</span>{results.map((result) => <FindingBlock key={result.decisionId} result={result}/>)}</div> : <Empty text="归因与下一次 Checklist 将出现在这里。"/>; }
+function Finding({ label, text }: { label: string; text: string }) { return <div className="finding"><b>{label}</b><span>{text}</span></div>; }
+function FindingBlock({ result }: { result: Result }) { const raw = result.raw; const degraded = ['partial', 'failed', 'unavailable'].includes(result.status) || !raw.decisionQuality?.rating; return <section className="decision-report"><span className="eyebrow">{result.input.symbol} · {result.status}</span>{degraded && <Finding label="PARTIAL" text="数据或结构化判断不完整，不能生成正常 COMPLETE 结论。"/>}{(raw.attribution ?? []).map((item: any, i: number) => <Finding key={`${result.decisionId}-${i}`} label={String(item.status ?? 'UNCERTAIN').toUpperCase()} text={`${item.claim}${item.evidenceIds?.length ? ` · 引用 ${item.evidenceIds.join(', ')}` : ' · 缺少已验证证据引用'}`}/>) }{(raw.uncertainties ?? []).map((item: string) => <Finding key={item} label="UNCERTAIN" text={item}/>)}{(raw.nextChecklist ?? []).map((item: string) => <Finding key={item} label="NEXT" text={item}/>)}</section>; }
+function Empty({ text }: { text: string }) { return <p className="panel-empty">{text}</p>; }
+function Report({ result }: { result: Result }) { const complete = result.status === 'completed'; return <div className="report"><span className={complete ? 'complete' : 'finding'}>{complete ? <><Check size={12}/> REVIEW RESULT</> : `REVIEW ${result.status.toUpperCase()} · 不可视为 COMPLETE`}</span><h2>{result.input.symbol}<small> · {result.input.side === 'buy' ? '买入' : '卖出'}</small></h2><p className="report-summary">{result.summary}</p><section className="evidence-mini ante"><b>EX-ANTE · 当时已知</b>{result.ante.map((item, i) => <p key={`${result.decisionId}-ante-${i}`}>{item}</p>)}</section><section className="evidence-mini post"><b>EX-POST · 事后信息</b>{result.post.map((item, i) => <p key={`${result.decisionId}-post-${i}`}>{item}</p>)}</section>{(result.raw.citations ?? []).length > 0 && <p className="muted">引用：{result.raw.citations.map((c: any) => c.evidenceId).join('、')}</p>}</div>; }
+
+function LoginScreen({ bootError, onSuccess }: { bootError: string | null; onSuccess: (user: PublicUser, mustChange: boolean) => void }) { const [username, setUsername] = useState('admin'); const [password, setPassword] = useState(''); const [error, setError] = useState(bootError); const [busy, setBusy] = useState(false); const submit = async (e: React.FormEvent) => { e.preventDefault(); setBusy(true); setError(null); try { const result = await auth.login(username.trim(), password); onSuccess(result.user, result.mustChangePassword); } catch (e) { setError(e instanceof ApiError && e.status === 401 ? '用户名或密码错误' : '登录失败，请重试'); } finally { setBusy(false); } }; return <div className="authShell"><form className="authCard" onSubmit={submit}><span className="eyebrow">AIME / PRIVATE WORKSPACE</span><h2>登录</h2><label>用户名<input value={username} onChange={(e) => setUsername(e.target.value)} required autoFocus /></label><label>密码<input type="password" value={password} onChange={(e) => setPassword(e.target.value)} required /></label>{error && <div className="authError">{error}</div>}<button className="authPrimary" disabled={busy}>{busy ? '登录中…' : '登录'} <ArrowRight size={15}/></button><small><ShieldCheck size={13}/> 使用服务器下发的账号，不存在公开注册入口。</small></form></div>; }
+function ChangePasswordScreen({ username, onSuccess }: { username: string; onSuccess: (user: PublicUser) => void }) { const [current, setCurrent] = useState(''); const [next, setNext] = useState(''); const [confirm, setConfirm] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const submit = async (e: React.FormEvent) => { e.preventDefault(); if (next.length < 8 || next !== confirm) { setError(next.length < 8 ? '新密码至少 8 位' : '两次输入的新密码不一致'); return; } setBusy(true); setError(''); try { const result = await auth.changePassword(current, next); onSuccess(result.user); } catch { setError('当前密码错误或修改失败'); } finally { setBusy(false); } }; return <div className="authShell"><form className="authCard" onSubmit={submit}><span className="eyebrow">STEP 00 / SECURITY</span><h2>首次登录需修改密码</h2><p>账号 <b>{username}</b> 正在使用初始密码，请先设置新密码。</p><label>当前密码<input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} required /></label><label>新密码（至少 8 位）<input type="password" value={next} onChange={(e) => setNext(e.target.value)} required minLength={8} /></label><label>再次输入新密码<input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required minLength={8} /></label>{error && <div className="authError">{error}</div>}<button className="authPrimary" disabled={busy}>{busy ? '提交中…' : '提交'} <ArrowRight size={15}/></button></form></div>; }
+function SettingsModal({ user, onClose, onUserUpdated }: { user: PublicUser; onClose: () => void; onUserUpdated: (user: PublicUser) => void }) { const [tab, setTab] = useState<'password' | 'users'>('password'); const [current, setCurrent] = useState(''); const [next, setNext] = useState(''); const [confirm, setConfirm] = useState(''); const [message, setMessage] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false); const [users, setUsers] = useState<PublicUser[]>([]); const [newName, setNewName] = useState(''); const [temporary, setTemporary] = useState<{ username: string; password: string } | null>(null); const [userError, setUserError] = useState(''); const [busyUser, setBusyUser] = useState<string | null>(null); const refreshUsers = async () => { try { setUsers((await adminUsers.list()).users); setUserError(''); } catch { setUserError('无法加载用户列表'); } }; useEffect(() => { if (user.role === 'admin' && tab === 'users') void refreshUsers(); }, [tab, user.role]); const changePassword = async (event: React.FormEvent) => { event.preventDefault(); setMessage(''); setError(''); if (next.length < 8) { setError('新密码至少 8 位'); return; } if (next !== confirm) { setError('两次输入的新密码不一致'); return; } setBusy(true); try { const result = await auth.changePassword(current, next); onUserUpdated(result.user); setCurrent(''); setNext(''); setConfirm(''); setMessage('密码已更新，其他登录会话已退出。'); } catch (e) { setError(e instanceof ApiError && e.status === 401 ? '当前密码错误' : '修改密码失败，请重试'); } finally { setBusy(false); } }; const createUser = async (event: React.FormEvent) => { event.preventDefault(); setUserError(''); setTemporary(null); try { const result = await adminUsers.create(newName.trim()); setTemporary({ username: result.user.username, password: result.temporaryPassword }); setNewName(''); await refreshUsers(); } catch { setUserError('创建用户失败，请检查用户名'); } }; const userAction = async (target: PublicUser, action: 'reset' | 'toggle') => { setBusyUser(target.id); setUserError(''); setTemporary(null); try { if (action === 'reset') { const result = await adminUsers.resetPassword(target.id); setTemporary({ username: result.user.username, password: result.temporaryPassword }); } else if (target.enabled) await adminUsers.disable(target.id); else await adminUsers.enable(target.id); await refreshUsers(); } catch (e) { setUserError(e instanceof ApiError && e.code === 'cannot_disable_self' ? '不能停用自己的账号' : e instanceof ApiError && e.code === 'cannot_disable_last_admin' ? '不能停用最后一个管理员' : '操作失败，请重试'); } finally { setBusyUser(null); } }; return <div className="settings-overlay" role="dialog" aria-modal="true" aria-label="设置" data-testid="settings-dialog" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="settings-sheet"><header><div><span className="eyebrow">AIME / SETTINGS</span><h2>设置</h2><p>{user.username} · {user.role === 'admin' ? '管理员' : '普通用户'}</p></div><button aria-label="关闭设置" onClick={onClose}><X size={17}/></button></header><nav className="settings-tabs"><button className={tab === 'password' ? 'active' : ''} onClick={() => setTab('password')}>修改密码</button>{user.role === 'admin' && <button className={tab === 'users' ? 'active' : ''} onClick={() => setTab('users')} data-testid="settings-users-tab">用户管理</button>}</nav>{tab === 'password' ? <form className="settings-form" onSubmit={changePassword} data-testid="password-form"><p className="muted">随时更新当前账号密码。新密码至少 8 位。</p><label>当前密码<input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} required autoComplete="current-password" /></label><label>新密码<input type="password" value={next} onChange={(e) => setNext(e.target.value)} required minLength={8} autoComplete="new-password" /></label><label>确认新密码<input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required minLength={8} autoComplete="new-password" /></label>{message && <div className="authSuccess" role="status">{message}</div>}{error && <div className="authError" role="alert">{error}</div>}<button className="authPrimary" disabled={busy}>{busy ? '保存中…' : '保存密码'}</button></form> : <section className="settings-users"><form onSubmit={createUser}><label>新用户名<input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="例如 zhangsan" required /></label><button className="authPrimary">创建用户</button></form>{temporary && <div className="tempCard"><b>初始密码（仅显示一次）</b><code>{temporary.username} · {temporary.password}</code></div>}{userError && <div className="authError" role="alert">{userError}</div>}<div className="adminUsers">{users.map((target) => <div key={target.id}><span><b>{target.username}</b><small>{target.role} · {target.enabled ? '启用' : '停用'}</small></span><span className="user-actions"><button disabled={busyUser === target.id} onClick={() => void userAction(target, 'reset')}>重置密码</button><button disabled={busyUser === target.id} onClick={() => void userAction(target, 'toggle')}>{target.enabled ? '停用' : '启用'}</button></span></div>)}</div></section>}</section></div>; }
+
+function SettingsModalV2({ user, onClose, onUserUpdated }: { user: PublicUser; onClose: () => void; onUserUpdated: (user: PublicUser) => void }) {
+  const [tab, setTab] = useState<'account' | 'model' | 'usage' | 'users'>('account');
+  const [current, setCurrent] = useState(''); const [next, setNext] = useState(''); const [confirm, setConfirm] = useState(''); const [message, setMessage] = useState(''); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
+  const [model, setModel] = useState<UserModelConfig | null>(null); const [baseUrl, setBaseUrl] = useState(''); const [modelName, setModelName] = useState(''); const [apiKey, setApiKey] = useState(''); const [modelMessage, setModelMessage] = useState(''); const [modelError, setModelError] = useState(''); const [modelBusy, setModelBusy] = useState(false); const [summary, setSummary] = useState<UsageSummary | null>(null);
+  const [users, setUsers] = useState<PublicUser[]>([]); const [newName, setNewName] = useState(''); const [temporary, setTemporary] = useState<{ username: string; password: string } | null>(null); const [userError, setUserError] = useState(''); const [busyUser, setBusyUser] = useState<string | null>(null);
+  useEffect(() => { if (tab === 'model') void modelConfig.get().then((item) => { setModel(item); setBaseUrl(item.baseUrl); setModelName(item.model); }).catch(() => setModelError('无法加载模型配置')); if (tab === 'usage') void usage.get().then(setSummary).catch(() => undefined); if (tab === 'users' && user.role === 'admin') void adminUsers.list().then((r) => setUsers(r.users)).catch(() => setUserError('无法加载用户列表')); }, [tab, user.role]);
+  const changePassword = async (event: React.FormEvent) => { event.preventDefault(); setMessage(''); setError(''); if (next.length < 8) return setError('新密码至少 8 位'); if (next !== confirm) return setError('两次输入的新密码不一致'); setBusy(true); try { const result = await auth.changePassword(current, next); onUserUpdated(result.user); setCurrent(''); setNext(''); setConfirm(''); setMessage('密码已更新，其他登录会话已退出。'); } catch (e) { setError(e instanceof ApiError && e.status === 401 ? '当前密码错误' : '修改密码失败，请重试'); } finally { setBusy(false); } };
+  const saveModel = async (event: React.FormEvent) => { event.preventDefault(); setModelBusy(true); setModelError(''); setModelMessage(''); try { const saved = await modelConfig.save({ baseUrl, model: modelName, apiKey: apiKey || undefined, verifiedAt: model?.verifiedAt }); setModel(saved); setApiKey(''); setModelMessage('已保存，API key 仅保存在服务器。'); } catch { setModelError('保存失败，请检查配置'); } finally { setModelBusy(false); } };
+  const testModel = async () => { setModelBusy(true); setModelError(''); setModelMessage(''); try { const result = await modelConfig.test({ baseUrl, model: modelName, apiKey: apiKey || undefined }); if (!result.ok) setModelError(result.error || '连接失败'); else setModelMessage(`连接成功 · ${result.verifiedAt || ''}`); } catch { setModelError('连接失败'); } finally { setModelBusy(false); } };
+  const resetModel = async () => { const reset = await modelConfig.reset(); setModel(reset); setBaseUrl(''); setModelName(reset.model); setApiKey(''); setModelMessage('已恢复服务器默认配置。'); };
+  const userAction = async (target: PublicUser, action: 'reset' | 'toggle') => { setBusyUser(target.id); setTemporary(null); try { if (action === 'reset') { const r = await adminUsers.resetPassword(target.id); setTemporary({ username: r.user.username, password: r.temporaryPassword }); } else if (target.enabled) await adminUsers.disable(target.id); else await adminUsers.enable(target.id); setUsers((await adminUsers.list()).users); } catch (e) { setUserError(e instanceof ApiError && e.code === 'cannot_disable_self' ? '不能停用自己的账号' : e instanceof ApiError && e.code === 'cannot_disable_last_admin' ? '不能停用最后一个管理员' : '操作失败'); } finally { setBusyUser(null); } };
+  const createUser = async (event: React.FormEvent) => { event.preventDefault(); try { const r = await adminUsers.create(newName.trim()); setTemporary({ username: r.user.username, password: r.temporaryPassword }); setNewName(''); setUsers((await adminUsers.list()).users); } catch { setUserError('创建用户失败'); } };
+  return <div className="settings-overlay" role="dialog" aria-modal="true" aria-label="设置" data-testid="settings-dialog" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className="settings-sheet"><header><div><span className="eyebrow">AIME / SETTINGS</span><h2>设置</h2><p>{user.username} · {user.role === 'admin' ? '管理员' : '普通用户'}</p></div><button aria-label="关闭设置" onClick={onClose}><X size={17}/></button></header><nav className="settings-tabs"><button className={tab === 'account' ? 'active' : ''} onClick={() => setTab('account')}>Account</button><button className={tab === 'model' ? 'active' : ''} onClick={() => setTab('model')} data-testid="settings-model-tab">Model & API</button><button className={tab === 'usage' ? 'active' : ''} onClick={() => setTab('usage')} data-testid="settings-usage-tab">Usage</button>{user.role === 'admin' && <button className={tab === 'users' ? 'active' : ''} onClick={() => setTab('users')} data-testid="settings-users-tab">Users</button>}</nav>{tab === 'account' && <form className="settings-form" onSubmit={changePassword} data-testid="password-form"><p className="muted">随时更新当前账号密码。新密码至少 8 位。</p><label>当前密码<input type="password" value={current} onChange={(e) => setCurrent(e.target.value)} required autoComplete="current-password" /></label><label>新密码<input type="password" value={next} onChange={(e) => setNext(e.target.value)} required minLength={8} autoComplete="new-password" /></label><label>确认新密码<input type="password" value={confirm} onChange={(e) => setConfirm(e.target.value)} required minLength={8} autoComplete="new-password" /></label>{message && <div className="authSuccess" role="status">{message}</div>}{error && <div className="authError" role="alert">{error}</div>}<button className="authPrimary" disabled={busy}>{busy ? '保存中…' : '保存密码'}</button></form>}{tab === 'model' && <form className="settings-form" onSubmit={saveModel} data-testid="model-form"><p className="muted">仅配置你自己的 OpenAI-compatible LLM；Fuyao/iFinD 凭据仍由服务器管理。</p><label>Base URL<input value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} placeholder="https://api.example.com/v1" required /></label><label>Model<input value={modelName} onChange={(e) => setModelName(e.target.value)} required /></label><label>API key {model?.configured && <small>已配置 · 末尾 ****{model.keySuffix}</small>}<input type="password" value={apiKey} onChange={(e) => setApiKey(e.target.value)} placeholder={model?.configured ? '留空以保留现有 key' : '仅发送到服务器'} autoComplete="new-password" /></label>{modelMessage && <div className="authSuccess" role="status">{modelMessage}</div>}{modelError && <div className="authError" role="alert">{modelError}</div>}<div className="settings-actions"><button type="button" onClick={() => void testModel()} disabled={modelBusy}>测试连接</button><button className="authPrimary" disabled={modelBusy}>保存配置</button><button type="button" onClick={() => void resetModel()} disabled={modelBusy}>恢复服务器默认</button></div></form>}{tab === 'usage' && <section className="settings-form usage-card" data-testid="usage-card"><p className="muted">App usage · 当前自然月</p><div className="usage-grid"><b>{summary?.totalTokens ?? 0}<small>总 tokens</small></b><b>{summary?.inputTokens ?? 0}<small>输入</small></b><b>{summary?.outputTokens ?? 0}<small>输出</small></b></div><p>当前模型：{summary?.model || model?.model || '服务器默认'} · 未提供 provider quota 或价格估算。</p></section>}{tab === 'users' && user.role === 'admin' && <section className="settings-users"><form onSubmit={createUser}><label>新用户名<input value={newName} onChange={(e) => setNewName(e.target.value)} required /></label><button className="authPrimary">创建用户</button></form>{temporary && <div className="tempCard"><b>初始密码（仅显示一次）</b><code>{temporary.username} · {temporary.password}</code></div>}{userError && <div className="authError" role="alert">{userError}</div>}<div className="adminUsers">{users.map((target) => <div key={target.id}><span><b>{target.username}</b><small>{target.role} · {target.enabled ? '启用' : '停用'}</small></span><span className="user-actions"><button type="button" disabled={busyUser === target.id} onClick={() => void userAction(target, 'reset')}>重置密码</button><button type="button" disabled={busyUser === target.id} onClick={() => void userAction(target, 'toggle')}>{target.enabled ? '停用' : '启用'}</button></span></div>)}</div></section>}</section></div>;
 }
-function LoginScreen({bootError,onSuccess}:{bootError:string|null;onSuccess:(u:PublicUser,m:boolean)=>void}){
-  const[username,setUsername]=useState('admin');
-  const[password,setPassword]=useState('');
-  const[busy,setBusy]=useState(false);
-  const[err,setErr]=useState<string|null>(bootError);
-  async function submit(e:React.FormEvent){
-    e.preventDefault();setBusy(true);setErr(null);
-    try{
-      const res=await auth.login(username.trim(),password);
-      onSuccess(res.user,res.mustChangePassword);
-    }catch(e){
-      if(e instanceof ApiError){
-        if(e.status===401)setErr('用户名或密码错误');
-        else if(e.status===403)setErr('账号已停用');
-        else setErr(`登录失败（${e.status}）`);
-      }else{setErr('网络异常，请重试');}
-    }finally{setBusy(false);}
-  }
-  return <section className="authShell">
-    <div className="authCard card form">
-      <div className="cardhead"><span>STEP 00<h2>登录</h2></span><span>✦</span></div>
-      <label className="field">用户名<input autoFocus value={username} onChange={e=>setUsername(e.target.value)} placeholder="用户名" required/></label>
-      <label className="field">密码<input type="password" value={password} onChange={e=>setPassword(e.target.value)} placeholder="密码" required/></label>
-      {err&&<div className="authError">{err}</div>}
-      <button className="primary" disabled={busy}>{busy?'登录中…':'登录'}<ArrowRight size={16}/></button>
-      <small className="safe"><ShieldCheck size={13}/>请使用服务器下发的账号；没有公开注册入口。</small>
-    </div>
-  </section>;
-}
-function ChangePasswordScreen({username,mustChange,onSuccess}:{username:string;mustChange:boolean;onSuccess:(u:PublicUser)=>void}){
-  const[current,setCurrent]=useState('');
-  const[next,setNext]=useState('');
-  const[confirm,setConfirm]=useState('');
-  const[busy,setBusy]=useState(false);
-  const[err,setErr]=useState<string|null>(null);
-  async function submit(e:React.FormEvent){
-    e.preventDefault();setErr(null);
-    if(next.length<8){setErr('新密码至少 8 位');return;}
-    if(next!==confirm){setErr('两次输入的新密码不一致');return;}
-    setBusy(true);
-    try{
-      // For the bootstrap admin flow, the operator knows the initial
-      // password from the deployment notes. The frontend never embeds
-      // a default — the user must type it.
-      const res=await auth.changePassword(mustChange?current:current,next);
-      onSuccess(res.user);
-    }catch(e){
-      if(e instanceof ApiError){
-        if(e.status===401)setErr('当前密码错误');
-        else setErr(`修改失败（${e.status}）`);
-      }else{setErr('网络异常，请重试');}
-    }finally{setBusy(false);}
-  }
-  return <section className="authShell">
-    <form className="authCard card form" onSubmit={submit}>
-      <div className="cardhead"><span>STEP 00<h2>{mustChange?'首次登录需修改密码':'修改密码'}</h2></span><span>✦</span></div>
-      <div className="authIntro">账号 <b>{username}</b>{mustChange?' 正在使用初始密码，请输入初始密码并设置一个新密码。':' 请输入当前密码并设置新密码。'}</div>
-      <label className="field">当前密码<input type="password" value={current} onChange={e=>setCurrent(e.target.value)} required autoComplete="current-password"/></label>
-      <label className="field">新密码（至少 8 位）<input type="password" value={next} onChange={e=>setNext(e.target.value)} required minLength={8} autoComplete="new-password"/></label>
-      <label className="field">再次输入新密码<input type="password" value={confirm} onChange={e=>setConfirm(e.target.value)} required minLength={8} autoComplete="new-password"/></label>
-      {err&&<div className="authError">{err}</div>}
-      <button className="primary" disabled={busy}>{busy?'提交中…':'提交'}<ArrowRight size={16}/></button>
-      <small className="safe"><ShieldCheck size={13}/>修改成功后其他已登录设备会被自动登出。</small>
-    </form>
-  </section>;
-}
-function AdminScreen({onBack}:{onBack:()=>void}){
-  const[users,setUsers]=useState<PublicUser[]|null>(null);
-  const[err,setErr]=useState<string|null>(null);
-  const[creating,setCreating]=useState(false);
-  const[newName,setNewName]=useState('');
-  const[createErr,setCreateErr]=useState<string|null>(null);
-  const[temp,setTemp]=useState<{username:string;temporaryPassword:string}|null>(null);
-  const[busyId,setBusyId]=useState<string|null>(null);
-  async function refresh(){
-    setErr(null);
-    try{
-      const list=await adminUsers.list();
-      setUsers(list.users);
-    }catch(e){
-      setErr(e instanceof Error?e.message:'加载用户失败');
-    }
-  }
-  useEffect(()=>{void refresh();},[]);
-  async function handleCreate(e:React.FormEvent){
-    e.preventDefault();setCreateErr(null);setTemp(null);
-    setCreating(true);
-    try{
-      const res=await adminUsers.create(newName.trim());
-      setTemp({username:res.user.username,temporaryPassword:res.temporaryPassword});
-      setNewName('');
-      await refresh();
-    }catch(e){
-      if(e instanceof ApiError){
-        if(e.status===409)setCreateErr('该用户名已存在');
-        else if(e.status===400)setCreateErr('用户名仅支持字母、数字、下划线、点、连字符');
-        else setCreateErr(`创建失败（${e.status}）`);
-      }else{setCreateErr('网络异常，请重试');}
-    }finally{setCreating(false);}
-  }
-  async function handleReset(u:PublicUser){
-    setBusyId(u.id);
-    try{
-      const res=await adminUsers.resetPassword(u.id);
-      setTemp({username:res.user.username,temporaryPassword:res.temporaryPassword});
-      await refresh();
-    }catch(e){
-      setErr(e instanceof Error?e.message:'重置失败');
-    }finally{setBusyId(null);}
-  }
-  async function handleToggle(u:PublicUser){
-    setBusyId(u.id);
-    try{
-      if(u.enabled){await adminUsers.disable(u.id);}else{await adminUsers.enable(u.id);}
-      await refresh();
-    }catch(e){
-      if(e instanceof ApiError){
-        if(e.code==='cannot_disable_self')setErr('不能停用自己的账号');
-        else if(e.code==='cannot_disable_last_admin')setErr('这是最后一个启用的管理员账号');
-        else setErr(`操作失败（${e.status}）`);
-      }else{setErr(e instanceof Error?e.message:'操作失败');}
-    }finally{setBusyId(null);}
-  }
-  return <section className="admin">
-    <div className="resulttop"><div><label className="pill ok"><Users size={13}/> USER MANAGEMENT</label><h1>用户管理</h1><p>只有管理员可访问本页。新建用户的初始密码只展示一次。</p></div><button className="ghost" onClick={onBack}><RotateCcw size={14}/>返回</button></div>
-    {err&&<div className="authError">{err}</div>}
-    <div className="adminGrid">
-      <form className="card form" onSubmit={handleCreate}>
-        <div className="cardhead"><span>STEP 01<h2>新建用户</h2></span><span>✦</span></div>
-        <label className="field">用户名<input value={newName} onChange={e=>setNewName(e.target.value)} placeholder="例如 zhangsan" required/></label>
-        {createErr&&<div className="authError">{createErr}</div>}
-        <button className="primary" disabled={creating||!newName.trim()}>{creating?'创建中…':'创建并生成初始密码'}<ArrowRight size={16}/></button>
-        {temp&&<div className="tempCard">
-          <label>初始密码（仅显示一次，请立即复制给用户）</label>
-          <div className="tempRow">
-            <code>{temp.username}</code><b>{temp.temporaryPassword}</b>
-          </div>
-          <small>用户首次登录会被强制要求修改密码。</small>
-        </div>}
-      </form>
-      <div className="card adminList">
-        <div className="cardhead"><span>STEP 02<h2>已有用户</h2></span><span>{users?`${users.length} 人`:'加载中…'}</span></div>
-        {users===null&&<div className="muted">加载中…</div>}
-        {users&&users.length===0&&<div className="muted">还没有用户。</div>}
-        {users&&users.map(u=>(
-          <div key={u.id} className={'userRow'+(u.enabled?'':' disabled')}>
-            <div><b>{u.username}</b><span>{u.role==='admin'?'管理员':'普通用户'}</span>{!u.enabled&&<em>已停用</em>}</div>
-            <div className="userActions">
-              <button className="ghost" disabled={busyId===u.id} onClick={()=>handleReset(u)}>重置密码</button>
-              <button className="ghost" disabled={busyId===u.id} onClick={()=>handleToggle(u)}>{u.enabled?'停用':'启用'}</button>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  </section>;
-}
-function Home({v,setV,go}:{v:Input;setV:React.Dispatch<React.SetStateAction<Input>>;go:(e:React.FormEvent)=>void}){
-  const u=(k:keyof Input,x:string)=>setV(y=>({...y,[k]:x}));
-  return <section className="home"><div className="intro"><label className="pill"><Sparkles size={13}/> Decision Replay</label><h1>把一次投资，<br/><em>复盘成下一次优势。</em></h1><p>重建决策当下的证据时间线，分开事实与结果，让每一次交易都沉淀为可复用的判断力。</p><div className="principle"><strong>T0</strong><span><b>时间边界优先</b><small>只用决策发生前能获得的信息评估判断质量。</small></span></div></div><form className="card form" onSubmit={go}><div className="cardhead"><span>STEP 01<h2>记录你的决策</h2></span><span>✦</span></div><div className="row"><Field t="标的代码 / 名称"><input required value={v.symbol} onChange={e=>u('symbol',e.target.value)} placeholder="例如 600519 / 贵州茅台"/></Field><Field t="市场"><select value={v.market} onChange={e=>u('market',e.target.value)}><option>A股</option><option>港股</option><option>美股</option></select></Field></div><div className="row"><Field t="交易方向"><div className="seg"><button type="button" className={v.side==='buy'?'on':''} onClick={()=>u('side','buy')}>买入</button><button type="button" className={v.side==='sell'?'on sell':''} onClick={()=>u('side','sell')}>卖出</button></div></Field><Field t="成交时间"><input required type="datetime-local" value={v.executedAt} onChange={e=>u('executedAt',e.target.value)}/></Field></div><div className="row"><Field t="成交价格"><input required type="number" value={v.price} onChange={e=>u('price',e.target.value)} placeholder="0.00"/></Field><Field t="成交数量"><input required type="number" value={v.quantity} onChange={e=>u('quantity',e.target.value)} placeholder="股 / 手"/></Field></div><Field t="当时为什么做这个决定？"><textarea required value={v.reason} onChange={e=>u('reason',e.target.value)} placeholder="写下当时的核心判断、预期或触发因素…"/></Field><Field t="补充笔记（可选）"><textarea className="short" value={v.notes} onChange={e=>u('notes',e.target.value)} placeholder="仓位计划、止盈止损、当时的犹豫…"/></Field><button className="primary">开始复盘 <ArrowRight size={16}/></button><small className="safe"><ShieldCheck size={13}/>你的输入仅用于本次复盘，不会写入公开日志。</small></form></section>;
-}
-function Field({t,children}:{t:string;children:React.ReactNode}){return <label className="field">{t}{children}</label>;}
-function Running({p}:{p:number}){return <section className="card running"><div className="runicon">◌</div><span>REVIEW RUNNING</span><h1>正在重建这笔决策</h1><p>把决策时点的证据，与之后发生的结果严格分开。</p><div className="bar"><i style={{width:p*20+'%'}}/></div>{stages.map((x,i)=><div className={'stage '+(i<p?'done':'')} key={x}><b>{i<p?<Check size={12}/>:i+1}</b>{x}<small>{i<p?'完成':i===p?'分析中…':'等待'}</small></div>)}<div className="safe">◈ 不展示模型思考过程，仅呈现可核验的证据与结论。</div></section>;}
-function Result({r,reset}:{r:Result;reset:()=>void}){return <section className="result"><div className="resulttop"><div><label className="pill ok"><Check size={13}/> REVIEW COMPLETE</label><h1>{r.input.symbol} <span>· {r.input.side==='buy'?'买入':'卖出'}复盘</span></h1><p>{r.input.executedAt.replace('T',' ')} · 成交价 ¥{r.input.price} · {r.input.quantity} 股</p></div><button className="ghost" onClick={reset}><RotateCcw size={14}/> 新建复盘</button></div><div className="card summary"><div className="summaryicon">◈</div><div><label>DECISION SUMMARY</label><p>{r.summary}</p></div><strong>62<small>判断质量</small></strong></div><div className="t0"><b>T0 · 2024.03.18 10:24</b><strong>时间边界</strong><span>左侧只包含当时可知信息；右侧是事后发生的信息，不能用于评价当时的判断。</span></div><div className="evidence"><Evidence title="当时已知 · Ex-Ante" sub="可用于评价决策质量" a={r.ante} tone="ante"/><Evidence title="事后信息 · Ex-Post" sub="用于理解结果，不倒灌判断" a={r.post} tone="post"/></div><div className="lower"><div className="card block"><label>ATTRIBUTION</label><h3>归因可信度</h3><Tag t="SUPPORTED" c="green">“渠道库存改善”是可被 T0 前证据支持的核心判断。</Tag><Tag t="UNCERTAIN" c="yellow">对批价企稳的时间判断缺少明确验证条件。</Tag><Tag t="UNSUPPORTED" c="red">“市场会很快修复”未记录可核验依据。</Tag></div><div className="card block"><label>OUTCOME VS QUALITY</label><h3>结果不等于质量</h3><Metric t="决策质量" x="62 / 100" w="62%"/><Metric t="持有期结果" x="-18.4%" w="28%" bad/><p className="muted">结果较差，但部分事前证据和判断链条仍然成立。</p></div></div><div className="card lessons"><label>NEXT TIME</label><h3>Lessons & Checklist</h3>{['把“企稳”写成可验证条件','在下单前记录反向证据','预先写下失效条件'].map((x,i)=><div className="lesson" key={x}><b>0{i+1}</b><span><strong>{x}</strong><small>{['例如：批价连续两周不再下行，且库存周转回到 X 天以内。','北向资金流出是已知信号，下次应明确它对仓位的影响。','当核心假设被证伪时，触发减仓或重新评估。'][i]}</small></span></div>)}</div><p className="cite">ⓘ 证据引用：公司公告、行情数据、公开新闻（演示数据）　›</p></section>;}
-function Evidence({title,sub,a,tone}:{title:string;sub:string;a:string[];tone:string}){return <div className={'card ev '+tone}><div className="evhead"><span><h3>{title}</h3><small>{sub}</small></span><i>{a.length} 条</i></div>{a.map((x,i)=><div className="evitem" key={x}><b>0{i+1}</b><span>{x}</span><ChevronRight size={14}/></div>)}</div>;}
-function Tag({t,c,children}:{t:string;c:string;children:string}){return <div className="tag"><b className={c}>{t}</b><span>{children}</span></div>}
-function Metric({t,x,w,bad}:{t:string;x:string;w:string;bad?:boolean}){return <div className="metric"><div><span>{t}</span><b className={bad?'bad':''}>{x}</b></div><i className={bad?'bad':''} style={{width:w}}/></div>}

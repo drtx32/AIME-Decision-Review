@@ -22,6 +22,7 @@ Input:
 - buy/sell action
 - historical T0
 - user reason
+- one or multiple decisions/trades where supported
 
 Expected:
 - review run completes
@@ -29,6 +30,27 @@ Expected:
 - decision quality and outcome shown separately
 - lessons/checklist produced
 - key claims cite evidence
+
+### T01a — Conversation-first shell
+Expected:
+- empty chat shows three neutral starter prompts;
+- clicking a starter fills the composer without submitting;
+- sidebar/history, central conversation, and Findings/Evidence/Learning panel
+  remain distinct;
+- Settings is centered independently of those panels;
+- no dense dashboard or form-first generator is the primary entry point.
+
+### T01b — Composer and message actions
+Exercise draft text, attachment picker/add/remove, stop/cancel, copy, edit,
+delete, retry, reconnect, and reload where applicable.
+
+Expected:
+- the draft survives every non-submit action;
+- the composer stays at the bottom and validation/errors appear immediately
+  above it without moving it;
+- edit/resend invalidates dependent outputs safely;
+- stopped/partial runs do not persist normal Findings/Learning;
+- copy/edit/delete/retry actions perform their stated operation.
 
 ## 2. Time-bound reasoning
 
@@ -69,6 +91,29 @@ Simulate invalid parameter/schema error.
 Expected:
 - no blind repeated retry
 - clear error classification
+
+### T06a — Attachment boundaries
+Exercise allowed image/docx/xlsx/csv/pdf types, over-limit files, unsupported
+extensions, scanned/no-text PDF, and provenance display.
+
+Expected:
+- allowlisted types and count/file/parsed-size limits are enforced;
+- image vision is used only when the configured capability is verified;
+- no fake OCR claim is made;
+- PDF unsupported states are explicit;
+- filename/page/sheet/cell-range provenance is retained;
+- uploaded context is not silently classified as ex-ante evidence.
+
+### T06b — Trusted web evidence
+Exercise approved primary source, approved secondary source, unknown domain,
+redirect, SSRF-shaped URL, missing publication time, and no-source cases.
+
+Expected:
+- policy is backend default-deny and unknown URLs are labeled unverified;
+- redirects are revalidated and SSRF protections apply;
+- `publishedAt` and `retrievedAt` remain distinct;
+- no trusted source produces an explicit evidence gap;
+- no arbitrary JS/headless browsing is required in v0.1.
 
 ## 4. Grounding
 
@@ -146,6 +191,19 @@ Exercise:
 Expected:
 - contract matches frontend types
 
+### T17a — Normalized chart contract
+Exercise K-line/volume/MA, timeline with trade markers, comparison, and
+provider-supported valuation/financial trend.
+
+Expected:
+- native ECharts renders inline in the conversation and can expand/collapse;
+- source/provider, symbol, timezone, timestamps, units, adjustment mode,
+  `retrievedAt`, and applicable `publishedAt` are explicit;
+- direct Fuyao/iFinD structured-data failures produce an unavailable/degraded
+  state, never a normal finding or fabricated target price;
+- after-hours/non-trading-day markers are not silently snapped to a wrong bar;
+- the right Findings/Evidence/Learning panel and stable composer remain intact.
+
 ## 10. Integration
 
 ### T18 — Real MCP minimal path
@@ -154,6 +212,13 @@ Use at least one real Fuyao source and one real iFinD source if credentials/conn
 Expected:
 - source/timestamp provenance preserved
 - partial failures are visible
+
+### T18a — Credentialed versus fixture validation
+Record real credentialed Fuyao, iFinD, and LLM probes separately from fixture
+tests. Each real probe must include endpoint/tool, schema/field mapping,
+units/timezone, quota/error behavior, account permission, exact tested SHA, and
+sanitized evidence. Never turn a controlled fake upstream into a claim of real
+provider validation.
 
 ## 11. Container orchestration
 
@@ -176,3 +241,4 @@ Expected:
 - [ ] compliance boundary tested
 - [ ] secrets absent from repo/build/logs
 - [ ] known limitations documented
+- [ ] exact tested/deployed SHA recorded

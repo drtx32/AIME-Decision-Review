@@ -20,6 +20,8 @@ import { OpenAICompatibleProvider } from "../providers/openai-compatible.ts";
 import { attachUser, requireAuth, gateMustChangePassword, rejectClientUserIdHeader, type AuthEnv } from "../auth/middleware.ts";
 import { buildAuthRoutes } from "../auth/routes.ts";
 import { buildAdminRoutes } from "../auth/admin.ts";
+import { AttachmentService } from "../attachments/service.ts";
+import { buildAttachmentRoutes } from "../attachments/routes.ts";
 
 export interface RouteDeps {
   config: AppConfig;
@@ -27,6 +29,7 @@ export interface RouteDeps {
   userRepo: UserRepository;
   registry: McpRegistry;
   provider: ModelProvider;
+  attachments?: AttachmentService;
   /** Test hook — bypass background execution so specs stay deterministic. */
   runSync?: boolean;
 }
@@ -111,6 +114,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
       requested_mode: availability.requestedMode,
       degraded: availability.degraded,
       last_error: availability.lastError,
+      provider_capabilities: deps.provider.capabilities ?? null,
       configuredServers: deps.registry.configuredKeys(),
       time: new Date().toISOString(),
     });
@@ -139,6 +143,11 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   app.delete("/api/auth/model", requireAuth(deps.userRepo), (c) => { deps.userRepo.clearModelConfig(c.get("user")!.id); return c.json({ configured: false, provider: "openai-compatible", baseUrl: "", model: config.llm.model, keySuffix: null, verifiedAt: null, lastError: null, serverDefaultModel: config.llm.model }); });
 
   const sessionAuth = [requireAuth(deps.userRepo), gateMustChangePassword()];
+  if (deps.attachments) {
+    app.use("/api/attachments", ...sessionAuth);
+    app.use("/api/attachments/*", ...sessionAuth);
+    app.route("/api/attachments", buildAttachmentRoutes(deps.attachments));
+  }
   app.use("/api/sessions", ...sessionAuth);
   app.use("/api/sessions/*", ...sessionAuth);
 

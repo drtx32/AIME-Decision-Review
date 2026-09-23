@@ -9,11 +9,12 @@
  * surface during the mock vertical slice.
  */
 
-import type { LLMCompletion, LLMCompletionRequest, ModelProvider, ProviderAvailability } from "./index.ts";
+import type { LLMCompletion, LLMCompletionRequest, ModelProvider, ProviderAvailability, ProviderCapabilities } from "./index.ts";
 
 export class MockModelProvider implements ModelProvider {
   readonly id = "mock";
   readonly modelName: string;
+  readonly capabilities: ProviderCapabilities = { text: true, images: false };
 
   constructor(modelName: string) {
     this.modelName = modelName;
@@ -44,5 +45,9 @@ export class MockModelProvider implements ModelProvider {
       requestedMode: "mock",
       degraded: false,
     };
+  }
+
+  async probeImages(): Promise<{ available: false; reason: string }> {
+    return { available: false, reason: "mock_provider_no_endpoint" };
   }
 }

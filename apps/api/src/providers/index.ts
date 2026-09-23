@@ -57,9 +57,15 @@ export interface LLMCompletion {
   usage?: { input: number; output: number };
 }
 
+export interface ProviderCapabilities {
+  text: true;
+  images: boolean;
+}
+
 export interface ModelProvider {
   readonly id: string;
   readonly modelName: string;
+  readonly capabilities?: ProviderCapabilities;
   complete(req: LLMCompletionRequest): Promise<LLMCompletion>;
   /**
    * Legacy test-double compatibility only. Runtime providers must expose
@@ -72,6 +78,7 @@ export interface ModelProvider {
    * when credentials are missing or the live call has not succeeded.
    */
   availability?: () => ProviderAvailability;
+  probeImages?: () => Promise<{ available: boolean; reason?: string }>;
 }
 
 export type ProviderState = "ready" | "unconfigured" | "error";

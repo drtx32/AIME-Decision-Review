@@ -184,3 +184,43 @@
 .message-md hr{border:0;border-top:1px solid #dfe8df;margin:9px 0}
 .status-copy .message-md p{color:#7e8d83}
 .status-copy .message-md a{color:#5c7a63}
+/* ELI-362 — hotfix: T0 confirm-clearance controls. */
+.decision-card .decision-approve{
+  display:inline-flex;
+  align-items:center;
+  margin-left:6px;
+  padding:2px 8px;
+  border:1px solid #d4e2d0;
+  border-radius:4px;
+  background:#f1f7ee;
+  color:#3f6c45;
+  font-size:10px;
+  white-space:nowrap;
+}
+.decision-card .decision-approve:hover,
+.decision-card .decision-approve:focus-visible{
+  background:#e0eedb;
+  color:#2c5632;
+  border-color:#9cba9d;
+  outline:none;
+}
+.decision-card small input[type="datetime-local"]{
+  font:inherit;
+  color:inherit;
+  background:transparent;
+  border:0;
+  padding:0;
+  margin:0;
+  vertical-align:baseline;
+}
+.decision-card em{
+  display:inline-block;
+  margin-left:6px;
+  font-style:normal;
+  font-size:9px;
+  letter-spacing:.04em;
+  padding:1px 6px;
+  border-radius:3px;
+  background:#fff4dc;
+  color:#a37c34;
+}

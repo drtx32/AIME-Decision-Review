@@ -18,11 +18,13 @@ candidate evidence still needs to be merged or reconciled before final delivery.
 - [x] README documents web/API separation, root `.env.example`, server-only credentials, SQLite volume, product choices, AI role, Fuyao/iFinD data sources, T0 boundaries, and known limits.
 - [x] `docs/DEPLOYMENT.md` documents `docker compose up --build`, config/health checks, persistence, lifecycle, and rollback.
 - [x] `docs/TEST_PLAN.md` and `docs/AI_VALIDATION.md` contain Compose-oriented evidence and explicit pending items.
+- [x] `docs/THIRD_PARTY.md` records direct dependency licenses, Google Fonts attribution, and the no-vendored/Hermes-reference check.
 - [x] Public URL is verified: `https://10jqka-aime.tong-xiao.top`.
 - [x] Deployment smoke confirms web-only host exposure on `13608`; API remains internal at `api:3000`.
 - [x] Auth evidence is recorded: bootstrap admin, forced first-password change, HttpOnly session, admin-managed users, and no public registration.
 - [x] README/SPEC describe the conversation-first multi-decision candidate direction, auth/settings boundary, T0/ex-ante/ex-post design, learning, provider/data sources, startup, and known limits.
 - [x] `scripts/build-submission-zip.sh` creates a tracked-files-only draft archive and excludes runtime files, secrets, databases, logs, caches, and `.git`.
+- [x] `scripts/submission-preflight.sh` provides reproducible diff/build/Compose/secret/archive checks without starting or deleting containers.
 
 ## Must be completed before final submission
 

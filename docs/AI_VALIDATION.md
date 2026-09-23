@@ -506,3 +506,20 @@ to `main`.
 **Residual risk / unresolved**
 - Live Fuyao / iFinD calls were not exercised against real production credentials in this turn; the adapters are wired and gated behind env credentials. A future turn should run a credentialed probe against the configured account and append the result here.
 - Bundle is large because ECharts pulls in the full markLine + dataZoom + tooltip surface for a single render. Future tightening could lazy-load the renderer on first chart open.
+
+---
+
+## ELI-334 production-gate tightening — 2026-09-23 (post-review follow-up)
+
+**Trigger**
+- User reply: "距提交约4小时。…真实凭据下禁止 mock 冒充成功。"
+
+**Change**
+- `apps/api/src/routes/api.ts` `/api/chart-data` — when neither Fuyao nor iFinD has wired credentials, the route now branches on `config.isProduction`:
+  - **Production**: returns `status: "unavailable"` with explicit copy. **No synthesized `ok` series is ever returned.**
+  - **Development / test**: keeps the `source: "fallback"` synthetic series so the chart path stays demoable in CI.
+- `apps/api/tests/api.test.ts` — added regression test "GET /api/chart-data returns unavailable in production when no provider is wired" that builds a server with `isProduction: true` and asserts the degraded envelope.
+
+**Validation**
+- `bun test` → 80 pass / 0 fail.
+- Production behavior never silently fabricates data; the trigger's hard rule is enforced by code, not policy.

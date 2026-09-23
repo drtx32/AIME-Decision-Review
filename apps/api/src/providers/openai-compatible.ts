@@ -42,7 +42,10 @@ export class OpenAICompatibleProvider implements ModelProvider {
     });
     this.probeOverride = opts.probeOverride;
     if (this.probeOverride) this.capabilities = { text: true, images: this.probeOverride.available };
-    else if (opts.probeImages !== false) void this.probeImages().then((r) => { this.capabilities = { text: true, images: r.available }; });
+    // Capability probing is opt-in: construction must never trigger an
+    // unexpected network call or consume a completion before the caller asks
+    // for it. Credentialed deployments can pass `probeImages: true`.
+    else if (opts.probeImages === true) void this.probeImages().then((r) => { this.capabilities = { text: true, images: r.available }; });
   }
 
   async complete(req: LLMCompletionRequest): Promise<LLMCompletion> {

@@ -80,6 +80,7 @@ describe("Review API contract", () => {
         username: "prodtester",
         passwordHash: hash,
         role: "user",
+        mustChangePassword: false,
       });
     }
     const login = await prod.app.request("/api/auth/login", {

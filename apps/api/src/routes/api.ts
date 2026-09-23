@@ -199,10 +199,13 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
 
   app.get("/api/sessions", (c) => {
     const user = c.get("user")!;
-    const includeArchived = c.req.query("archived") === "1" || c.req.query("archived") === "true";
+    // `archived=1` strictly scopes to archived sessions; omitted strictly scopes
+    // to active sessions. The two scopes return disjoint sets so the sidebar's
+    // Active / Archived filter chips are truly isolated.
+    const archivedScope = c.req.query("archived") === "1" || c.req.query("archived") === "true";
     const q = c.req.query("q")?.trim() ?? "";
     return c.json({
-      sessions: deps.repo.listSessionsForUser(user.id, { includeArchived, query: q || undefined }),
+      sessions: deps.repo.listSessionsForUser(user.id, { archived: archivedScope, query: q || undefined }),
     });
   });
 

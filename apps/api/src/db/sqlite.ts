@@ -514,40 +514,36 @@ export class ReviewRepository {
    *
    * The search matches across session title, decision symbols/names/reasons,
    * and non-deleted message bodies. Results are user-scoped and ordered by
-   * recency. Archive is opt-in via `includeArchived: true` so the default
-   * Recent Reviews list never includes archived items.
+   * recency. The `archived` flag strictly scopes the result set so the
+   * sidebar's Active / Archived filter chips are truly isolated:
+   *   - `true` → only sessions with `archivedAt IS NOT NULL`
+   *   - `false` or omitted → only sessions with `archivedAt IS NULL`
+   * Soft-deleted sessions are excluded from both scopes. The two scopes
+   * must return disjoint ID sets; searching archived must never leak rows
+   * into the active view and vice versa.
    */
   listSessionsForUser(
     userId: string,
-    options: { includeArchived?: boolean; query?: string } = {}
+    options: { archived?: boolean; query?: string } = {}
   ): Array<Record<string, unknown>> {
-    const includeArchived = options.includeArchived === true;
+    const archivedScope = options.archived === true;
     const query = options.query?.trim();
+    const scopeFilter = archivedScope
+      ? "AND archivedAt IS NOT NULL"
+      : "AND archivedAt IS NULL";
     if (!query) {
       return this.db
         .prepare(
-          includeArchived
-            ? `SELECT * FROM review_sessions WHERE userId=? AND deletedAt IS NULL ORDER BY updatedAt DESC`
-            : `SELECT * FROM review_sessions WHERE userId=? AND deletedAt IS NULL AND archivedAt IS NULL ORDER BY updatedAt DESC`
+          `SELECT * FROM review_sessions WHERE userId=? AND deletedAt IS NULL ${scopeFilter} ORDER BY updatedAt DESC`
         )
         .all(userId) as Array<Record<string, unknown>>;
     }
     const like = `%${query.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
-    // Prefer FTS-style LIKE — bounded to the user's own rows. The same query
-    // is reused against messages/decisions/sessions in one round trip.
-    const sql = includeArchived
-      ? `SELECT DISTINCT s.* FROM review_sessions s
-         WHERE s.userId=? AND s.deletedAt IS NULL
-           AND (s.title LIKE ? ESCAPE '\\'
-                OR EXISTS (SELECT 1 FROM session_decisions d
-                           WHERE d.sessionId = s.id AND d.userId = s.userId
-                             AND (d.symbol LIKE ? ESCAPE '\\' OR d.name LIKE ? ESCAPE '\\' OR d.reason LIKE ? ESCAPE '\\'))
-                OR EXISTS (SELECT 1 FROM conversation_messages m
-                           WHERE m.sessionId = s.id AND m.userId = s.userId
-                             AND m.deletedAt IS NULL AND m.content LIKE ? ESCAPE '\\'))
-         ORDER BY s.updatedAt DESC`
-      : `SELECT DISTINCT s.* FROM review_sessions s
-         WHERE s.userId=? AND s.deletedAt IS NULL AND s.archivedAt IS NULL
+    // Bounded LIKE — matches title, decision symbols/names/reasons, and
+    // non-deleted message bodies in one round trip. Always pinned to the
+    // selected archive scope so search never leaks across tabs.
+    const sql = `SELECT DISTINCT s.* FROM review_sessions s
+         WHERE s.userId=? AND s.deletedAt IS NULL ${scopeFilter}
            AND (s.title LIKE ? ESCAPE '\\'
                 OR EXISTS (SELECT 1 FROM session_decisions d
                            WHERE d.sessionId = s.id AND d.userId = s.userId

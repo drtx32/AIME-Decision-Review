@@ -1,5 +1,6 @@
 export type SessionListItem = { id: string; title: string; status: string; updatedAt: string; archivedAt?: string | null; manualTitle?: number | boolean };
 
+import { buildSessionsQueryString } from "./sessions-query";
 export type Input = { symbol: string; market: string; side: 'buy' | 'sell'; executedAt: string; price: string; quantity: string; reason: string; notes: string };
 export type Result = { id: string; reviewId: string; decisionId: string; status: string; input: Input; summary: string; ante: string[]; post: string[]; raw: any };
 export type SessionDecision = { id: string; symbol: string; name?: string | null; market: string; action: 'buy' | 'sell'; executedAt: string | null; executedAtText?: string; timePrecision?: 'exact' | 'approximate' | 'unknown'; price: number | null; quantity: number | null; quantityShares?: number | null; quantityText?: string | null; confidence?: number; needsConfirmation?: string[]; reason: string; notes: string; reviewId: string | null; confirmed: boolean };
@@ -13,10 +14,7 @@ async function request(path: string, init: RequestInit = {}) { if (!apiBase) thr
 export const reviewApi = {
   async listSessions(query?: { q?: string; archived?: boolean }) {
     if (!apiBase) return [];
-    const params = new URLSearchParams();
-    if (query?.q?.trim()) params.set('q', query.q.trim());
-    if (query?.archived) params.set('archived', '1');
-    const suffix = params.toString() ? `?${params.toString()}` : '';
+    const suffix = buildSessionsQueryString(query);
     const body = await request(`/sessions${suffix}`);
     return body.sessions as Array<SessionListItem>;
   },

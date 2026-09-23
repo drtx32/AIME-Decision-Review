@@ -224,3 +224,31 @@ Expected:
 | Container restart recovery | PASS (host evidence) | After the 2026-09-23 outage recovery, `restart: unless-stopped` is configured; API health, web `/health`, and web `/api/health` returned 200 on web-only `13608:80`. |
 
 The deployment/public URL passes are based on the Oracle host smoke report; they do not imply credentialed gateway integration. Keep the credentialed LLM/MCP row pending until those calls are actually run.
+
+## Evidence classification and current blockers — 2026-09-23
+
+`Automated` means a checked-in Bun/root test or build; `live candidate` means
+sanitized external evidence from ELI-318 against PR #7 candidate `5e5aa30`;
+`deployment` means Oracle-host Compose evidence; `manual` requires a clean
+browser/operator review; `pending` is not a pass.
+
+| ID | Evidence class | Current result | Exact evidence / blocker |
+| --- | --- | --- | --- |
+| T01 | Automated + live candidate | PARTIAL | Current baseline covers a single review; ELI-318 recorded real candidate transport, but ELI-333's required multi-decision path is pending on PR #7 head `04a7173`. |
+| T02 | Automated + live candidate | PASS / rerun pending | T0 normalization and ex-ante/ex-post checks pass in the recorded single-review path; ELI-318 preserved `publishedAt` vs `retrievedAt`. Latest candidate rerun remains pending. |
+| T03 | Automated | PASS | Missing/invalid timestamp handling is covered by backend failure semantics; final candidate audit should retain the explicit uncertainty outcome. |
+| T04–T06 | Automated | PASS | Empty, transient, and permanent tool/provider failures remain distinct in the API/MCP suites; no failed evidence is treated as normal data. |
+| T07–T10 | Candidate audit | PENDING | ELI-333 explicitly found template/deterministic findings and requires adversarial grounding, causality, outcome-bias, and learning reruns on the current PR #7 head. |
+| T11 | Automated | PASS | Non-compliant deterministic prediction/direct-trade language is rejected by the existing API regression. |
+| T12–T13 | Automated + scan | PASS | Repository/frontend populated key, bearer, cookie, and authorization scans passed; archive scan is rerun by the submission ZIP step. |
+| T14–T15 | Manual | PENDING | Mock flow/build exists; clean-browser and responsive review evidence is not fabricated here. |
+| T16–T17 | Automated + deployment | PASS | API contract tests and recovered Compose health checks passed; web-only `13608` proxy returned 200 for `/health` and `/api/health`. |
+| T18 | Live candidate | PASS with blockers | ELI-318 recorded real MiniMax, Fuyao `a-share`, and iFinD stock/news calls on candidate `5e5aa30`; PR #7 tool-map/historical-args fixes (`32efaa7`) and latest-head rerun remain pending merge/review. |
+| T19 | Automated + deployment | PASS | Compose config/build and post-restart health/persistence evidence passed; SQLite remains named-volume backed. |
+| T20–T22 | Automated | PASS | API auth suite passed 55/55, including bootstrap, forced change, managed users, session identity, and `x-user-id` rejection. |
+| T23 | Deployment | PASS | Missing-password Compose interpolation, existing-admin restart, `unless-stopped`, and post-restart health were verified on 2026-09-23. |
+
+Current blockers are the current-head PR #7 multi-decision/temporal/learning
+rerun, final ELI-318 credentialed reconciliation after the candidate fixes, and
+manual clean-browser evidence. Product CI status for PR #8 is not reported by
+the linked Multica snapshot, so this branch does not claim CI green.

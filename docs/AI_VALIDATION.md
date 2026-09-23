@@ -514,3 +514,42 @@ remains pending.
   web-only host exposure on `13608`, and API only on internal `3000/tcp`.
 - Populated key/bearer scan found no populated patterns. No real LLM/Fuyao/iFinD
   credentialed calls were made; broader final submission smoke remains pending.
+
+## PR #7 candidate evidence reconciliation — 2026-09-23
+
+This section records evidence from ELI-333/ELI-318 without treating an
+unmerged candidate as current `main`.
+
+**ELI-333 backend correctness evidence (`09c157c`)**
+- On the then-current candidate, the exact single-decision timestamp path
+  completed with 20 ex-ante, 2 ex-post, and 20 citations; T0
+  `2024-03-15T10:24:00+08:00` was normalized to UTC.
+- The required Chinese three-trade narrative returned `400 invalid_input` on
+  the older single-trade API: it did not yet extract three decisions, resolve
+  names, or preserve approximate time precision. This is a blocker, not a pass.
+- The audit also found deterministic/template findings and no real external
+  credentials in that run. The real multi-decision path must be re-run against
+  the latest PR #7 candidate before final submission.
+
+**ELI-318 credentialed transport evidence (PR #7 candidate `5e5aa30`)**
+- Sanitized Oracle-host evidence recorded a real OpenAI-compatible/MiniMax
+  completion (`api.minimaxi.com`, model name withheld from secrets, HTTP 200),
+  Fuyao `a-share` MCP `initialize → initialized → tools/list → tools/call`
+  success, and iFinD stock/news endpoint and tool-call successes.
+- The evidence preserved `source`, `publishedAt`, `retrievedAt`, and
+  `relationToDecision`; a current-time item was classified ex-post rather than
+  substituting `retrievedAt` for `publishedAt`.
+- It also recorded honest HTTP 400/403 and timeout classifications. No secret
+  values were recorded.
+- Candidate follow-up commit `32efaa7` added per-server tool maps and Fuyao
+  historical `start`/`end`/`interval`/`adjust` schema arguments, with 123 API
+  tests and 35 MCP-focused tests reported passing. These changes remain PR #7
+  candidate work until merged/reconciled.
+
+**Submission boundary**
+- Latest requested audit target is PR #7 head `04a7173f5b6d019e7ceddc531ebf9bd09b831bc5`; this branch does not claim that target's final audit is complete.
+- PR #7 remains Draft/pending supervisor reconciliation. ELI-333's
+  multi-decision, temporal-adversarial, learning-persistence, and current-head
+  rerun evidence is therefore pending. Real provider evidence above is
+  candidate evidence, not a claim that the public deployment or this PR's
+  `main` base has switched to it.

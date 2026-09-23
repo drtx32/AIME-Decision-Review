@@ -51,19 +51,26 @@ For frontend-only development, `npm install && npm run dev` may use the explicit
 
 ## Product purpose and AI role
 
-This product implements AIME topic 11: review one historical investment decision and turn the review into reusable learning. It identifies T0, separates evidence known before T0 (ex-ante) from later outcome information (ex-post), and evaluates decision quality separately from P&L. Results include attribution, uncertainty, missed evidence, lessons, and a next-decision checklist.
+This product implements AIME topic 11 as a conversation-first review session: capture one or more historical investment decisions, confirm the extracted trade semantics, and turn the review into reusable learning. It identifies each T0, separates evidence known before T0 (ex-ante) from later outcome information (ex-post), and evaluates decision quality separately from P&L. Results include attribution, uncertainty, missed evidence, lessons, and a next-decision checklist.
 
-The frontend is React + TypeScript + Vite. The API is Bun + Hono with OpenAI Agents SDK TS primitives, lazy intent-based Fuyao/iFinD MCP adapters, SQLite persistence, and cookie-based authentication. The bounded AI role is retrieval planning, timestamp alignment, fact/inference/uncertainty classification, structured review generation, and one reflection pass for ex-post leakage, grounding, unsupported causality, counter-evidence, and outcome bias. Hidden chain-of-thought is not exposed.
+The frontend is React + TypeScript + Vite. The API is Bun + Hono with OpenAI Agents SDK TS primitives, lazy intent-based Fuyao/iFinD MCP adapters, SQLite persistence, and cookie-based authentication. The bounded AI role is conversation parsing, decision confirmation support, retrieval planning, timestamp alignment, fact/inference/uncertainty classification, structured review generation, and one reflection pass for ex-post leakage, grounding, unsupported causality, counter-evidence, and outcome bias. Hidden chain-of-thought is not exposed.
+
+The submission candidate's real-provider path uses one OpenAI-compatible/MiniMax
+provider plus Fuyao and iFinD MCP gateways. Sanitized live transport evidence
+exists for PR #7 candidate head `5e5aa30` (MiniMax 200, Fuyao `a-share`
+initialize/tools/list/tools/call, and iFinD stock/news calls); PR #7's latest
+candidate head and merge state still require final reconciliation, so this is
+not presented as merged-main evidence.
 
 ## Authentication and managed users
 
-The API bootstraps one admin on a fresh database from the server-only `INITIAL_ADMIN_USERNAME` and `INITIAL_ADMIN_PASSWORD` variables. The first login must change the bootstrap password. There is no public registration: an admin creates normal users, can issue one-time temporary passwords or reset/disable/enable accounts, and cannot disable or delete the last enabled admin. Sessions use HttpOnly cookies; identity is derived from the session rather than client-supplied user headers.
+The API bootstraps one admin on a fresh database from the server-only `INITIAL_ADMIN_USERNAME` and `INITIAL_ADMIN_PASSWORD` variables. The first login must change the bootstrap password. There is no public registration: an admin creates normal users, can issue one-time temporary passwords or reset/disable/enable accounts, and cannot disable or delete the last enabled admin. Sessions use HttpOnly cookies; identity is derived from the session rather than client-supplied user headers. Settings/provider credentials remain server-side.
 
 The root `.env.example` is the only runtime template. In addition to `COMPOSE_PROJECT_NAME`, `WEB_PORT`, `VITE_API_BASE_URL`, `SQLITE_PATH`, `LOG_LEVEL`, and the LLM/MCP variables, it documents the two bootstrap-admin variable names. Real values belong only in the protected server `.env` or deployment secret store and never in the web build.
 
 ## Data sources and current limits
 
-The configured data registries cover Fuyao groups (`meta`, `a-share`, `a-share-index`, `fund`, `futures`, `options`) and iFinD groups (`ds`, `enterprise`, `law`, `stock`, `fund`, `edb`, `news`, `bond`, `global-stock`, `index`, `futures`). Real credentialed LLM/Fuyao/iFinD smoke remains pending; the verified deployment evidence uses the mock provider.
+The configured data registries cover Fuyao groups (`meta`, `a-share`, `a-share-index`, `fund`, `futures`, `options`) and iFinD groups (`ds`, `enterprise`, `law`, `stock`, `fund`, `edb`, `news`, `bond`, `global-stock`, `index`, `futures`). The PR #7 candidate has sanitized credentialed transport evidence, but its latest candidate recheck and merge are still pending; do not treat that as final deployed-main evidence. Mock mode remains the safe local fallback.
 
 The verified public entrypoint is [https://10jqka-aime.tong-xiao.top](https://10jqka-aime.tong-xiao.top). Oracle host evidence verified the homepage, `/api/health` with HTTP 200, and public POST `/api/reviews` with HTTP 202. The host exposes only web `13608:80`; API `3000` is Compose-internal and SQLite uses the named `aime-decision-review_api-data` volume. Remaining limits include single-instance SQLite, no trade execution, no real-time monitoring, no vector database, no multi-agent orchestration, and no GBrain LessonStore integration.
 

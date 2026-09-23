@@ -1,4 +1,4 @@
-# AIME Decision Review — SPEC v0.1
+# AIME Decision Review — SPEC v0.2 candidate
 
 ## 0. Document contract
 
@@ -13,7 +13,13 @@ Do not silently diverge from this document. If a change is necessary, document t
 
 ## 1. Product goal
 
-Help a user review one historical investment decision by reconstructing what was knowable at the decision time, separating ex-ante from ex-post information, evaluating decision quality independently from final P&L, and turning the review into reusable lessons/checklists for future decisions.
+Help a user use a conversation-first review session to capture one or more
+historical investment decisions, reconstruct what was knowable at each decision
+time, separate ex-ante from ex-post information, evaluate decision quality
+independently from final P&L, and turn the review into reusable learning and
+next-decision checklists. The user can clarify extracted decisions before
+evidence retrieval; the product must preserve uncertainty rather than inventing
+symbols, timestamps, or trade semantics.
 
 Core loop:
 
@@ -30,26 +36,32 @@ Key principle: profit does not automatically mean a good decision, and loss does
 
 ## 2. MVP scope
 
-One vertical slice only:
+The current submission candidate is a conversation-first session flow:
 
-Input one historical trade
-→ identify symbol/action/time/price/reason
-→ agent creates data plan
-→ retrieve financial/market/event evidence
-→ classify evidence around T0
-→ produce structured review
-→ generate lessons/checklist
-→ persist result
+Capture a user narrative
+→ extract and confirm one or more decisions
+→ identify symbol/action/time/price/reason and time precision
+→ plan and lazily retrieve financial/market/event evidence
+→ classify evidence around each T0
+→ produce structured review and bounded reflection
+→ generate and persist lessons/checklists
+→ support grounded follow-up in the current session
 
-Not in v0.1:
+Authentication and settings are part of the product boundary: bootstrap admin,
+forced first-password change, admin-managed users, HttpOnly sessions, and
+server-side provider/MCP configuration. The real-provider and multi-decision
+candidate implementation is tracked by PR #7; this submission-prep branch
+documents its evidence but does not claim that PR is merged here.
+
+Not in the current submission candidate:
 - multi-agent orchestration
 - heavy sandbox platform
-- account/auth system
 - trading execution
 - real-time monitoring
-- multi-provider routing
 - vector database/RAG platform
 - full GBrain integration
+- multi-provider routing beyond the configured OpenAI-compatible provider
+- guaranteed deterministic prediction or direct trade instructions
 
 ## 3. Tech stack
 
@@ -101,15 +113,16 @@ The root `docker-compose.yml` is the authoritative container orchestration
 path. It runs the static frontend and Bun/Hono API as separate services, routes
 frontend `/api` requests to the API service, and persists the API SQLite file in
 the named `api-data` volume. Runtime configuration is documented in the root
-`.env.example`; Compose maps `API_PORT` to the API process port and does not
-pass backend secrets to the frontend image.
+`.env.example`; only web `13608:80` is host-published, while API `3000` is
+Compose-internal. Backend secrets are not passed to the frontend image.
 
 ## 5. DecisionReviewAgent
 
-Single agent in v0.1.
+One bounded review agent per session in the current candidate; this is not
+multi-agent orchestration.
 
 Responsibilities:
-- understand user decision
+- understand the conversation and extract a confirmable decision set
 - plan evidence retrieval
 - select relevant MCP servers/tools
 - verify timestamps
@@ -147,7 +160,9 @@ Statuses:
 - failed
 - waiting_for_approval
 
-A normal review should finish in minutes, not remain as a continuously running LLM session.
+A normal session should finish in minutes, not remain as a continuously running
+LLM session. Conversation context is scoped to the authenticated session and
+must not be confused with hidden chain-of-thought.
 
 ## 8. Input schema
 
@@ -162,14 +177,17 @@ interface DecisionInput {
   userReason?: string;
   notes?: string;
 }
+
+interface ReviewSessionInput {
+  narrative: string;
+  decisions?: DecisionInput[];
+  timezone?: string;
+}
 ```
 
-MVP form minimum:
-- symbol
-- action
-- executedAt
-- price optional
-- reason
+Conversation minimum: `narrative`. A confirmed decision requires symbol,
+action, and `executedAt`; price, quantity, reason, notes, and time precision
+remain optional or explicitly approximate until confirmed.
 
 ## 9. Evidence model
 
@@ -315,10 +333,14 @@ Expose product-level events only, e.g.:
 
 SQLite tables/objects may include:
 - review_runs
+- review_sessions
 - decisions
 - evidence
 - review_results
 - lessons
+
+Auth persistence includes users and opaque sessions. Settings/provider values
+are server-side configuration; secrets are never browser-visible.
 
 No vector DB required for MVP.
 
@@ -326,18 +348,31 @@ Keep LessonStore as a replaceable interface so GBrain can be added later.
 
 ## 17. API contract
 
+- POST /api/auth/login
+- POST /api/auth/logout
+- GET /api/auth/me
+- POST /api/auth/change-password
+- /api/admin/users (admin-managed user lifecycle)
 - POST /api/reviews
 - GET /api/reviews/:id
 - GET /api/reviews/:id/events
 - GET /api/reviews/:id/result
 - GET /health
 
+The conversation/session endpoint contract is part of PR #7 and must be
+reconciled with the merged implementation before calling this SPEC final.
+
 SSE preferred for progress; polling fallback is acceptable.
 
 ## 18. Frontend product states
 
 ### Home
-Input historical decision.
+Start or resume a conversation-first review session and see authenticated
+account/settings affordances.
+
+### Confirm decisions
+Review extracted decisions, symbols, actions, timestamps, and approximate
+fields before retrieval.
 
 ### Running
 Show product-level progress only.
@@ -392,24 +427,27 @@ Frontend must not receive these secrets.
 
 ## 21. Deployment target
 
-Frontend:
-- static/Web deployment such as Vercel/Cloudflare Pages/GitHub-based deployment
-
-Backend:
-- Tencent Cloud 2C4G server is sufficient for API + lightweight agent runtime
+Canonical deployment is Docker Compose on the existing host:
+- web: host `13608` → container `80`
+- API: Compose-internal `api:3000`, reached through the web `/api` proxy
+- SQLite: named `api-data` volume
+- restart policy: `unless-stopped`
+- root `.env` copied from `.env.example`, with bootstrap password supplied only
+  for a fresh database
 
 No local LLM required.
 
 ## 22. MVP acceptance criteria
 
 A user can:
-1. enter one historical trade
-2. start a review
-3. see progress
-4. receive ex-ante and ex-post evidence separated around T0
-5. see decision quality independently from outcome
-6. see lessons/checklist
-7. trace important claims back to evidence
+1. authenticate and start or resume a conversation-first review session
+2. enter a narrative containing one or more historical decisions
+3. confirm extracted symbols/actions/times before retrieval
+4. see progress and product-level events
+5. receive ex-ante and ex-post evidence separated around each T0
+6. see decision quality independently from outcome
+7. see lessons/checklist and grounded follow-up context
+8. trace important claims back to evidence
 
 At least cover:
 - normal review
@@ -431,5 +469,9 @@ Repository must ultimately contain:
 
 Optional:
 - 60–180 second demo video
+
+The public URL is currently verified at
+`https://10jqka-aime.tong-xiao.top`. The candidate PR #7 real-provider/MCP
+evidence is recorded separately and remains subject to final merge/recheck.
 
 Keep AI validation and test evidence updated during development, not only at the end.

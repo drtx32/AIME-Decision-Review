@@ -244,6 +244,42 @@ export class ReviewRepository {
       "ALTER TABLE conversation_messages ADD COLUMN errorMessage TEXT",
       "ALTER TABLE conversation_messages ADD COLUMN deletedAt TEXT",
     ]) { try { this.db.exec(statement); } catch { /* column already exists */ } }
+    // ELI-358 — conversation library: archive, soft delete, manual rename lock.
+    for (const statement of [
+      "ALTER TABLE review_sessions ADD COLUMN archivedAt TEXT",
+      "ALTER TABLE review_sessions ADD COLUMN deletedAt TEXT",
+      "ALTER TABLE review_sessions ADD COLUMN manualTitle INTEGER NOT NULL DEFAULT 0",
+    ]) { try { this.db.exec(statement); } catch { /* column already exists */ } }
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_review_sessions_archived ON review_sessions(userId, archivedAt, updatedAt DESC)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_review_sessions_deleted ON review_sessions(userId, deletedAt)`);
+    this.db.exec(`CREATE INDEX IF NOT EXISTS idx_conversation_messages_content ON conversation_messages(sessionId, userId)`);
+  }
+
+  /**
+   * ELI-358 — deterministic title derivation.
+   *
+   * - 0 decisions: empty string (caller decides whether to fall back to a
+   *   generic placeholder).
+   * - 1 decision: "{symbol} 决策复盘".
+   * - 2+: "{symbol1} / {symbol2} 复盘" using the first two unique non-empty
+   *   symbols (or decision names when present).
+   *
+   * Pure function — easy to unit test and to recompute when a session is
+   * re-extracted.
+   */
+  static deriveSessionTitle(decisions: Array<{ symbol: string; name?: string | null }>): string {
+    const unique: string[] = [];
+    const seen = new Set<string>();
+    for (const d of decisions) {
+      const raw = (d.name?.trim() || d.symbol?.trim() || "").trim();
+      if (!raw || seen.has(raw)) continue;
+      seen.add(raw);
+      unique.push(raw);
+      if (unique.length >= 2) break;
+    }
+    if (!unique.length) return "";
+    if (unique.length === 1) return `${unique[0]} 决策复盘`;
+    return `${unique[0]} / ${unique[1]} 复盘`;
   }
 
   createRun(id: string, decision: DecisionInput, T0: string, sessionId?: string, userId?: string): ReviewRunRow {
@@ -470,8 +506,119 @@ export class ReviewRepository {
     return row;
   }
 
-  listSessions(userId: string) { return this.db.prepare(`SELECT * FROM review_sessions WHERE userId=? ORDER BY updatedAt DESC`).all(userId) as Array<Record<string, unknown>>; }
-  getSession(id: string, userId: string) { return this.db.prepare(`SELECT * FROM review_sessions WHERE id=? AND userId=?`).get(id,userId) as Record<string, unknown> | null; }
+  listSessions(userId: string) { return this.db.prepare(`SELECT * FROM review_sessions WHERE userId=? AND deletedAt IS NULL ORDER BY updatedAt DESC`).all(userId) as Array<Record<string, unknown>>; }
+  getSession(id: string, userId: string) { return this.db.prepare(`SELECT * FROM review_sessions WHERE id=? AND userId=? AND deletedAt IS NULL`).get(id,userId) as Record<string, unknown> | null; }
+
+  /**
+   * ELI-358 — list sessions with optional archive filter and content search.
+   *
+   * The search matches across session title, decision symbols/names/reasons,
+   * and non-deleted message bodies. Results are user-scoped and ordered by
+   * recency. Archive is opt-in via `includeArchived: true` so the default
+   * Recent Reviews list never includes archived items.
+   */
+  listSessionsForUser(
+    userId: string,
+    options: { includeArchived?: boolean; query?: string } = {}
+  ): Array<Record<string, unknown>> {
+    const includeArchived = options.includeArchived === true;
+    const query = options.query?.trim();
+    if (!query) {
+      return this.db
+        .prepare(
+          includeArchived
+            ? `SELECT * FROM review_sessions WHERE userId=? AND deletedAt IS NULL ORDER BY updatedAt DESC`
+            : `SELECT * FROM review_sessions WHERE userId=? AND deletedAt IS NULL AND archivedAt IS NULL ORDER BY updatedAt DESC`
+        )
+        .all(userId) as Array<Record<string, unknown>>;
+    }
+    const like = `%${query.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`;
+    // Prefer FTS-style LIKE — bounded to the user's own rows. The same query
+    // is reused against messages/decisions/sessions in one round trip.
+    const sql = includeArchived
+      ? `SELECT DISTINCT s.* FROM review_sessions s
+         WHERE s.userId=? AND s.deletedAt IS NULL
+           AND (s.title LIKE ? ESCAPE '\\'
+                OR EXISTS (SELECT 1 FROM session_decisions d
+                           WHERE d.sessionId = s.id AND d.userId = s.userId
+                             AND (d.symbol LIKE ? ESCAPE '\\' OR d.name LIKE ? ESCAPE '\\' OR d.reason LIKE ? ESCAPE '\\'))
+                OR EXISTS (SELECT 1 FROM conversation_messages m
+                           WHERE m.sessionId = s.id AND m.userId = s.userId
+                             AND m.deletedAt IS NULL AND m.content LIKE ? ESCAPE '\\'))
+         ORDER BY s.updatedAt DESC`
+      : `SELECT DISTINCT s.* FROM review_sessions s
+         WHERE s.userId=? AND s.deletedAt IS NULL AND s.archivedAt IS NULL
+           AND (s.title LIKE ? ESCAPE '\\'
+                OR EXISTS (SELECT 1 FROM session_decisions d
+                           WHERE d.sessionId = s.id AND d.userId = s.userId
+                             AND (d.symbol LIKE ? ESCAPE '\\' OR d.name LIKE ? ESCAPE '\\' OR d.reason LIKE ? ESCAPE '\\'))
+                OR EXISTS (SELECT 1 FROM conversation_messages m
+                           WHERE m.sessionId = s.id AND m.userId = s.userId
+                             AND m.deletedAt IS NULL AND m.content LIKE ? ESCAPE '\\'))
+         ORDER BY s.updatedAt DESC`;
+    return this.db
+      .prepare(sql)
+      .all(userId, like, like, like, like, like) as Array<Record<string, unknown>>;
+  }
+
+  /**
+   * ELI-358 — apply deterministic auto-title to a freshly-extracted session
+   * unless the user has manually renamed it. Returns true when the title
+   * was actually written.
+   */
+  applyAutoTitle(id: string, userId: string, decisions: Array<{ symbol: string; name?: string | null }>): boolean {
+    const session = this.getSession(id, userId);
+    if (!session) return false;
+    if (session.manualTitle === 1 || session.manualTitle === true) return false;
+    const title = ReviewRepository.deriveSessionTitle(decisions);
+    if (!title) return false;
+    // Don't overwrite if the title is already meaningful (not the placeholder).
+    const current = String(session.title || "");
+    if (current && current !== "新建复盘" && current !== title) return false;
+    this.db.prepare(`UPDATE review_sessions SET title=?, updatedAt=? WHERE id=? AND userId=?`).run(title, new Date().toISOString(), id, userId);
+    return true;
+  }
+
+  renameSession(id: string, userId: string, title: string): Record<string, unknown> | null {
+    const trimmed = title.trim();
+    if (!trimmed) return null;
+    if (trimmed.length > 80) return null;
+    const session = this.getSession(id, userId);
+    if (!session) return null;
+    this.db.prepare(`UPDATE review_sessions SET title=?, manualTitle=1, updatedAt=? WHERE id=? AND userId=?`).run(trimmed, new Date().toISOString(), id, userId);
+    return this.getSession(id, userId);
+  }
+
+  setSessionArchived(id: string, userId: string, archived: boolean): Record<string, unknown> | null {
+    const session = this.getSession(id, userId);
+    if (!session) return null;
+    if (archived) {
+      this.db.prepare(`UPDATE review_sessions SET archivedAt=?, updatedAt=? WHERE id=? AND userId=?`).run(new Date().toISOString(), new Date().toISOString(), id, userId);
+    } else {
+      this.db.prepare(`UPDATE review_sessions SET archivedAt=NULL, updatedAt=? WHERE id=? AND userId=?`).run(new Date().toISOString(), id, userId);
+    }
+    return this.getSession(id, userId);
+  }
+
+  /**
+   * Soft-delete a session and its dependent rows. The conversation, attached
+   * reviews, lessons, evidence and decisions are also marked/removed so the
+   * session disappears from the Recent Reviews list and from search but
+   * remains recoverable for support / audit if needed. Lessons are detached
+   * (kept active in the user memory store) because they are reusable
+   * learning, not session-bound state.
+   */
+  softDeleteSession(id: string, userId: string): boolean {
+    const session = this.getSession(id, userId);
+    if (!session) return false;
+    const now = new Date().toISOString();
+    const tx = this.db.transaction(() => {
+      this.db.prepare(`UPDATE review_sessions SET deletedAt=?, title=?, archivedAt=NULL, updatedAt=? WHERE id=? AND userId=?`).run(now, "[deleted]", now, id, userId);
+      this.db.prepare(`UPDATE conversation_messages SET deletedAt=COALESCE(deletedAt, ?) WHERE sessionId=? AND userId=?`).run(now, id, userId);
+    });
+    tx();
+    return true;
+  }
   listMessages(sessionId: string, userId: string) { return this.db.prepare(`SELECT * FROM conversation_messages WHERE sessionId=? AND userId=? AND deletedAt IS NULL ORDER BY createdAt ASC`).all(sessionId,userId) as SessionMessageRow[]; }
   updateMessageState(id: string, sessionId: string, userId: string, state: NonNullable<SessionMessageRow["state"]>, errorMessage: string | null = null): void {
     this.db.prepare(`UPDATE conversation_messages SET state=?, errorMessage=? WHERE id=? AND sessionId=? AND userId=? AND deletedAt IS NULL`).run(state, errorMessage, id, sessionId, userId);

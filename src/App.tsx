@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ArrowRight, BookOpen, Check, ChevronLeft, ChevronRight, CircleAlert, FileText, LogOut, Menu, Plus, Search, Send, Settings, ShieldCheck, Sparkles, X } from 'lucide-react';
-import { reviewApi, resultView, type ActivityEvent, type LearningMemory, type Result, type SessionDecision, type SessionMessage, type SessionSnapshot } from './api';
+import { ArrowRight, BookOpen, Archive, ArchiveRestore, Check, ChevronLeft, ChevronRight, CircleAlert, FileText, LogOut, Menu, MoreHorizontal, Pencil, Plus, Search, Send, Settings, ShieldCheck, Sparkles, Trash2, X } from 'lucide-react';
+import { reviewApi, resultView, type ActivityEvent, type LearningMemory, type Result, type SessionDecision, type SessionListItem, type SessionMessage, type SessionSnapshot } from './api';
 import { adminUsers, ApiError, auth, modelConfig, usage, type PublicUser, type UserModelConfig, type UsageSummary } from './auth-api';
 import { ChartCard } from './ChartCard';
 
@@ -15,11 +15,21 @@ const starterPrompts = [
 ] as const;
 const allowedAttachmentExtensions = new Set(['png', 'jpg', 'jpeg', 'webp', 'gif', 'docx', 'xlsx', 'csv', 'pdf']);
 const sessionStorageKey = (userId: string) => `aime:current-session:${userId}`;
+const sessionStatusLabel: Record<string, string> = {
+  draft: '草稿',
+  needs_input: '需补充',
+  running: '进行中',
+  completed: '已完成',
+  partial: '部分完成',
+  failed: '失败',
+  cancelled: '已停止',
+};
 
 export default function App() {
   const [phase, setPhase] = useState<Phase>('compose');
   const [sessionId, setSessionId] = useState('');
-  const [sessions, setSessions] = useState<Array<{ id: string; title: string; status: string; updatedAt: string }>>([]);
+  const [sessions, setSessions] = useState<Array<SessionListItem>>([]);
+  const [archiveFilter, setArchiveFilter] = useState<'active' | 'archived'>('active');
   const [snapshot, setSnapshot] = useState<SessionSnapshot | null>(null);
   const [messages, setMessages] = useState<SessionMessage[]>([welcome]);
   const [decisions, setDecisions] = useState<SessionDecision[]>([]);
@@ -28,6 +38,12 @@ export default function App() {
   const [error, setError] = useState('');
   const [tab, setTab] = useState<PanelTab>('findings');
   const [sessionQuery, setSessionQuery] = useState('');
+  const [renameTarget, setRenameTarget] = useState<SessionListItem | null>(null);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [deleteTarget, setDeleteTarget] = useState<SessionListItem | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [actionBusy, setActionBusy] = useState(false);
+  const [openMenuId, setOpenMenuId] = useState<string | null>(null);
   const [mobileSidebar, setMobileSidebar] = useState(false);
   const [mobilePanel, setMobilePanel] = useState(false);
   const [panelCollapsed, setPanelCollapsed] = useState(false);
@@ -50,7 +66,7 @@ export default function App() {
     if (authScreen !== 'home' || !user) return;
     void (async () => {
       try {
-        const listed = await reviewApi.listSessions();
+        const listed = await reviewApi.listSessions({ archived: archiveFilter === 'archived' });
         setSessions(listed);
         const savedId = window.localStorage.getItem(sessionStorageKey(user.id));
         if (savedId) {
@@ -64,6 +80,75 @@ export default function App() {
       }
     })();
   }, [authScreen, user]);
+
+  // ELI-358 — server-side session search. Debounce the query so a fast
+  // typist doesn't spam /sessions.
+  useEffect(() => {
+    if (authScreen !== 'home' || !user) return;
+    const handle = window.setTimeout(() => {
+      reviewApi.listSessions({ q: sessionQuery, archived: archiveFilter === 'archived' }).then(setSessions).catch(() => undefined);
+    }, 200);
+    return () => window.clearTimeout(handle);
+  }, [sessionQuery, archiveFilter, authScreen, user]);
+
+  // Close any open row menu when the user clicks elsewhere.
+  useEffect(() => {
+    if (!openMenuId) return;
+    const onClick = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (!target || !target.closest('[data-session-menu]')) setOpenMenuId(null);
+    };
+    window.addEventListener('mousedown', onClick);
+    return () => window.removeEventListener('mousedown', onClick);
+  }, [openMenuId]);
+
+  const refreshSessions = async () => {
+    try {
+      setSessions(await reviewApi.listSessions({ q: sessionQuery, archived: archiveFilter === 'archived' }));
+    } catch { /* ignore — list is best-effort */ }
+  };
+
+  const submitRename = async () => {
+    if (!renameTarget) return;
+    const title = renameDraft.trim();
+    if (!title || title.length > 80) { setActionError('标题不能为空，且长度不超过 80。'); return; }
+    setActionBusy(true); setActionError(null);
+    try {
+      const { session } = await reviewApi.renameSession(renameTarget.id, title);
+      setSessions((items) => items.map((item) => item.id === session.id ? { ...item, title: session.title, status: session.status } : item));
+      setRenameTarget(null); setRenameDraft('');
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : '重命名失败，请重试。');
+    } finally { setActionBusy(false); }
+  };
+
+  const toggleArchive = async (target: SessionListItem) => {
+    setOpenMenuId(null);
+    setActionBusy(true); setActionError(null);
+    try {
+      if (target.archivedAt) {
+        await reviewApi.unarchiveSession(target.id);
+      } else {
+        await reviewApi.archiveSession(target.id);
+      }
+      await refreshSessions();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : '操作失败，请重试。');
+    } finally { setActionBusy(false); }
+  };
+
+  const confirmDelete = async () => {
+    if (!deleteTarget) return;
+    setActionBusy(true); setActionError(null);
+    try {
+      await reviewApi.deleteSession(deleteTarget.id);
+      if (sessionId === deleteTarget.id) newReview();
+      setDeleteTarget(null);
+      await refreshSessions();
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : '删除失败，请重试。');
+    } finally { setActionBusy(false); }
+  };
 
   const logout = async () => { try { await auth.logout(); } catch { /* local logout still clears the workspace */ } setUser(null); setAuthScreen('login'); newReview(); };
 
@@ -102,7 +187,7 @@ export default function App() {
     <aside className={mobileSidebar ? 'sidebar open' : 'sidebar'}>
       <div className="brand"><span className="brand-dot">A</span><span>AIME<small>Decision Review</small></span></div>
       <nav className="nav-group"><span className="nav-eyebrow">NEW REVIEW</span><button className={!sessionId ? 'nav-item active' : 'nav-item'} onClick={newReview}><Plus size={15}/> 新建复盘</button></nav>
-      <nav className="nav-group"><span className="nav-eyebrow">RECENT REVIEWS</span><label className="session-search"><Search size={13}/><input aria-label="搜索历史复盘" value={sessionQuery} onChange={(event) => setSessionQuery(event.target.value)} placeholder="搜索复盘" /></label><div className="session-nav">{sessions.filter((item) => item.title.toLowerCase().includes(sessionQuery.trim().toLowerCase())).length ? sessions.filter((item) => item.title.toLowerCase().includes(sessionQuery.trim().toLowerCase())).map((item) => <button className={item.id === sessionId ? 'nav-item active' : 'nav-item'} key={item.id} onClick={() => openSession(item.id)}><span className="session-dot"/><span>{item.title}<small>{item.status === 'completed' ? '已完成' : '进行中'}</small></span></button>) : <p className="nav-empty">还没有匹配的复盘</p>}</div></nav>
+      <nav className="nav-group"><span className="nav-eyebrow">RECENT REVIEWS</span><label className="session-search"><Search size={13}/><input aria-label="搜索历史复盘" value={sessionQuery} onChange={(event) => setSessionQuery(event.target.value)} placeholder="搜索复盘内容" /></label><div className="session-filter"><button className={archiveFilter === 'active' ? 'session-filter-tab active' : 'session-filter-tab'} onClick={() => setArchiveFilter('active')} aria-pressed={archiveFilter === 'active'}>进行中</button><button className={archiveFilter === 'archived' ? 'session-filter-tab active' : 'session-filter-tab'} onClick={() => setArchiveFilter('archived')} aria-pressed={archiveFilter === 'archived'}>已归档</button></div><div className="session-nav">{sessions.length ? sessions.map((item) => <SessionRow key={item.id} item={item} active={item.id === sessionId} menuOpen={openMenuId === item.id} onOpen={() => openSession(item.id)} onToggleMenu={(open) => setOpenMenuId(open ? item.id : null)} onRename={() => { setRenameTarget(item); setRenameDraft(item.title); setActionError(null); }} onArchiveToggle={() => void toggleArchive(item)} onDelete={() => { setDeleteTarget(item); setActionError(null); }} statusLabel={sessionStatusLabel[item.status] || '进行中'} />) : <p className="nav-empty">{archiveFilter === 'archived' ? '没有已归档的复盘' : '还没有匹配的复盘'}</p>}</div></nav>
       <nav className="nav-group"><span className="nav-eyebrow">LEARNING</span><button className={tab === 'learning' ? 'nav-item active' : 'nav-item'} onClick={() => { setTab('learning'); setMobilePanel(true); }}><BookOpen size={15}/> Patterns & Learning</button></nav>
       <div className="side-note"><b>{user?.username}</b><span>{user?.role === 'admin' ? '管理员 · 数据私有' : '数据私有 · 仅本人可见'}</span><small>Session context 按认证 user_id 隔离</small></div>
       <div className="account-actions"><button data-testid="settings-open" onClick={() => setSettingsOpen(true)}><Settings size={14}/> 设置</button><button onClick={() => void logout()}><LogOut size={14}/> 退出</button></div>
@@ -114,12 +199,61 @@ export default function App() {
     <aside className={mobilePanel ? 'context-panel open' : 'context-panel'}><div className="context-head"><span><FileText size={14}/> Review context</span><div className="context-actions"><button className="collapse-panel" aria-label="收起右侧 Context 面板" onClick={() => setPanelCollapsed(true)}><ChevronRight size={13}/> 收起</button><button className="panel-close" onClick={() => setMobilePanel(false)}><X size={15}/></button></div></div><div className="context-tabs">{(['findings','evidence','learning'] as PanelTab[]).map((item) => <button className={tab === item ? 'active' : ''} key={item} onClick={() => setTab(item)}>{item}</button>)}</div><ContextPanel tab={tab} decisions={decisions} messages={messages} memories={memories} results={results}/></aside>
     <button className="context-rail" type="button" aria-label="展开右侧 Context 面板" onClick={() => setPanelCollapsed(false)}><ChevronLeft size={15}/><span>Context</span></button>
     {user && settingsOpen && createPortal(<SettingsModalV2 user={user} onClose={() => setSettingsOpen(false)} onUserUpdated={setUser}/>, document.body)}
+    {user && renameTarget && createPortal(<RenameDialog target={renameTarget} draft={renameDraft} busy={actionBusy} error={actionError} onChange={setRenameDraft} onCancel={() => { if (actionBusy) return; setRenameTarget(null); setRenameDraft(''); setActionError(null); }} onSubmit={() => void submitRename()}/>, document.body)}
+    {user && deleteTarget && createPortal(<DeleteDialog target={deleteTarget} busy={actionBusy} error={actionError} onCancel={() => { if (actionBusy) return; setDeleteTarget(null); setActionError(null); }} onConfirm={() => void confirmDelete()}/>, document.body)}
   </div>;
 }
 
 function Message({ message, copyNotice, onCopy, onEdit, onDelete, onRetry }: { message: SessionMessage; copyNotice: boolean; onCopy: (message: SessionMessage) => void; onEdit?: (message: SessionMessage) => void; onDelete: (message: SessionMessage) => void; onRetry?: (message: SessionMessage) => void }) {
   const status = message.role === 'status' || message.role === 'error'; const isWelcome = message.id === 'welcome'; const needsInput = message.role === 'user' && message.state === 'needs_input'; const [warningOpen, setWarningOpen] = useState(false); const warningId = `${message.id}-warning`;
   return <div className={`message-row ${message.role} ${isWelcome ? 'welcome-message' : ''} ${needsInput ? 'needs-input' : ''}`}><div className="message-avatar">{message.role === 'assistant' ? <Sparkles size={14}/> : message.role === 'status' ? <span className="status-mark"/> : message.role === 'error' ? <CircleAlert size={14}/> : '景'}</div>{needsInput && <span className="message-warning-gutter"><button type="button" className="message-warning" aria-label="该消息需要补充信息" aria-describedby={warningId} aria-expanded={warningOpen} onClick={() => setWarningOpen((open) => !open)}><CircleAlert size={15}/></button><span id={warningId} role="tooltip" className={`message-warning-tooltip ${warningOpen ? 'open' : ''}`}>{message.errorMessage || '这条消息还缺少可确认的标的、方向或成交/下单时间。你可以直接编辑原消息补充。'}</span></span>}<div className="message-bubble">{isWelcome ? <><h2>{message.content}</h2><p>用自然语言描述历史决策，AIME 会帮你还原当时的信息环境。</p></> : <><span>{message.role === 'assistant' ? 'AIME REVIEW AGENT' : message.role === 'status' ? 'REVIEW STATUS' : message.role === 'error' ? 'TURN ERROR' : 'YOU'}</span><p className={status ? 'status-copy' : ''}>{message.content}</p>{message.role !== 'error' && <div className="message-actions"><button type="button" aria-label="复制消息" onClick={() => onCopy(message)}>{copyNotice ? '已复制' : '复制'}</button>{onEdit && <button type="button" aria-label="编辑消息" onClick={() => onEdit(message)}>编辑</button>}{onRetry && <button type="button" aria-label="重试消息" onClick={() => onRetry(message)}>重试</button>}<button type="button" aria-label="删除消息" onClick={() => void onDelete(message)}>删除</button></div>}</>}</div></div>;
+}
+
+function SessionRow({ item, active, menuOpen, onOpen, onToggleMenu, onRename, onArchiveToggle, onDelete, statusLabel }: {
+  item: SessionListItem;
+  active: boolean;
+  menuOpen: boolean;
+  onOpen: () => void;
+  onToggleMenu: (open: boolean) => void;
+  onRename: () => void;
+  onArchiveToggle: () => void;
+  onDelete: () => void;
+  statusLabel: string;
+}) {
+  const status = item.status;
+  const statusClass = `session-status status-${status}`;
+  return <div className={`session-row ${active ? 'active' : ''}`} data-session-menu>
+    <button type="button" className={active ? 'nav-item active session-row-open' : 'nav-item session-row-open'} onClick={onOpen} title={item.title}><span className="session-dot"/><span className="session-row-title">{item.title}</span></button>
+    <span className={`${statusClass} session-row-status`}>{statusLabel}</span>
+    <button type="button" className="session-row-menu-trigger" aria-label="更多操作" aria-haspopup="menu" aria-expanded={menuOpen} onClick={(event) => { event.stopPropagation(); onToggleMenu(!menuOpen); }}><MoreHorizontal size={14}/></button>
+    {menuOpen && <div className="session-row-menu" role="menu" onClick={(event) => event.stopPropagation()}>
+      <button type="button" role="menuitem" onClick={() => { onToggleMenu(false); onRename(); }}><Pencil size={13}/> 重命名</button>
+      <button type="button" role="menuitem" onClick={() => { onToggleMenu(false); onArchiveToggle(); }}>{item.archivedAt ? <><ArchiveRestore size={13}/> 取消归档</> : <><Archive size={13}/> 归档</>}</button>
+      <button type="button" role="menuitem" className="danger" onClick={() => { onToggleMenu(false); onDelete(); }}><Trash2 size={13}/> 删除</button>
+    </div>}
+  </div>;
+}
+
+function RenameDialog({ target, draft, busy, error, onChange, onCancel, onSubmit }: {
+  target: SessionListItem;
+  draft: string;
+  busy: boolean;
+  error: string | null;
+  onChange: (value: string) => void;
+  onCancel: () => void;
+  onSubmit: () => void;
+}) {
+  return <div className="settings-overlay" role="dialog" aria-modal="true" aria-label="重命名复盘" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}><section className="settings-sheet session-action-sheet"><header><div><span className="eyebrow">RENAME REVIEW</span><h2>重命名复盘</h2><p>修改后会保存在服务器，且不再被自动重命名覆盖。</p></div><button aria-label="关闭" onClick={onCancel}><X size={17}/></button></header><form className="settings-form" onSubmit={(event) => { event.preventDefault(); onSubmit(); }}><label>新标题（不超过 80 字）<input autoFocus value={draft} onChange={(event) => onChange(event.target.value)} maxLength={80} required /></label>{error && <div className="authError" role="alert">{error}</div>}<div className="settings-actions"><button type="button" onClick={onCancel} disabled={busy}>取消</button><button className="authPrimary" disabled={busy}>{busy ? '保存中…' : '保存'}</button></div></form><p className="muted">原标题：{target.title}</p></section></div>;
+}
+
+function DeleteDialog({ target, busy, error, onCancel, onConfirm }: {
+  target: SessionListItem;
+  busy: boolean;
+  error: string | null;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return <div className="settings-overlay" role="dialog" aria-modal="true" aria-label="删除复盘" onMouseDown={(event) => { if (event.target === event.currentTarget) onCancel(); }}><section className="settings-sheet session-action-sheet"><header><div><span className="eyebrow">DELETE REVIEW</span><h2>删除复盘</h2><p>复盘将从你的 Recent Reviews 中消失，且其他用户也无法访问。</p></div><button aria-label="关闭" onClick={onCancel}><X size={17}/></button></header><p>确定删除 <b>{target.title}</b>？此操作无法撤销，但已沉淀到长期 Learning 的结论会保留。</p>{error && <div className="authError" role="alert">{error}</div>}<div className="settings-actions"><button type="button" onClick={onCancel} disabled={busy}>取消</button><button className="authPrimary danger" onClick={onConfirm} disabled={busy}>{busy ? '删除中…' : '确认删除'}</button></div></section></div>;
 }
 function StarterPrompts({ onSelect }: { onSelect: (prompt: string) => void }) { return <div className="starter-prompts" data-testid="starter-prompts"><span className="eyebrow">START WITH A REVIEW</span><div>{starterPrompts.map((prompt, index) => <button type="button" key={prompt} data-testid={`starter-prompt-${index + 1}`} onClick={() => onSelect(prompt)}>{prompt}<ArrowRight size={14}/></button>)}</div></div>; }
 function ActivityAnchor({ events, active, open, onToggle, onStop }: { events: ActivityEvent[]; active: boolean; open: boolean; onToggle: () => void; onStop: () => void }) {

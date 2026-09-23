@@ -26,6 +26,28 @@ Desktop shell:
 - Settings is a truly centered overlay independent of the sidebar and right
   panel.
 
+The conversation/history sidebar is the conversation library:
+
+- Each entry's title is auto-derived from the first up-to-two unique
+  decision symbols (or names) after the first accepted extraction
+  (e.g. `万科A / 一鸣食品 复盘`, `万科A 决策复盘`); the temporary
+  placeholder `新建复盘` only shows when extraction has not produced
+  any usable symbol yet.
+- The status badge reflects the real per-session lifecycle
+  (`草稿 / 需补充 / 进行中 / 已完成 / 部分完成 / 失败 / 已停止`),
+  not a hardcoded `进行中`; completed reviews keep showing `已完成`
+  after reload.
+- The search input is server-side and matches title, decision
+  symbols/names/reasons, and message bodies; a phrase that only
+  appears in a message or review output still finds the session.
+- Each row exposes an unobtrusive hover/focus kebab menu with
+  `Rename`, `Archive`/`Unarchive`, and `Delete` actions. Action
+  clicks must not open the session.
+- Rename persists server-side and locks out later auto-title
+  rewrites. Delete is soft and user-scoped; archived sessions are
+  hidden from the default Recent Reviews view but discoverable via
+  the `Active / Archived` filter.
+
 The empty conversation shows three neutral starter prompts. Clicking one fills
 the composer but never submits it. Draft text survives attachment picker/add/
 remove and all other non-submit actions. The detailed structured review remains
@@ -182,6 +204,20 @@ The API must preserve explicit `success`, `empty`, `transient_error`, and
 - `GET /api/reviews/:id/result`
 - `GET/POST /api/chart-data` (normalized chart requests)
 - `GET /health`
+
+Conversation library routes (ELI-358) are user-scoped and never leak across
+users:
+
+- `GET /api/sessions?q=&archived=1` — list with optional full-content search
+  and archive scope.
+- `POST /api/sessions` — create + extract; title is auto-derived from
+  extracted symbols unless the user has manually renamed the session.
+- `GET /api/sessions/:id`
+- `PATCH /api/sessions/:id` — rename; persists server-side and sets a
+  manual-title lock.
+- `POST /api/sessions/:id/archive`, `POST /api/sessions/:id/unarchive`
+- `DELETE /api/sessions/:id` — soft delete; the session disappears from
+  Recent Reviews, search, and the archive view.
 
 SSE is preferred for progress; polling is acceptable. Product traces expose
 only safe events such as retrieval and time alignment, never hidden reasoning,

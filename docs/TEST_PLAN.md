@@ -52,6 +52,33 @@ Expected:
 - stopped/partial runs do not persist normal Findings/Learning;
 - copy/edit/delete/retry actions perform their stated operation.
 
+### T01c — Conversation library (sidebar) — ELI-358
+Exercise the sidebar list, search, status badges, and per-row actions
+(rename, archive, delete).
+
+Expected:
+- a freshly created session receives a deterministic title derived from
+  the extracted decision symbols (e.g. `万科A / 一鸣食品 复盘`,
+  `万科A 决策复盘`) after the first accepted turn, instead of every row
+  being labeled `新建复盘`;
+- the sidebar status reflects the real lifecycle: completed reviews
+  show `已完成`, needs-input shows `需补充`, partial/failed/cancelled
+  show their own labels — never a hardcoded `进行中`;
+- server-side search matches the conversation and review content: a
+  phrase that only appears in a message body or review output still
+  finds the session, even when the title does not contain that phrase;
+- rename persists across reload and locks out later auto-title
+  rewrites (re-extracting the same message must not overwrite a
+  manually-set title);
+- delete is user-scoped and confirmation-gated; the deleted session
+  disappears from Recent Reviews, search, and the archive view, and
+  cannot be read by another user;
+- archive hides the session from the default Recent Reviews view, the
+  session can be unarchived, and the `Active / Archived` filter chip
+  switches scope;
+- kebab menu clicks never open the session — the kebab trigger and
+  row click are distinct.
+
 ## 2. Time-bound reasoning
 
 ### T02 — T0 boundary

@@ -7,7 +7,7 @@
  */
 
 import { Hono } from "hono";
-import { randomUUID } from "node:crypto";
+import { randomUUID, createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 import { DecisionInputSchema, type DecisionInput, type DecisionReviewResult, type ReviewStatus } from "../types/index.ts";
 import type { AppConfig } from "../config.ts";
 import type { ReviewRepository } from "../db/sqlite.ts";
@@ -15,7 +15,8 @@ import type { UserRepository } from "../auth/repository.ts";
 import type { McpRegistry } from "../mcp/registry.ts";
 import { DecisionReviewAgent } from "../agents/decision-review.ts";
 import { DecisionExtractorAgent } from "../agents/decision-extractor.ts";
-import type { ModelProvider } from "../providers/index.ts";
+import { LazyResilientProvider, type LLMCompletionRequest, type LLMCompletion, type ModelProvider } from "../providers/index.ts";
+import { OpenAICompatibleProvider } from "../providers/openai-compatible.ts";
 import { attachUser, requireAuth, gateMustChangePassword, rejectClientUserIdHeader, type AuthEnv } from "../auth/middleware.ts";
 import { buildAuthRoutes } from "../auth/routes.ts";
 import { buildAdminRoutes } from "../auth/admin.ts";
@@ -32,6 +33,18 @@ export interface RouteDeps {
 
 type AppEnv = { Variables: AuthEnv["Variables"] };
 
+function keyFor(secret: string): Buffer { return createHash("sha256").update(secret).digest(); }
+function encryptKey(value: string, secret: string): string { const iv = randomBytes(12); const cipher = createCipheriv("aes-256-gcm", keyFor(secret), iv); const encrypted = Buffer.concat([cipher.update(value, "utf8"), cipher.final()]); return `enc:v1:${iv.toString("base64url")}:${cipher.getAuthTag().toString("base64url")}:${encrypted.toString("base64url")}`; }
+function decryptKey(value: string, secret: string): string | null { try { const [, version, ivRaw, tagRaw, dataRaw] = value.split(":"); if (version !== "v1" || !ivRaw || !tagRaw || !dataRaw) return null; const decipher = createDecipheriv("aes-256-gcm", keyFor(secret), Buffer.from(ivRaw, "base64url")); decipher.setAuthTag(Buffer.from(tagRaw, "base64url")); return Buffer.concat([decipher.update(Buffer.from(dataRaw, "base64url")), decipher.final()]).toString("utf8"); } catch { return null; } }
+function sanitizedError(error: unknown): string { const text = error instanceof Error ? error.message : String(error); return text.replace(/(authorization|api[-_ ]?key|bearer)\s*[:=]?\s*[^\s,;]+/gi, "$1 [redacted]").slice(0, 240); }
+
+class UsageTrackingProvider implements ModelProvider {
+  readonly id: string; readonly modelName: string; readonly configured = true;
+  constructor(private readonly inner: ModelProvider, private readonly userRepo: UserRepository, private readonly userId: string) { this.id = inner.id; this.modelName = inner.modelName; }
+  availability() { return this.inner.availability?.() ?? { state: "ready" as const, providerId: this.id, model: this.modelName, lastError: null, requestedMode: "openai-compatible" as const, degraded: false }; }
+  async complete(request: LLMCompletionRequest): Promise<LLMCompletion> { const result = await this.inner.complete(request); if (result.usage) this.userRepo.recordLlmUsage(this.userId, { ...result.usage, provider: this.id, model: this.modelName }); return result; }
+}
+
 /** Durable investment learning is reserved for a completed, grounded run. */
 function canPersistDecisionLessons(result: DecisionReviewResult | null, status: ReviewStatus | undefined): boolean {
   if (!result || status !== "completed" || result.exAnteEvidence.length === 0) return false;
@@ -43,9 +56,18 @@ function canPersistDecisionLessons(result: DecisionReviewResult | null, status: 
 export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   const app = new Hono<AppEnv>();
   const config = deps.config;
+  const modelSecret = config.modelConfigSecret || config.initialAdmin.password || "aime-model-config-local-secret";
   const auth = buildAuthRoutes(deps.userRepo, config.isProduction);
   const admin = buildAdminRoutes(deps.userRepo);
   const modelUnavailable = "当前未配置可用的大模型服务，请联系管理员。";
+  const providerForUser = (userId: string): ModelProvider => {
+    const saved = deps.userRepo.getModelConfig(userId);
+    if (!saved) return new UsageTrackingProvider(deps.provider, deps.userRepo, userId);
+    const apiKey = decryptKey(saved.apiKeyEncrypted, modelSecret);
+    if (!apiKey) return new UsageTrackingProvider({ id: "openai-compatible", modelName: saved.model, configured: false, complete: async () => { throw new Error("Stored model credential is unavailable"); }, availability: () => ({ state: "error", providerId: "openai-compatible", model: saved.model, lastError: null, requestedMode: "openai-compatible", degraded: true }) }, deps.userRepo, userId);
+    const live = new LazyResilientProvider({ id: "openai-compatible", modelName: saved.model, build: () => new OpenAICompatibleProvider({ baseUrl: saved.baseUrl, modelName: saved.model, apiKey }) });
+    return new UsageTrackingProvider(live, deps.userRepo, userId);
+  };
   // Provider availability is the single readiness contract. In particular,
   // real-provider mode with missing credentials must never be treated as a
   // mock-backed configured provider by route pre-flight or /health.
@@ -65,7 +87,10 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     }
     return base;
   };
-  const providerReady = () => providerAvailability().state === "ready";
+  const providerReady = (provider: ModelProvider = deps.provider, userId?: string) => {
+    if (provider === deps.provider || (userId && !deps.userRepo.getModelConfig(userId))) return providerAvailability().state === "ready";
+    return (provider.availability?.().state ?? (provider.configured ? "ready" : "unconfigured")) === "ready";
+  };
 
   app.use("*", attachUser(deps.userRepo));
 
@@ -94,6 +119,25 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   // Public auth endpoints (login + change-password self-service) live here.
   app.route("/api/auth", auth);
 
+  app.get("/api/auth/model", requireAuth(deps.userRepo), (c) => {
+    const user = c.get("user")!; const saved = deps.userRepo.getModelConfig(user.id);
+    return c.json({ configured: Boolean(saved), provider: saved?.provider ?? "openai-compatible", baseUrl: saved?.baseUrl ?? "", model: saved?.model ?? config.llm.model, keySuffix: saved ? (decryptKey(saved.apiKeyEncrypted, modelSecret)?.slice(-4) ?? null) : null, verifiedAt: saved?.verifiedAt ?? null, lastError: saved?.lastError ?? null, serverDefaultModel: config.llm.model });
+  });
+  app.get("/api/auth/usage", requireAuth(deps.userRepo), (c) => { const user = c.get("user")!; const start = new Date(); start.setUTCDate(1); start.setUTCHours(0,0,0,0); const summary = deps.userRepo.getLlmUsageSummary(user.id, start.toISOString()); return c.json({ periodStart: start.toISOString(), ...summary, allowance: null, providerQuota: null, label: "App usage" }); });
+  app.post("/api/auth/model/test", requireAuth(deps.userRepo), async (c) => {
+    const user = c.get("user")!; const body = await c.req.json().catch(() => ({})) as { baseUrl?: string; model?: string; apiKey?: string };
+    const saved = deps.userRepo.getModelConfig(user.id); const baseUrl = body.baseUrl?.trim() || saved?.baseUrl; const model = body.model?.trim() || saved?.model || config.llm.model; const apiKey = body.apiKey?.trim() || (saved ? decryptKey(saved.apiKeyEncrypted, modelSecret) : null);
+    if (!baseUrl || !apiKey) return c.json({ ok: false, error: "请填写 Base URL 和 API key" }, 400);
+    try { const response = await fetch(`${baseUrl.replace(/\/$/, "")}/models`, { headers: { Authorization: `Bearer ${apiKey}` } }); if (!response.ok) throw new Error(`远端返回 HTTP ${response.status}`); return c.json({ ok: true, model, verifiedAt: new Date().toISOString() }); } catch (error) { return c.json({ ok: false, error: sanitizedError(error) }, 502); }
+  });
+  app.post("/api/auth/model", requireAuth(deps.userRepo), async (c) => {
+    const user = c.get("user")!; const body = await c.req.json().catch(() => ({})) as { provider?: string; baseUrl?: string; model?: string; apiKey?: string; verifiedAt?: string | null };
+    const saved = deps.userRepo.getModelConfig(user.id); const baseUrl = body.baseUrl?.trim(); const model = body.model?.trim(); const apiKey = body.apiKey?.trim() || (saved ? decryptKey(saved.apiKeyEncrypted, modelSecret) : null);
+    if (body.provider && body.provider !== "openai-compatible") return c.json({ error: "仅支持 OpenAI-compatible" }, 400); if (!baseUrl || !model || !apiKey) return c.json({ error: "Base URL、model、API key 均为必填" }, 400);
+    deps.userRepo.saveModelConfig({ userId: user.id, provider: "openai-compatible", baseUrl, model, apiKeyEncrypted: encryptKey(apiKey, modelSecret), verifiedAt: body.verifiedAt ?? null, lastError: null }); return c.json({ configured: true, provider: "openai-compatible", baseUrl, model, keySuffix: apiKey.slice(-4), verifiedAt: body.verifiedAt ?? null, lastError: null, serverDefaultModel: config.llm.model });
+  });
+  app.delete("/api/auth/model", requireAuth(deps.userRepo), (c) => { deps.userRepo.clearModelConfig(c.get("user")!.id); return c.json({ configured: false, provider: "openai-compatible", baseUrl: "", model: config.llm.model, keySuffix: null, verifiedAt: null, lastError: null, serverDefaultModel: config.llm.model }); });
+
   const sessionAuth = [requireAuth(deps.userRepo), gateMustChangePassword()];
   app.use("/api/sessions", ...sessionAuth);
   app.use("/api/sessions/*", ...sessionAuth);
@@ -108,10 +152,10 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     const body = await c.req.json().catch(() => null) as { message?: string; scope?: string; clientNow?: string; timezone?: string } | null;
     const message = body?.message?.trim();
     if (!message) return c.json({ error: "invalid_input", message: "请输入一段历史决策描述。" }, 400);
-    if (!providerReady()) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: providerAvailability().state, message: modelUnavailable }, 503);
+    const userProvider = providerForUser(user.id); if (!providerReady(userProvider, user.id)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
     let decisions;
     try {
-      decisions = await new DecisionExtractorAgent(deps.provider, deps.config.llm.extractorModel).extract(message, { clientNow: body?.clientNow || new Date().toISOString(), timezone: body?.timezone || "UTC" });
+      decisions = await new DecisionExtractorAgent(userProvider, deps.config.llm.extractorModel).extract(message, { clientNow: body?.clientNow || new Date().toISOString(), timezone: body?.timezone || "UTC" });
     } catch { return c.json({ error: "DECISION_EXTRACTION_FAILED", message: "无法可靠识别决策，请补充标的、方向与成交时间后重试。" }, 422); }
     const sessionId = deps.repo.createSession(user.id, decisions.length > 1 ? `${decisions.length} 笔投资决策` : `${decisions[0]?.symbol ?? "新"} 决策复盘`, body?.scope ?? (decisions.length > 1 ? "custom" : "single"));
     deps.repo.addMessage(sessionId, user.id, "user", message);
@@ -137,7 +181,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   app.post("/api/sessions/:id/confirm", async (c) => {
     const user = c.get("user")!; const id = c.req.param("id");
     if (!deps.repo.getSession(id, user.id)) return c.json({ error: "not_found" }, 404);
-    if (!providerReady()) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: providerAvailability().state, message: modelUnavailable }, 503);
+    const userProvider = providerForUser(user.id); if (!providerReady(userProvider, user.id)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
     const decisions = deps.repo.listSessionDecisions(id, user.id);
     if (!decisions.length) return c.json({ error: "invalid_input", message: "没有可复盘的决策。" }, 400);
     // An evidence-grounded approximate T0 may proceed after the user clears
@@ -146,7 +190,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     const pendingT0 = decisions.filter((item) => !item.executedAt || item.timePrecision === "unknown" || item.needsConfirmation.length > 0);
     if (pendingT0.length) return c.json({ error: "DECISION_CONFIRMATION_REQUIRED", message: "请先确认每笔决策的成交时间。", decisionIds: pendingT0.map((item) => item.id) }, 422);
     deps.repo.updateSession(id, user.id, "running"); deps.repo.addMessage(id, user.id, "status", "正在重建每笔决策各自的 T0 前信息环境…");
-    const agent = new DecisionReviewAgent({ repo: deps.repo, registry: deps.registry, provider: deps.provider, config: deps.config });
+    const agent = new DecisionReviewAgent({ repo: deps.repo, registry: deps.registry, provider: userProvider, config: deps.config });
     const runIds: string[] = []; const pending: Promise<void>[] = [];
     for (const item of decisions) {
       const runId = `rev_${randomUUID()}`; const decision: DecisionInput = { symbol: item.symbol, market: item.market as "CN" | "HK" | "US", action: item.action, executedAt: item.executedAt!, timePrecision: item.timePrecision, price: item.price ?? undefined, quantity: item.quantityShares ?? item.quantity ?? undefined, userReason: item.reason, notes: item.notes };
@@ -174,10 +218,10 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   app.post("/api/sessions/:id/messages", async (c) => {
     const user = c.get("user")!; const id = c.req.param("id");
     if (!deps.repo.getSession(id, user.id)) return c.json({ error: "not_found" }, 404);
-    if (!providerReady()) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: providerAvailability().state, message: modelUnavailable }, 503);
+    const userProvider = providerForUser(user.id); if (!providerReady(userProvider, user.id)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
     const content = ((await c.req.json().catch(() => null)) as { content?: string } | null)?.content?.trim(); if (!content) return c.json({ error: "invalid_input", message: "请输入追问内容。" }, 400);
     const userMessage = deps.repo.addMessage(id, user.id, "user", content); const decisions = deps.repo.listSessionDecisions(id, user.id); const memories = deps.repo.listMemories(user.id); const results = decisions.filter((d) => d.reviewId).map((d) => deps.repo.getResult(d.reviewId!));
-    const completion = await deps.provider.complete({ system: "你是 AIME 投资决策复盘助手。只基于当前用户 session 的 decisions、T0 前后证据、findings 与 learning memory 回答；不要给出新的买卖指令。", user: JSON.stringify({ question: content, decisions, results, memories }), temperature: 0.2, maxOutputTokens: 900 });
+    const completion = await userProvider.complete({ system: "你是 AIME 投资决策复盘助手。只基于当前用户 session 的 decisions、T0 前后证据、findings 与 learning memory 回答；不要给出新的买卖指令。", user: JSON.stringify({ question: content, decisions, results, memories }), temperature: 0.2, maxOutputTokens: 900 });
     const assistant = deps.repo.addMessage(id, user.id, "assistant", completion.text || "当前无法生成追问回复。"); return c.json({ message: assistant, messages: deps.repo.listMessages(id, user.id) }, 201);
   });
 
@@ -185,6 +229,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
   app.use("/api/reviews/*", requireAuth(deps.userRepo), gateMustChangePassword());
 
   app.post("/api/reviews", async (c) => {
+    const user = c.get("user")!;
     const body = await c.req.json().catch(() => null);
     const parsed = DecisionInputSchema.safeParse(body);
     if (!parsed.success) {
@@ -209,7 +254,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
         422
       );
     }
-    if (!providerReady()) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: providerAvailability().state, message: modelUnavailable }, 503);
+    const userProvider = providerForUser(user.id); if (!providerReady(userProvider, user.id)) return c.json({ error: "MODEL_NOT_CONFIGURED", code: "MODEL_NOT_CONFIGURED", retryable: false, provider_status: userProvider.availability?.().state, message: modelUnavailable }, 503);
     const id = `rev_${randomUUID()}`;
     const T0 = decision.executedAt;
     deps.repo.createRun(id, decision, T0);
@@ -217,7 +262,7 @@ export function buildApi(deps: RouteDeps): Hono<AppEnv> {
     const agent = new DecisionReviewAgent({
       repo: deps.repo,
       registry: deps.registry,
-      provider: deps.provider,
+      provider: userProvider,
       config: deps.config,
     });
 

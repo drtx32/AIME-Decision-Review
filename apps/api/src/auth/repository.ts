@@ -34,6 +34,24 @@ export interface CreateUserInput {
   mustChangePassword: boolean;
 }
 
+export interface StoredModelConfig {
+  userId: string;
+  provider: "openai-compatible";
+  baseUrl: string;
+  model: string;
+  apiKeyEncrypted: string;
+  verifiedAt: string | null;
+  lastError: string | null;
+}
+
+export interface LlmUsageSummary {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  model: string | null;
+  provider: string | null;
+}
+
 export class UserRepository {
   private db: Database;
 
@@ -68,6 +86,30 @@ export class UserRepository {
         FOREIGN KEY(userId) REFERENCES users(id) ON DELETE CASCADE
       );
       CREATE INDEX IF NOT EXISTS idx_sessions_userId ON sessions(userId);
+
+      CREATE TABLE IF NOT EXISTS user_model_configs (
+        userId TEXT PRIMARY KEY,
+        provider TEXT NOT NULL,
+        baseUrl TEXT NOT NULL,
+        model TEXT NOT NULL,
+        apiKeyEncrypted TEXT NOT NULL,
+        verifiedAt TEXT,
+        lastError TEXT,
+        updatedAt TEXT NOT NULL,
+        FOREIGN KEY(userId) REFERENCES users(id) ON DELETE CASCADE
+      );
+      CREATE TABLE IF NOT EXISTS llm_usage (
+        id TEXT PRIMARY KEY,
+        userId TEXT NOT NULL,
+        inputTokens INTEGER NOT NULL,
+        outputTokens INTEGER NOT NULL,
+        totalTokens INTEGER NOT NULL,
+        timestamp TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        FOREIGN KEY(userId) REFERENCES users(id) ON DELETE CASCADE
+      );
+      CREATE INDEX IF NOT EXISTS idx_llm_usage_user_time ON llm_usage(userId, timestamp);
     `);
   }
 
@@ -221,6 +263,26 @@ export class UserRepository {
 
   deleteSessionsForUser(userId: string): void {
     this.db.prepare(`DELETE FROM sessions WHERE userId = ?`).run(userId);
+  }
+
+  getModelConfig(userId: string): StoredModelConfig | null {
+    return (this.db.prepare(`SELECT userId, provider, baseUrl, model, apiKeyEncrypted, verifiedAt, lastError FROM user_model_configs WHERE userId=?`).get(userId) as StoredModelConfig | undefined) ?? null;
+  }
+
+  saveModelConfig(input: Omit<StoredModelConfig, "updatedAt">): void {
+    this.db.prepare(`INSERT INTO user_model_configs (userId,provider,baseUrl,model,apiKeyEncrypted,verifiedAt,lastError,updatedAt) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(userId) DO UPDATE SET provider=excluded.provider,baseUrl=excluded.baseUrl,model=excluded.model,apiKeyEncrypted=excluded.apiKeyEncrypted,verifiedAt=excluded.verifiedAt,lastError=excluded.lastError,updatedAt=excluded.updatedAt`).run(input.userId,input.provider,input.baseUrl,input.model,input.apiKeyEncrypted,input.verifiedAt,input.lastError,new Date().toISOString());
+  }
+
+  clearModelConfig(userId: string): void { this.db.prepare(`DELETE FROM user_model_configs WHERE userId=?`).run(userId); }
+
+  recordLlmUsage(userId: string, usage: { input: number; output: number; provider: string; model: string }): void {
+    const input = Math.max(0, Math.floor(usage.input)); const output = Math.max(0, Math.floor(usage.output));
+    this.db.prepare(`INSERT INTO llm_usage (id,userId,inputTokens,outputTokens,totalTokens,timestamp,provider,model) VALUES (?,?,?,?,?,?,?,?)`).run(`usage_${randomUUID()}`,userId,input,output,input+output,new Date().toISOString(),usage.provider,usage.model);
+  }
+
+  getLlmUsageSummary(userId: string, since: string): LlmUsageSummary {
+    const row = this.db.prepare(`SELECT COALESCE(SUM(inputTokens),0) AS inputTokens, COALESCE(SUM(outputTokens),0) AS outputTokens, COALESCE(SUM(totalTokens),0) AS totalTokens, (SELECT model FROM llm_usage WHERE userId=? AND timestamp>=? ORDER BY timestamp DESC LIMIT 1) AS model, (SELECT provider FROM llm_usage WHERE userId=? AND timestamp>=? ORDER BY timestamp DESC LIMIT 1) AS provider FROM llm_usage WHERE userId=? AND timestamp>=?`).get(userId,since,userId,since,userId,since) as LlmUsageSummary;
+    return row;
   }
 
   // ---------- bootstrap ----------

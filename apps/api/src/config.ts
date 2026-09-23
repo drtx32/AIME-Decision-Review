@@ -10,6 +10,8 @@ export interface AppConfig {
   logLevel: "debug" | "info" | "warn" | "error";
   /** Production-ish flag toggles Secure cookies and stricter auth headers. */
   isProduction: boolean;
+  /** Secret used to encrypt per-user BYOK keys at rest. */
+  modelConfigSecret: string;
 
   initialAdmin: {
     username: string;
@@ -131,6 +133,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     sqlitePath: env.SQLITE_PATH ?? "./data/decision-review.db",
     logLevel: (env.LOG_LEVEL as AppConfig["logLevel"]) ?? "info",
     isProduction,
+    modelConfigSecret: env.MODEL_CONFIG_SECRET?.trim() || initialAdminPassword || "aime-model-config-local-secret",
     initialAdmin: {
       username: initialAdminUsername,
       password: initialAdminPassword,

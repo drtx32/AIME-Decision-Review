@@ -1,3 +1,20 @@
+## Canonical documentation reconciliation — 2026-09-23
+
+This file records validation evidence; it is not a substitute for the product
+contract in `docs/SPEC.md`. The canonical contract now requires a
+conversation-first desktop workspace with a stable bottom composer, centered
+Settings overlay, controlled attachments, default-deny trusted web evidence,
+direct Fuyao/iFinD structured chart data with native ECharts, and strict
+ex-ante/ex-post correctness. Browser and direct-API regression cases are listed
+in `docs/TEST_PLAN.md`.
+
+The existing entries below are historical evidence and retain their original
+environment, mode, and SHA. Controlled fake upstreams are not credentialed
+Fuyao/iFinD/LLM validation. Any real-provider claim must include the exact
+tested/deployed SHA and sanitized endpoint/tool, schema, timestamp, permission,
+quota, and error evidence. Missing evidence remains a known limitation rather
+than a successful validation result.
+
 - The default demo ports 8080/3000 may need overrides when another local service
   already occupies them; the Compose defaults remain simple for a clean host.
 - Existing volumes created by the earlier root-user image need a one-time

@@ -671,3 +671,11 @@ to `main`.
 - Backend-only diff. No changes under `src/` (frontend shell),
   `apps/web/`, `docker-compose.yml`, or `.env.example`. No Docker
   deployment is performed from this branch.
+
+## ELI-340 submission skeleton — 2026-09-23
+
+The integrated submission skeleton adds a tracked-artifact manifest, deployment
+evidence template, license inventory, test notes, validation record, and a
+deterministic preflight/packaging path. It records fixture validation separately
+from credentialed provider validation and generates build metadata without
+committing runtime secrets or build output.
